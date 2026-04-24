@@ -45,10 +45,14 @@ export function startCombat(bot, config) {
       stopFollow()
     }
 
+    if (!target.position) return
     const dist = bot.entity.position.distanceTo(target.position)
-    console.log(`[sei/combat] retaliating against ${target.name ?? target.type} dist=${dist.toFixed(1)}`)
     if (dist <= 4) {
-      try { bot.attack(target) } catch (e) { console.log('[sei/combat] attack err:', e.message) }
+      try {
+        bot.lookAt(target.position.offset(0, target.height ?? 1.6, 0), true)
+        bot.attack(target)
+        bot.swingArm()
+      } catch (_) {}
     }
 
     // Resume follow 3s after last hit
