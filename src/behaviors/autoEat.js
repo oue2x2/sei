@@ -7,5 +7,5 @@ export function startAutoEat(bot) {
     minHunger: 14,
     bannedFood: [],
   })
-  bot.autoEat.enable()
+  bot.autoEat.enableAuto()
 }
