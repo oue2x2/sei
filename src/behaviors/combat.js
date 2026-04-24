@@ -8,20 +8,15 @@ const HOSTILE_MOBS = new Set([
   'piglin_brute', 'zoglin',
 ])
 
-/** source from entityHurt may be a weapon/item entity — resolve to the nearest real mob */
-function findNearestAttacker(bot, source) {
-  // If source looks like a real mob, use it directly
+function resolveAttacker(bot, source) {
+  const live = source?.id != null ? bot.entities[source.id] : null
+  if (live && HOSTILE_MOBS.has(live.name)) return live
   if (source?.name && HOSTILE_MOBS.has(source.name)) return source
-  // Otherwise find nearest hostile mob within 8 blocks
-  let nearest = null
-  let minDist = 8
-  for (const entity of Object.values(bot.entities)) {
-    if (entity === bot.entity) continue
-    if (!HOSTILE_MOBS.has(entity.name)) continue
-    const dist = bot.entity.position.distanceTo(entity.position)
-    if (dist < minDist) { minDist = dist; nearest = entity }
+  for (const e of Object.values(bot.entities)) {
+    if (e === bot.entity) continue
+    if (HOSTILE_MOBS.has(e.name)) return e
   }
-  return nearest
+  return null
 }
 
 export function startCombat(bot, config) {
@@ -34,18 +29,30 @@ export function startCombat(bot, config) {
     clearInterval(_attackLoop)
     clearTimeout(_exitTimer)
 
-    // Attack every 600ms — stays within Minecraft's 1.9+ sword cooldown
     _attackLoop = setInterval(() => {
-      if (!_target?.position || !bot.entity?.position) return
-      const dist = bot.entity.position.distanceTo(_target.position)
-      if (dist <= 4) {
-        try {
-          bot.lookAt(_target.position.offset(0, _target.height ?? 1.6, 0), true)
-          bot.attack(_target)
-          bot.swingArm()
-        } catch (_) {}
+      if (!_target) return
+      const live = bot.entities[_target.id]
+      if (!live) return
+
+      // Knockback packets occasionally corrupt velocity → NaN position; heal in place.
+      const vel = bot.entity?.velocity
+      if (vel && (!Number.isFinite(vel.x) || !Number.isFinite(vel.y) || !Number.isFinite(vel.z))) {
+        vel.x = 0; vel.y = 0; vel.z = 0
       }
-    }, 600)
+      const pos = bot.entity?.position
+      if (pos && (!Number.isFinite(pos.x) || !Number.isFinite(pos.z)) && live.position) {
+        pos.x = live.position.x
+        pos.z = live.position.z
+      }
+
+      try {
+        // Zombies face their target — inverting their yaw is cheaper and more reliable
+        // than computing ours from bot position (which may still be stale).
+        if (Number.isFinite(live.yaw)) bot.look(live.yaw + Math.PI, 0, true)
+        bot.attack(live)
+        bot.swingArm()
+      } catch (_) {}
+    }, 250)
   }
 
   function stopAttacking() {
@@ -53,31 +60,28 @@ export function startCombat(bot, config) {
     clearTimeout(_exitTimer)
     _attackLoop = null
     _target = null
+    try { bot.pathfinder?.stop() } catch (_) {}
     startFollow(bot, config)
   }
 
   bot.on('entityHurt', (entity, source) => {
     if (entity !== bot.entity) return
-    const attacker = source ?? null
-    if (!attacker) return
 
-    const target = findNearestAttacker(bot, attacker)
+    const target = resolveAttacker(bot, source)
     if (!target) return
 
     bot.emit('sei:attacked', { attacker: target })
 
-    if (_target !== target) {
+    if (_target?.id !== target.id) {
       stopFollow()
       startAttacking(target)
     }
 
-    // Exit combat 3s after last hit
     clearTimeout(_exitTimer)
-    _exitTimer = setTimeout(stopAttacking, 3000)
+    _exitTimer = setTimeout(stopAttacking, 1000)
   })
 
-  // Clean up if target entity is removed from world
   bot.on('entityGone', (entity) => {
-    if (entity === _target) stopAttacking()
+    if (_target && entity.id === _target.id) stopAttacking()
   })
 }
