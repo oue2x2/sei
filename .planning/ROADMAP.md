@@ -23,7 +23,12 @@
   3. The bot follows its owner, responds to proximity/addressed chat, auto-eats when hungry, and defends itself when attacked — entirely through scripted handlers, no LLM.
   4. Every pathfinder call has a wall-clock timeout and returns "couldn't reach" as a first-class result rather than hanging.
   5. An event queue + FSM skeleton routes chat, world, and movement-completion events through a single orchestrator ready to be driven by an LLM in Phase 2.
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Project scaffold, config schema, bot connection + reconnect loop
+- [ ] 01-02-PLAN.md — Pathfinder wrapper, action registry, reflex behaviors (follow/chat/eat/combat)
+- [ ] 01-03-PLAN.md — Event-sourced FSM with priority queue, AbortController, behavior wiring
 
 ### Phase 2: Two-Layer LLM Loop
 **Goal**: The personality LLM drives the bot via natural-language hand-off to a local movement LLM that calls actions from the registry, with hard guardrails preventing runaway loops or cost.
@@ -66,7 +71,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Bot Substrate | 0/0 | Not started | - |
+| 1. Bot Substrate | 0/3 | Not started | - |
 | 2. Two-Layer LLM Loop | 0/0 | Not started | - |
 | 3. Memory & Persistence | 0/0 | Not started | - |
 | 4. Electron GUI & Packaging | 0/0 | Not started | - |
@@ -78,4 +83,4 @@
 - Orphans: 0
 
 ---
-*Last updated: 2026-04-24 after initial roadmap creation*
+*Last updated: 2026-04-24 after Phase 1 planning*
