@@ -25,41 +25,59 @@ function findNearestAttacker(bot, source) {
 }
 
 export function startCombat(bot, config) {
-  let _inCombat = false
-  let _combatTimer = null
+  let _target = null
+  let _attackLoop = null
+  let _exitTimer = null
 
-  // mineflayer 4.x uses entityHurt(entity, source) — filter for when the bot itself is hurt
+  function startAttacking(target) {
+    _target = target
+    clearInterval(_attackLoop)
+    clearTimeout(_exitTimer)
+
+    // Attack every 600ms — stays within Minecraft's 1.9+ sword cooldown
+    _attackLoop = setInterval(() => {
+      if (!_target?.position || !bot.entity?.position) return
+      const dist = bot.entity.position.distanceTo(_target.position)
+      if (dist <= 4) {
+        try {
+          bot.lookAt(_target.position.offset(0, _target.height ?? 1.6, 0), true)
+          bot.attack(_target)
+          bot.swingArm()
+        } catch (_) {}
+      }
+    }, 600)
+  }
+
+  function stopAttacking() {
+    clearInterval(_attackLoop)
+    clearTimeout(_exitTimer)
+    _attackLoop = null
+    _target = null
+    startFollow(bot, config)
+  }
+
   bot.on('entityHurt', (entity, source) => {
     if (entity !== bot.entity) return
     const attacker = source ?? null
     if (!attacker) return
 
-    // source from entityHurt may be a weapon/projectile entity — find the nearest real mob instead
     const target = findNearestAttacker(bot, attacker)
     if (!target) return
 
     bot.emit('sei:attacked', { attacker: target })
 
-    if (!_inCombat) {
-      _inCombat = true
+    if (_target !== target) {
       stopFollow()
+      startAttacking(target)
     }
 
-    if (!target.position) return
-    const dist = bot.entity.position.distanceTo(target.position)
-    if (dist <= 4) {
-      try {
-        bot.lookAt(target.position.offset(0, target.height ?? 1.6, 0), true)
-        bot.attack(target)
-        bot.swingArm()
-      } catch (_) {}
-    }
+    // Exit combat 3s after last hit
+    clearTimeout(_exitTimer)
+    _exitTimer = setTimeout(stopAttacking, 3000)
+  })
 
-    // Resume follow 3s after last hit
-    clearTimeout(_combatTimer)
-    _combatTimer = setTimeout(() => {
-      _inCombat = false
-      startFollow(bot, config)
-    }, 3000)
+  // Clean up if target entity is removed from world
+  bot.on('entityGone', (entity) => {
+    if (entity === _target) stopAttacking()
   })
 }
