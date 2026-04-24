@@ -8,6 +8,8 @@ export function startCombat(bot) {
     if (entity !== bot.entity) return
     const attacker = source ?? null
     if (!attacker) return
+    // Don't restart the PVP sequence if already targeting this entity — rapid hits reset the attack timer
+    if (bot.pvp.target === attacker) return
     bot.emit('sei:attacked', { attacker })
     bot.pvp.attack(attacker)
   })
