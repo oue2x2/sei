@@ -3,9 +3,11 @@ import { plugin as pvp } from 'mineflayer-pvp'
 export function startCombat(bot) {
   bot.loadPlugin(pvp)
 
-  bot.on('hurtByEntity', (attacker) => {
+  // mineflayer 4.x uses entityHurt(entity, source) — filter for when the bot itself is hurt
+  bot.on('entityHurt', (entity, source) => {
+    if (entity !== bot.entity) return
+    const attacker = source ?? null
     if (!attacker) return
-    // Emit event for FSM to handle at P0 priority; also immediately defend
     bot.emit('sei:attacked', { attacker })
     bot.pvp.attack(attacker)
   })
