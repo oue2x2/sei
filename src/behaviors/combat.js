@@ -1,5 +1,29 @@
 import { stopFollow, startFollow } from './follow.js'
 
+const HOSTILE_MOBS = new Set([
+  'zombie', 'skeleton', 'creeper', 'spider', 'cave_spider', 'witch',
+  'blaze', 'ghast', 'slime', 'phantom', 'drowned', 'husk', 'stray',
+  'pillager', 'vindicator', 'evoker', 'ravager', 'enderman', 'endermite',
+  'silverfish', 'guardian', 'elder_guardian', 'wither_skeleton', 'hoglin',
+  'piglin_brute', 'zoglin',
+])
+
+/** source from entityHurt may be a weapon/item entity — resolve to the nearest real mob */
+function findNearestAttacker(bot, source) {
+  // If source looks like a real mob, use it directly
+  if (source?.name && HOSTILE_MOBS.has(source.name)) return source
+  // Otherwise find nearest hostile mob within 8 blocks
+  let nearest = null
+  let minDist = 8
+  for (const entity of Object.values(bot.entities)) {
+    if (entity === bot.entity) continue
+    if (!HOSTILE_MOBS.has(entity.name)) continue
+    const dist = bot.entity.position.distanceTo(entity.position)
+    if (dist < minDist) { minDist = dist; nearest = entity }
+  }
+  return nearest
+}
+
 export function startCombat(bot, config) {
   let _inCombat = false
   let _combatTimer = null
@@ -10,18 +34,21 @@ export function startCombat(bot, config) {
     const attacker = source ?? null
     if (!attacker) return
 
-    bot.emit('sei:attacked', { attacker })
+    // source from entityHurt may be a weapon/projectile entity — find the nearest real mob instead
+    const target = findNearestAttacker(bot, attacker)
+    if (!target) return
 
-    // Pause follow so it doesn't cancel the attack movement
+    bot.emit('sei:attacked', { attacker: target })
+
     if (!_inCombat) {
       _inCombat = true
       stopFollow()
     }
 
-    // Immediate retaliation hit — skip lookAt (async delay causes misses), attack packet works without facing
-    const dist = bot.entity.position.distanceTo(attacker.position)
+    const dist = bot.entity.position.distanceTo(target.position)
+    console.log(`[sei/combat] retaliating against ${target.name ?? target.type} dist=${dist.toFixed(1)}`)
     if (dist <= 4) {
-      try { bot.attack(attacker) } catch (_) {}
+      try { bot.attack(target) } catch (e) { console.log('[sei/combat] attack err:', e.message) }
     }
 
     // Resume follow 3s after last hit
