@@ -49,13 +49,18 @@ function createBotInstance(config) {
 
     // Start all reflex behaviors
     startAutoEat(bot)
-    startCombat(bot)
+    startCombat(bot, config)
     startChat(bot, config)
     startFollow(bot, config)
 
     // Wire FSM
     const registry = createDefaultRegistry()
     createFSM(bot, config, registry)
+  })
+
+  bot.on('death', () => {
+    logStatus('Sei died — respawning...')
+    setTimeout(() => bot.respawn(), 500)
   })
 
   bot.on('error', (err) => {
