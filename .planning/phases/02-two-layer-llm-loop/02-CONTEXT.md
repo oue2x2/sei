@@ -127,7 +127,14 @@ Wire the personality LLM (Haiku 3) and movement LLM (Ollama Qwen 2.5) into the P
 
 </deferred>
 
+<addendum>
+## Addendum (2026-04-25, post-research)
+
+- **D-20:** Personality LLM is **`claude-haiku-4-5-20251001`** (Haiku 3 retired 2026-04-20). Pricing $1/$5 per MTok. Note: prompt-cache minimum is 4096 tokens — verify cache hits via `usage.cache_creation_input_tokens` after build.
+- **D-21:** Movement LLM is **Qwen 3.5 — instruct variant only** (e.g. `qwen3.5:7b-instruct` via Ollama). Non-instruct Qwen variants emit thinking traces that break tool-call parsing. Hard requirement: `*-instruct` model tag, not thinking/reasoning variants.
+</addendum>
+
 ---
 
 *Phase: 02-two-layer-llm-loop*
-*Context gathered: 2026-04-25*
+*Context gathered: 2026-04-25 (addendum 2026-04-25)*

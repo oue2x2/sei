@@ -25,20 +25,20 @@
 
 - [ ] **LLM-01**: Personality LLM (Haiku 3) runs on an event-driven loop: triggered by chat message, movement completion, significant world events (attacked, hungry, mob nearby, inventory change), with 10s idle fallback
 - [ ] **LLM-02**: Personality LLM sends natural language movement instructions to movement LLM; never generates code or coordinates
-- [ ] **LLM-03**: Movement LLM (Ollama Qwen 2.5) calls mineflayer functions from a closed Zod-typed action registry
+- [x] **LLM-03**: Movement LLM (Ollama Qwen 2.5) calls mineflayer functions from a closed Zod-typed action registry
 - [ ] **LLM-04**: Orchestrator enforces hard recursion cap (max 5 hops per event) to prevent runaway loops
 - [ ] **LLM-05**: Events are debounced (500ms) to prevent storm of triggers from a single game situation
 - [ ] **LLM-06**: Personality LLM rate-limited to 30 calls/min with token-bucket; excess events queued or dropped
 - [ ] **LLM-07**: One outstanding movement action tracked at a time; new instruction cancels previous via AbortController
-- [ ] **LLM-08**: System degrades gracefully when Ollama is unavailable (API-only fallback using Haiku for both layers)
+- [x] **LLM-08**: System degrades gracefully when Ollama is unavailable (API-only fallback using Haiku for both layers)
 
 ### Personality
 
-- [ ] **PERS-01**: Bot has a configurable name used in-game and consistently in all speech
-- [ ] **PERS-02**: Bot has a configurable backstory that informs its personality responses
-- [ ] **PERS-03**: Bot has a configurable tone preset (friendly / sarcastic / serious / curious)
+- [x] **PERS-01**: Bot has a configurable name used in-game and consistently in all speech
+- [x] **PERS-02**: Bot has a configurable backstory that informs its personality responses
+- [x] **PERS-03**: Bot has a configurable tone preset (friendly / sarcastic / serious / curious)
 - [ ] **PERS-04**: Bot makes rate-limited proactive observations when idle near owner (10s fallback loop)
-- [ ] **PERS-05**: Bot's personality prompt is stable across sessions and forms the leading cached prefix for Anthropic prompt caching
+- [x] **PERS-05**: Bot's personality prompt is stable across sessions and forms the leading cached prefix for Anthropic prompt caching
 
 ### Memory
 
