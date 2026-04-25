@@ -8,8 +8,8 @@ progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
-  percent: 58
+  completed_plans: 5
+  percent: 67
 ---
 
 # State: Sei
@@ -22,7 +22,7 @@ progress:
 ## Current Position
 
 Phase: 02 (two-layer-llm-loop) — EXECUTING
-Plan: 2 of 3 (02-01 complete)
+Plan: 3 of 3 (02-01, 02-02 complete)
 
 - **Phase:** 2 — Two-Layer LLM Loop
 - **Plan:** 3 plans in 3 waves (02-01, 02-02, 02-03); ready for /gsd-execute-phase 2
@@ -40,7 +40,7 @@ Plan: 2 of 3 (02-01 complete)
 
 - Requirements coverage: 36/36 (100%)
 - Phases defined: 4
-- Plans executed: 4
+- Plans executed: 5
 - Phases complete: 1
 
 ## Accumulated Context
@@ -61,6 +61,9 @@ Plan: 2 of 3 (02-01 complete)
 - ANTHROPIC_API_KEY env-var fallback supported in loadConfig (schema stays strict)
 - Per-call new Ollama() instance to isolate abort() scope (Pitfall 3)
 - Anthropic cached system prefix: 3 blocks, cache_control ephemeral on LAST block (D-18)
+- Hop counter is chain-scoped (keyed by _chainId) not per-dispatch — closes LLM-04 leak across FSM completion re-entries
+- Personality LLM tools restricted to say/handOffToMovement/setGoals; mineflayer registry actions reserved for movement layer (D-04)
+- setGoals lives in the registry but movement subRegistry filters it out
 
 ### Todos
 
@@ -75,8 +78,8 @@ Plan: 2 of 3 (02-01 complete)
 
 ## Session Continuity
 
-- **Last action:** Completed 02-01-PLAN.md — LLM primitives (config schema, persona renderer, Zod->JSON Schema bridge, Anthropic + Ollama clients with timeouts and AbortSignal)
-- **Next action:** Execute 02-02-PLAN.md (Wave 2 orchestrator)
+- **Last action:** Completed 02-02-PLAN.md — orchestrator + primitives (goal store, token bucket, debouncer, circuit breaker, chain-scoped hop tracker, setGoals registry action, createOrchestrator)
+- **Next action:** Execute 02-03-PLAN.md (Wave 3 — wire orchestrator into FSM + ingestion debounce + verification harness)
 
 ---
-*Last updated: 2026-04-25 — Plan 02-01 complete*
+*Last updated: 2026-04-25 — Plan 02-02 complete*

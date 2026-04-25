@@ -44,7 +44,7 @@ Plans:
 
 Plans:
 - [x] 02-01-PLAN.md — Config schema, persona renderer, Zod->JSON Schema bridge, Anthropic + Ollama clients
-- [ ] 02-02-PLAN.md — Goal store, rate limiter, debouncer, circuit breaker, setGoals action, orchestrator
+- [x] 02-02-PLAN.md — Goal store, rate limiter, debouncer, circuit breaker, setGoals action, orchestrator
 - [ ] 02-03-PLAN.md — Wire orchestrator into FSM + ingestion debounce + verification harness
 
 ### Phase 3: Memory & Persistence
@@ -77,7 +77,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Bot Substrate | 3/3 | Complete | 2026-04-24 |
-| 2. Two-Layer LLM Loop | 1/3 | In progress | - |
+| 2. Two-Layer LLM Loop | 2/3 | In progress | - |
 | 3. Memory & Persistence | 0/0 | Not started | - |
 | 4. Electron GUI & Packaging | 0/0 | Not started | - |
 
@@ -88,4 +88,4 @@ Plans:
 - Orphans: 0
 
 ---
-*Last updated: 2026-04-25 after Phase 2 plan 01 execution*
+*Last updated: 2026-04-25 after Phase 2 plan 02 execution*
