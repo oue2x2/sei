@@ -125,20 +125,12 @@ export function createFSM(bot, config, registry) {
       }
 
       case 'sei:chat_received': {
-        // P1: scripted acknowledgement in Phase 1
-        // Phase 2 replaces this with LLM call
-        if (!signal.aborted) {
-          const response = data.addressed
-            ? `Hello, ${data.username}!`
-            : `(heard: ${data.message})`
-          bot.chat(response)
-        }
+        // Phase 2: handled by orchestrator via sei:dispatch above
         break
       }
 
       case 'sei:idle': {
-        // P3: idle tick — Phase 2 will have personality LLM respond here
-        console.log('[sei/fsm] P3 idle tick')
+        // Phase 2: handled by orchestrator via sei:dispatch above
         break
       }
 

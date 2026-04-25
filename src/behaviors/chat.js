@@ -20,8 +20,12 @@ export function startChat(bot, config) {
     }
 
     if (ownerSpoke || addressed || nearby) {
-      // Phase 1: scripted acknowledgement; Phase 2 replaces this with LLM call
-      bot.emit('sei:chat_received', { username, message, addressed, ownerSpoke })
+      const payload = { username, message, addressed, ownerSpoke }
+      if (bot._seiDebouncer) {
+        bot._seiDebouncer.debounce(`chat:${username}`, payload, (p) => bot.emit('sei:chat_received', p))
+      } else {
+        bot.emit('sei:chat_received', payload)
+      }
     }
   })
 }

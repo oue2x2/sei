@@ -70,7 +70,12 @@ export function startCombat(bot, config) {
     const target = resolveAttacker(bot, source)
     if (!target) return
 
-    bot.emit('sei:attacked', { attacker: target })
+    const attackedPayload = { attacker: target }
+    if (bot._seiDebouncer) {
+      bot._seiDebouncer.debounce(`attacked:${target?.username ?? 'unknown'}`, attackedPayload, (p) => bot.emit('sei:attacked', p))
+    } else {
+      bot.emit('sei:attacked', attackedPayload)
+    }
 
     if (_target?.id !== target.id) {
       stopFollow()

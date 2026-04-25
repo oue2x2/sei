@@ -6,6 +6,7 @@ import { startAutoEat } from './behaviors/autoEat.js'
 import { startCombat } from './behaviors/combat.js'
 import { createDefaultRegistry } from './registry.js'
 import { createFSM } from './fsm.js'
+import { createOrchestrator } from './llm/orchestrator.js'
 
 let _bot = null
 let _reconnectTimer = null
@@ -53,6 +54,11 @@ function createBotInstance(config) {
       startFollow(bot, config)
       const registry = createDefaultRegistry()
       createFSM(bot, config, registry)
+      const orchestrator = createOrchestrator({ bot, config, registry, logger: { info: (m) => logStatus(m), warn: (m) => logStatus(m), error: (m) => logStatus(m) } })
+      bot.on('sei:dispatch', ({ event, data, signal }) => { orchestrator.handleDispatch(event, data, signal) })
+      bot._seiDebouncer = orchestrator.debouncer
+      orchestrator.start().catch(err => logStatus(`Orchestrator start failed: ${err.message}`))
+      logStatus(`Sei online. Executor: ${orchestrator.executorStatus}`)
     } else {
       // respawn after death — restart follow only
       startFollow(bot, config)
