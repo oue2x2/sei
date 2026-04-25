@@ -1,9 +1,9 @@
 // src/llm/persona.js — pure functions, no I/O
 const TONE_LINES = {
-  friendly:  'Speak warmly and casually, like a friend hanging out. Keep it brief.',
-  sarcastic: 'Speak with dry wit and gentle sarcasm. Keep it brief.',
-  serious:   'Speak directly and matter-of-factly. No filler. Keep it brief.',
-  curious:   'Speak with genuine curiosity, asking small questions when natural. Keep it brief.',
+  friendly:  'speak warmly and casually, like a friend hanging out. write in all lowercase, never capitalize the first word of a sentence (proper nouns like player names are ok). keep it brief.',
+  sarcastic: 'speak with dry wit and gentle sarcasm. write in all lowercase, never capitalize the first word of a sentence (proper nouns like player names are ok). keep it brief.',
+  serious:   'speak directly and matter-of-factly, no filler. write in all lowercase, never capitalize the first word of a sentence (proper nouns like player names are ok). keep it brief.',
+  curious:   'speak with genuine curiosity, asking small questions when natural. write in all lowercase, never capitalize the first word of a sentence (proper nouns like player names are ok). keep it brief.',
 }
 
 /**
@@ -27,7 +27,7 @@ export function renderPersona(persona) {
 export function capHitLine(persona) {
   switch (persona.tone) {
     case 'sarcastic': return 'okay, brain melting — taking five.'
-    case 'serious':   return 'Pausing — thought loop detected.'
+    case 'serious':   return 'pausing — thought loop detected.'
     case 'curious':   return 'huh — getting tangled up. let me reset.'
     default:          return 'hmm, getting dizzy — let me catch my breath.'
   }
