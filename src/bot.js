@@ -13,14 +13,35 @@ let _reconnectTimer = null
 let _stopped = false
 
 /** Plain-English translation of mineflayer disconnect reasons */
+/** Extract human-readable text from mineflayer kick/disconnect reasons,
+ *  which are often chat-component objects ({text, translate, extra:[...]})
+ *  rather than plain strings. String(obj) yields '[object Object]' which
+ *  is useless to the user.
+ */
+function extractReasonText(reason) {
+  if (reason == null) return ''
+  if (typeof reason === 'string') return reason
+  if (typeof reason === 'object') {
+    if (typeof reason.text === 'string' && reason.text.length) return reason.text
+    if (typeof reason.translate === 'string' && reason.translate.length) return reason.translate
+    if (Array.isArray(reason.extra)) {
+      const joined = reason.extra.map(e => (e && typeof e.text === 'string') ? e.text : '').join('')
+      if (joined.length) return joined
+    }
+    try { return JSON.stringify(reason) } catch (_) { return String(reason) }
+  }
+  return String(reason)
+}
+
 function humanizeReason(reason) {
   if (!reason) return 'Unknown reason'
-  const r = String(reason).toLowerCase()
+  const text = extractReasonText(reason)
+  const r = text.toLowerCase()
   if (r.includes('econnrefused') || r.includes('connect')) return 'Could not reach server — check host/port'
   if (r.includes('timeout')) return 'Connection timed out — server may be unreachable'
-  if (r.includes('kicked')) return `Kicked: ${reason}`
+  if (r.includes('kicked')) return `Kicked: ${text}`
   if (r.includes('invalid session') || r.includes('auth')) return 'Authentication failed — check auth mode'
-  return String(reason)
+  return text || 'Unknown reason'
 }
 
 function logStatus(msg) {
