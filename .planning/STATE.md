@@ -3,13 +3,13 @@
 ## Project Reference
 
 - **Core Value:** A Minecraft companion that feels like a real character — it remembers you, reacts to the world, and acts with personality, not like a scripted bot.
-- **Current Focus:** Phase 1 — Bot Substrate (mineflayer + action registry + FSM, no LLMs)
+- **Current Focus:** Phase 2 — Two-Layer LLM Loop (Haiku personality + Qwen movement)
 
 ## Current Position
 
-- **Phase:** 1 — Bot Substrate
-- **Plan:** 01-01, 01-02, 01-03 complete
-- **Status:** Phase 1 complete; ready for Phase 2
+- **Phase:** 2 — Two-Layer LLM Loop
+- **Plan:** Context gathered (02-CONTEXT.md); ready for /gsd-plan-phase 2
+- **Status:** Phase 1 complete; Phase 2 context locked
 - **Progress:** Phases 1/4 complete
 
 ```
@@ -53,8 +53,8 @@
 
 ## Session Continuity
 
-- **Last action:** Phase 1 plan 03 executed — event-sourced FSM, priority queue, AbortController, behavior wiring (2 tasks, 2 files)
-- **Next action:** Plan and execute Phase 2 (Two-Layer LLM Loop)
+- **Last action:** Phase 2 context gathered (tool-calling, hand-off, idle/goal model, fallback, persona, dev/test) — 02-CONTEXT.md committed
+- **Next action:** /gsd-plan-phase 2
 
 ---
-*Last updated: 2026-04-24 after Phase 1 plan 03 execution — Phase 1 complete*
+*Last updated: 2026-04-25 — Phase 2 context locked*
