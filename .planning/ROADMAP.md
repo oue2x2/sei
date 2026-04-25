@@ -7,7 +7,7 @@
 ## Phases
 
 - [x] **Phase 1: Bot Substrate** - Mineflayer connection, action registry, FSM, and scripted reflex behavior (no LLMs yet)
-- [ ] **Phase 2: Two-Layer LLM Loop** - Personality LLM (Haiku 3) + movement LLM (Ollama Qwen) wired into the FSM with guardrails
+- [x] **Phase 2: Two-Layer LLM Loop** - Personality LLM (Haiku 3) + movement LLM (Ollama Qwen) wired into the FSM with guardrails
 - [ ] **Phase 3: Memory & Persistence** - SQLite-backed identity, owner relationship, world progression, and LLM-directed compaction
 - [ ] **Phase 4: Electron GUI & Packaging** - Setup form, Start/Stop, live log viewer, and bundled .dmg/.exe distribution
 
@@ -45,7 +45,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md — Config schema, persona renderer, Zod->JSON Schema bridge, Anthropic + Ollama clients
 - [x] 02-02-PLAN.md — Goal store, rate limiter, debouncer, circuit breaker, setGoals action, orchestrator
-- [ ] 02-03-PLAN.md — Wire orchestrator into FSM + ingestion debounce + verification harness
+- [x] 02-03-PLAN.md — Wire orchestrator into FSM + ingestion debounce + verification harness
 
 ### Phase 3: Memory & Persistence
 **Goal**: The bot remembers its identity, owner, and world progression across restarts via better-sqlite3, with compaction timing decided by the personality LLM at semantic boundaries.
@@ -77,7 +77,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Bot Substrate | 3/3 | Complete | 2026-04-24 |
-| 2. Two-Layer LLM Loop | 2/3 | In progress | - |
+| 2. Two-Layer LLM Loop | 3/3 | Complete | 2026-04-25 |
 | 3. Memory & Persistence | 0/0 | Not started | - |
 | 4. Electron GUI & Packaging | 0/0 | Not started | - |
 
@@ -88,4 +88,4 @@ Plans:
 - Orphans: 0
 
 ---
-*Last updated: 2026-04-25 after Phase 2 plan 02 execution*
+*Last updated: 2026-04-25 — Phase 2 complete (all 3 plans).*

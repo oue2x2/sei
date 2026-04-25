@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-04-25T21:00:00.000Z"
+last_updated: "2026-04-25T23:30:00.000Z"
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 5
-  percent: 67
+  completed_plans: 6
+  percent: 100
 ---
 
 # State: Sei
@@ -17,22 +17,23 @@ progress:
 ## Project Reference
 
 - **Core Value:** A Minecraft companion that feels like a real character — it remembers you, reacts to the world, and acts with personality, not like a scripted bot.
-- **Current Focus:** Phase 02 — two-layer-llm-loop
+- **Current Focus:** Phase 3 — Memory & Persistence (or queue Phase 2.5 first)
 
 ## Current Position
 
-Phase: 02 (two-layer-llm-loop) — EXECUTING
-Plan: 3 of 3 (02-01, 02-02 complete)
+Phase: 02 (two-layer-llm-loop) — COMPLETE (3/3 plans)
+Next: Phase 3 — Memory & Persistence (or insert Phase 2.5 for action-registry expansion first)
 
-- **Phase:** 2 — Two-Layer LLM Loop
-- **Plan:** 3 plans in 3 waves (02-01, 02-02, 02-03); ready for /gsd-execute-phase 2
-- **Status:** Executing Phase 02
-- **Progress:** Phases 1/4 complete
+- **Phase:** 3 — Memory & Persistence (next), or Phase 2.5 (action-registry expansion) if inserted
+- **Plan:** Phase 2 complete (02-01, 02-02, 02-03 all done)
+- **Status:** Phase 2 complete; awaiting Phase 2.5 insertion or Phase 3 kickoff
+- **Progress:** Phases 2/4 complete
+- **Next action:** `/gsd-insert-phase 2.5` to plan action-registry expansion (mining, inventory, follow-gating), OR `/gsd-discuss-phase 3` to begin memory work directly.
 
 ```
 [DONE] Phase 1  Bot Substrate
-[____] Phase 2  Two-Layer LLM Loop    ← next
-[____] Phase 3  Memory & Persistence
+[DONE] Phase 2  Two-Layer LLM Loop
+[____] Phase 3  Memory & Persistence    ← next (or insert 2.5 first)
 [____] Phase 4  Electron GUI & Packaging
 ```
 
@@ -40,8 +41,8 @@ Plan: 3 of 3 (02-01, 02-02 complete)
 
 - Requirements coverage: 36/36 (100%)
 - Phases defined: 4
-- Plans executed: 5
-- Phases complete: 1
+- Plans executed: 6
+- Phases complete: 2
 
 ## Accumulated Context
 
@@ -78,8 +79,8 @@ Plan: 3 of 3 (02-01, 02-02 complete)
 
 ## Session Continuity
 
-- **Last action:** Completed 02-02-PLAN.md — orchestrator + primitives (goal store, token bucket, debouncer, circuit breaker, chain-scoped hop tracker, setGoals registry action, createOrchestrator)
-- **Next action:** Execute 02-03-PLAN.md (Wave 3 — wire orchestrator into FSM + ingestion debounce + verification harness)
+- **Last action:** Completed Phase 2 — wired orchestrator into FSM, shipped verify-phase2 harness, fixed three Phase 1 substrate bugs surfaced by live testing (lowercase persona tone for PERS-01/02 stability, combat NaN skip-instead-of-rewrite, kick-reason humanization for chat-component objects)
+- **Next action:** `/gsd-insert-phase 2.5` to plan action-registry expansion (mining, inventory, follow-gating, additional registry actions) before Phase 3, OR `/gsd-discuss-phase 3` to begin Memory & Persistence directly. Rolling chat context is already part of Phase 3 scope (MEM-01/02).
 
 ---
-*Last updated: 2026-04-25 — Plan 02-02 complete*
+*Last updated: 2026-04-25 — Phase 2 complete (3/3 plans). Plan 02-03 closed out with three substrate fixes.*
