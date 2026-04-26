@@ -63,7 +63,12 @@ Plans:
   3. Personality LLM avoids requesting capabilities outside the registry's intent — verified with a small adversarial prompt set.
   4. All new actions are timeout-wrapped, AbortController-cancellable, and respect the existing FSM priority queue.
   5. No regression in Phase 2 guardrails (recursion cap, debounce, rate limit, circuit breaker).
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 2.1-01-PLAN.md — Observers, snapshot composer, targeting resolver, cached-prefix extension (capability/primer/learning)
+- [ ] 2.1-02-PLAN.md — 12 tier-1 action handlers (dig/place/equip/attack/consume/lookAt/drop/activate/sleep + container trio) registered in createDefaultRegistry
+- [ ] 2.1-03-PLAN.md — Wire snapshot+cached-prefix+look()+container cleanup into orchestrator; adversarial verification harness
 **Conflict review**: Checked against Phase 3 (Memory) and Phase 4 (GUI). No conflict — Phase 3 still owns SQLite persistence and LLM-directed compaction; this phase only adds in-context observations. Phase 4 unaffected.
 
 ### Phase 3: Memory & Persistence
