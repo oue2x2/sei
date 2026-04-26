@@ -1,5 +1,19 @@
 import { z } from 'zod'
 import { goTo } from './behaviors/pathfind.js'
+import { digAction } from './behaviors/dig.js'
+import { placeBlockAction } from './behaviors/place.js'
+import { equipAction } from './behaviors/equip.js'
+import { attackEntityAction } from './behaviors/attack.js'
+import { consumeItemAction } from './behaviors/consume.js'
+import { lookAtAction } from './behaviors/lookAt.js'
+import { dropItemAction } from './behaviors/drop.js'
+import { activateItemAction } from './behaviors/activate.js'
+import { sleepAction } from './behaviors/sleep.js'
+import {
+  openContainerAction,
+  depositItemAction,
+  withdrawItemAction,
+} from './behaviors/container.js'
 
 /**
  * A closed action registry. Only explicitly registered actions can be executed.
@@ -50,7 +64,22 @@ export function createRegistry() {
 
 export const ActionRegistry = createRegistry
 
-/** Pre-built registry with all Phase 1 actions registered. */
+// Standard target shape consumed by resolveBlock (D-25).
+const TargetShape = z.object({
+  block: z.string().optional(),
+  target: z.string().optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+  z: z.number().optional(),
+  maxDistance: z.number().min(1).max(64).default(32),
+}).refine(
+  (a) => a.block || a.target || (a.x != null && a.y != null && a.z != null),
+  { message: 'must specify block, #N target, or x/y/z' }
+)
+
+const Vec3Shape = z.object({ x: z.number(), y: z.number(), z: z.number() })
+
+/** Pre-built registry with all Phase 1 + 2.1 actions registered. */
 export function createDefaultRegistry() {
   const registry = createRegistry()
 
@@ -81,6 +110,91 @@ export function createDefaultRegistry() {
       if (args.op === 'add')    return { ok: store.add(args.list, args.goal),    snapshot: store.snapshot() }
       if (args.op === 'remove') return { ok: store.remove(args.list, args.goal), snapshot: store.snapshot() }
     }
+  )
+
+  registry.register('dig', TargetShape, digAction)
+
+  registry.register(
+    'placeBlock',
+    z.object({
+      block: z.string(),
+      against: TargetShape,
+      faceVector: Vec3Shape.optional(),
+    }),
+    placeBlockAction
+  )
+
+  registry.register(
+    'equip',
+    z.object({
+      item: z.string(),
+      destination: z.enum(['hand', 'off-hand', 'head', 'torso', 'legs', 'feet']),
+    }),
+    equipAction
+  )
+
+  registry.register(
+    'attackEntity',
+    z.object({
+      entity: z.string().optional(),
+      target: z.string().optional(),
+      entity_id: z.number().optional(),
+    }).refine(
+      (a) => a.entity || a.target || a.entity_id != null,
+      { message: 'must specify entity name, #N target, or entity_id' }
+    ),
+    attackEntityAction
+  )
+
+  registry.register(
+    'consumeItem',
+    z.object({ item: z.string().optional() }),
+    consumeItemAction
+  )
+
+  registry.register(
+    'lookAt',
+    z.object({
+      x: z.number().optional(),
+      y: z.number().optional(),
+      z: z.number().optional(),
+      entity: z.string().optional(),
+      target: z.string().optional(),
+    }),
+    lookAtAction
+  )
+
+  registry.register(
+    'dropItem',
+    z.object({
+      item: z.string(),
+      count: z.number().int().min(1).max(64).default(1),
+    }),
+    dropItemAction
+  )
+
+  registry.register('activateItem', z.object({}), activateItemAction)
+
+  registry.register('sleep', TargetShape, sleepAction)
+
+  registry.register('openContainer', TargetShape, openContainerAction)
+
+  registry.register(
+    'depositItem',
+    z.object({
+      item: z.string(),
+      count: z.number().int().min(1).max(64).default(1),
+    }),
+    depositItemAction
+  )
+
+  registry.register(
+    'withdrawItem',
+    z.object({
+      item: z.string(),
+      count: z.number().int().min(1).max(64).default(1),
+    }),
+    withdrawItemAction
   )
 
   return registry
