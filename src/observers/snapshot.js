@@ -10,16 +10,31 @@ import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 const MAX_BLOCKS = 8
 const MAX_ENTITIES = 6
 
+// Compact inline rendering of inflight args (avoid pulling describeArgs from
+// inflight.js to keep snapshot.js dependency-free of llm/).
+function describeInflightArgs(args) {
+  if (!args || typeof args !== 'object') return ''
+  const parts = []
+  if (typeof args.block === 'string') parts.push(args.block)
+  else if (typeof args.target === 'string') parts.push(args.target)
+  else if (typeof args.item === 'string') parts.push(args.item)
+  else if (typeof args.entity === 'string') parts.push(args.entity)
+  if (typeof args.x === 'number' && typeof args.y === 'number' && typeof args.z === 'number') {
+    parts.push(`@${args.x},${args.y},${args.z}`)
+  }
+  return parts.join(' ').slice(0, 64)
+}
+
 /**
  * Compose a compact snapshot of the bot's current world state.
  * Side effect: replaces the targeting handle table with the #N entries from this snapshot.
  *
  * @param {import('mineflayer').Bot} bot
- * @param {{ goals?:{owner_goals?:string[], self_goals?:string[]}, lastActionResult?:string }} [opts]
+ * @param {{ goals?:{owner_goals?:string[], self_goals?:string[]}, lastActionResult?:string, inFlight?:{name:string,args:any,startedAt:number}|null }} [opts]
  * @returns {string}
  */
 export function composeSnapshot(bot, opts = {}) {
-  const { goals, lastActionResult } = opts
+  const { goals, lastActionResult, inFlight } = opts
   const v = vitals(bot)
   const w = world(bot)
   const held = heldItem(bot)
@@ -42,6 +57,14 @@ export function composeSnapshot(bot, opts = {}) {
     lines.push(`holding: ${held.name}${dur}`)
   } else {
     lines.push('holding: nothing')
+  }
+
+  // In-flight action — surfaced early so the LLM sees it before reasoning
+  // about new actions. Format: `in_flight: <name> <argblurb> (<elapsed>s)`.
+  if (inFlight && typeof inFlight.name === 'string') {
+    const elapsed = Math.max(0, (Date.now() - (inFlight.startedAt ?? Date.now())) / 1000).toFixed(1)
+    const blurb = describeInflightArgs(inFlight.args)
+    lines.push(`in_flight: ${inFlight.name}${blurb ? ' ' + blurb : ''} (${elapsed}s)`)
   }
 
   // Inventory

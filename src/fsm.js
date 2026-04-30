@@ -50,6 +50,21 @@ export function createFSM(bot, config, registry) {
   // ─── Event ingestion ─────────────────────────────────────────────────────
 
   function enqueue(priority, event, data) {
+    // Owner chat preempts in-flight non-P0 work. Without this, a chat-driven
+    // dispatch (already P1) cannot be aborted by a fresh owner chat (also P1)
+    // — they queue equally and the in-flight movement keeps running until it
+    // finishes, ignoring the new instruction. Promoting owner chat to P0
+    // *only when there is a non-P0 action in flight* makes processNext fire
+    // the abort path so action handlers see signal.aborted and bail with
+    // 'aborted', clearing inflight for the new chat dispatch.
+    if (
+      event === 'sei:chat_received' &&
+      data?.ownerSpoke === true &&
+      currentAction &&
+      currentAction.priority > Priority.P0_SAFETY
+    ) {
+      priority = Priority.P0_SAFETY
+    }
     queue.push({ priority, event, data })
     // Sort by priority ascending (lower number = higher priority)
     queue.sort((a, b) => a.priority - b.priority)

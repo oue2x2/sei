@@ -9,7 +9,8 @@ import { renderPersona, capHitLine, capabilityParagraph, minecraftPrimer, stillL
 import { buildAnthropicTools, buildOllamaTools } from './schemaBridge.js'
 import { composeSnapshot } from '../observers/snapshot.js'
 import { closeContainerSession } from '../behaviors/container.js'
-import { pauseFollow } from '../behaviors/follow.js'
+import { pauseFollow, setInflightProvider } from '../behaviors/follow.js'
+import { createInflightTracker } from './inflight.js'
 import { logChatOut, logActionResult } from '../log.js'
 
 const SYSTEM_INSTRUCTIONS = [
@@ -21,6 +22,8 @@ const SYSTEM_INSTRUCTIONS = [
   'When the owner sets a goal or you decide on a self-goal, call setGoals.',
   'You may call multiple tools in one response. Keep responses brief — under 3 sentences of internal reasoning.',
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
+  'If the snapshot shows an `in_flight:` line, your body is already doing that thing — do NOT hand off another movement intent this turn. You may `say` to acknowledge or report progress, then return.',
+  'When the player gives a new instruction, any prior in-flight work is automatically aborted by the runtime — start fresh, do not try to resume the old task.',
 ].join('\n')
 
 const MOVEMENT_SYSTEM = [
@@ -36,7 +39,11 @@ const MOVEMENT_SYSTEM = [
 const COMBINED_SYSTEM = [
   'You are a Minecraft companion bot. You react to chat, world events, and idle ticks.',
   'You decide WHAT to do at a high level AND directly invoke the body actions to do it — there is no separate movement layer in this mode.',
-  'In a single response you may: speak in chat (`say`), set goals (`setGoals`), refresh your snapshot (`look`), and/or invoke any movement action (e.g. `goTo`, `dig`, `attack`, `follow`, `equip`, `place`, `consume`, `sleep`, etc.).',
+  'In a single response you may: speak in chat (`say`), set goals (`setGoals`), refresh your snapshot (`look`), and/or invoke movement actions (e.g. `goTo`, `dig`, `attack`, `equip`, `place`, `consume`, `sleep`, etc.).',
+  'Movement rule: in one response you may emit AT MOST ONE TYPE of movement action. Multiple calls of the SAME movement action are fine and recommended (e.g. ten `dig` calls to chop a whole tree). Mixing different movement types (e.g. `dig` and `goTo` together) is not — pick one type per turn. Multiple same-type calls run sequentially: each waits for the prior to finish.',
+  'In-flight rule: if the snapshot shows an `in_flight:` line, the bot is already doing that thing. Do NOT call any movement action this turn. You may `say` to the player (e.g. "still chopping the tree, give me a sec") or emit no tool calls.',
+  'Interrupt rule: when the player gives a new instruction mid-task, the runtime aborts whatever was in flight automatically. Treat it as a fresh start — do not try to resume the old work, just respond to the new ask.',
+  'You may always `say` to the player, even while busy — use it to acknowledge new instructions or report progress.',
   'Pick the smallest set of tool calls that fulfils the situation. Never describe coordinates or action names in prose; just call the tools.',
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
   'Keep any internal reasoning under 3 sentences.',
@@ -70,6 +77,14 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
   // Leading-edge throttle for interruptive events (e.g. attack bursts) — first
   // hit fires immediately; rapid follow-ups within debounce_ms are suppressed.
   const ingressThrottle = createThrottle(config.llm.debounce_ms)
+  // Tracks the currently-running action so the snapshot can render `in_flight:`
+  // and follow.js can pause for the entire action lifecycle (not just the
+  // dispatch lifecycle). See ./inflight.js.
+  const inflight = createInflightTracker()
+  // Wire follow's lifecycle gate — follow yields while a *movement* action
+  // is in flight. Personality-only entries (setGoals/say/look) don't pause
+  // follow; see currentBlocking() in inflight.js.
+  setInflightProvider(() => inflight.currentBlocking() != null)
   const chains = createChainTracker({ maxHops: config.llm.max_hops })
 
   // Personality-only tools: setGoals, say, handOffToMovement
@@ -252,10 +267,22 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
     if (!isContinuation) {
       try { await closeContainerSession() } catch {}
     }
-    // Pause follow while a chain is in flight so its 1s tick doesn't clobber
-    // pathfinding goals set by movement actions (dig pickup walk, attack chase, etc.).
-    pauseFollow(true)
+    // Follow is now gated by the inflight tracker (see setInflightProvider at
+    // construction). The dispatch lifecycle no longer pauses follow directly;
+    // pause now lasts for the *action* lifecycle so dig's approach + swing +
+    // pickup walk all complete without follow stealing the pathfinder.
     let nextUser = renderUserContext(event, data, goals.snapshot())
+
+    /** Run a registry action with inflight tracking so the snapshot reflects
+     *  what the bot is doing right now AND follow yields for its full lifecycle. */
+    async function runWithInflight(name, args, execOpts) {
+      const handle = inflight.start({ name, args })
+      try {
+        return await registry.execute(name, args, bot, execOpts)
+      } finally {
+        inflight.end(handle)
+      }
+    }
 
     function bump() {
       const r = chains.increment(chainId)
@@ -287,7 +314,7 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
         }
         for (const c of goalCalls) {
           try {
-            const result = await registry.execute('setGoals', c.input, bot, { ...config, _goalStore: goals })
+            const result = await runWithInflight('setGoals', c.input, { ...config, _goalStore: goals })
             if (typeof result === 'string') lastActionResult = result
             else if (result && typeof result.ok !== 'undefined') lastActionResult = `setGoals:${result.ok ? 'ok' : 'fail'}`
           } catch (err) {
@@ -304,7 +331,7 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
         for (const call of movementCalls) {
           if (signal.aborted) { try { await closeContainerSession() } catch {}; chains.end(chainId); return }
           try {
-            const result = await registry.execute(call.name, call.input, bot, {
+            const result = await runWithInflight(call.name, call.input, {
               ...config,
               _goalStore: goals,
               _chainId: chainId,
@@ -339,7 +366,7 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
       }
       for (const c of goalCalls) {
         try {
-          const result = await registry.execute('setGoals', c.input, bot, { ...config, _goalStore: goals })
+          const result = await runWithInflight('setGoals', c.input, { ...config, _goalStore: goals })
           if (typeof result === 'string') lastActionResult = result
           else if (result && typeof result.ok !== 'undefined') lastActionResult = `setGoals:${result.ok ? 'ok' : 'fail'}`
         } catch (err) {
@@ -371,7 +398,7 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
       for (const call of movement.toolCalls) {
         if (signal.aborted) { try { await closeContainerSession() } catch {}; chains.end(chainId); return }
         try {
-          const result = await registry.execute(call.name, call.args, bot, {
+          const result = await runWithInflight(call.name, call.args, {
             ...config,
             _goalStore: goals,
             _chainId: chainId,
@@ -405,8 +432,6 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
       logger.error(`[sei/orch] dispatch error on ${event}: ${err.message}`)
       try { await closeContainerSession() } catch {}
       chains.end(chainId)
-    } finally {
-      pauseFollow(false)
     }
   }
 
@@ -416,7 +441,7 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
   function renderUserContext(event, data, goalsSnapshot) {
     let snapshot = ''
     try {
-      snapshot = composeSnapshot(bot, { goals: goalsSnapshot, lastActionResult })
+      snapshot = composeSnapshot(bot, { goals: goalsSnapshot, lastActionResult, inFlight: inflight.current() })
     } catch (err) {
       logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
       snapshot = '(snapshot unavailable)'
@@ -437,7 +462,8 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
     goals,
     debouncer: ingressDebouncer,
     throttle: ingressThrottle,
-    _internal: { circuit, personalityBucket, callPersonality, callMovement, callCombined, chains },
+    inflight,
+    _internal: { circuit, personalityBucket, callPersonality, callMovement, callCombined, chains, inflight },
   }
 }
 
