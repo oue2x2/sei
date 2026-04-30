@@ -5,6 +5,7 @@
 // on chain end / abort to enforce the "never overlap" invariant globally.
 import mcDataLib from 'minecraft-data'
 import { resolveBlock, isStaleHandle } from '../observers/targeting.js'
+import { reason } from '../llm/errStrings.js'
 
 export const OPEN_TIMEOUT_MS = 6000
 export const TRANSFER_TIMEOUT_MS = 4000
@@ -50,7 +51,9 @@ export async function openContainerAction(args, bot, config) {
   if (!target) return isStaleHandle(args) ? 'stale target' : 'no target'
 
   const dist = bot.entity?.position?.distanceTo?.(target.position)
-  if (typeof dist === 'number' && dist > REACH) return 'target out of reach'
+  if (typeof dist === 'number' && dist > REACH) {
+    return `target out of reach (${dist.toFixed(1)}m, need ≤${REACH})`
+  }
 
   const timeoutMs = args.timeout_ms ?? config?.openContainer_timeout_ms ?? OPEN_TIMEOUT_MS
   const targetName = target.name ?? 'container'
@@ -61,7 +64,10 @@ export async function openContainerAction(args, bot, config) {
       SESSION.blockPos = target.position
       return `opened ${targetName}`
     })
-    .catch(() => `cannot open ${targetName}`)
+    .catch((err) => {
+      const r = reason(err)
+      return r ? `cannot open ${targetName}: ${r}` : `cannot open ${targetName}`
+    })
 
   const tmo = new Promise((r) => setTimeout(async () => {
     await closeContainerSession()
@@ -91,7 +97,10 @@ export async function depositItemAction(args, bot, config) {
 
   const op = SESSION.container.deposit(itemId, null, actualCount)
     .then(() => `deposited ${actualCount} ${item}`)
-    .catch(() => 'deposit failed')
+    .catch((err) => {
+      const r = reason(err)
+      return r ? `deposit ${item} failed: ${r}` : `deposit ${item} failed`
+    })
 
   // Per plan: do NOT close session on transfer timeout — let chain-end cleanup handle it.
   const tmo = new Promise((r) => setTimeout(() => r('timeout'), timeoutMs))
@@ -124,8 +133,9 @@ export async function withdrawItemAction(args, bot, config) {
     .then(() => `withdrew ${count} ${item}`)
     .catch((err) => {
       const msg = String(err?.message || err).toLowerCase()
-      if (msg.includes('no room')) return 'inventory full'
-      return 'withdraw failed'
+      if (msg.includes('no room')) return `inventory full (could not withdraw ${item})`
+      const r = reason(err)
+      return r ? `withdraw ${item} failed: ${r}` : `withdraw ${item} failed`
     })
 
   const tmo = new Promise((r) => setTimeout(() => r('timeout'), timeoutMs))
