@@ -64,13 +64,43 @@ const PERSONALITY_NAMES = new Set(['say', 'setGoals', 'look', 'handOffToMovement
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
 /**
+ * Compose the seed_owner + seed_diary + event + snapshot blocks for the
+ * first user turn of every fresh Loop (D-45). Exposed as a top-level export
+ * so the verification harness can drive it without booting the full
+ * orchestrator.
+ *
+ * @param {Object} args
+ * @param {Object} args.sessionState  — createSessionState instance
+ * @param {Object} args.ownerStore    — { formatOwnerSeedBlock, ... }
+ * @param {Object} args.diary         — createDiary instance
+ * @param {Object} args.config
+ * @param {string} args.eventText
+ * @param {string} args.snapshotText
+ * @returns {Promise<Array<{type:'text', name:string, text:string}>>}
+ */
+export async function composeSeedBlocks({ sessionState, ownerStore, diary, config, eventText, snapshotText }) {
+  const owner = sessionState.ownerData()
+  const seedOwnerText = ownerStore.formatOwnerSeedBlock(owner, config.memory.seed_owner_budget_bytes)
+  const seedDiaryText = await diary.seedSlice()
+  return [
+    { type: 'text', name: 'seed_owner', text: seedOwnerText },
+    { type: 'text', name: 'seed_diary', text: seedDiaryText },
+    { type: 'text', name: 'event',     text: eventText },
+    { type: 'text', name: 'snapshot',  text: snapshotText },
+  ]
+}
+
+/**
  * @param {object} deps
  * @param {object} deps.bot
  * @param {object} deps.config
  * @param {object} deps.registry  // result of createDefaultRegistry() — already includes setGoals
  * @param {{warn:Function,info:Function,error:Function,debug?:Function}} [deps.logger]
+ * @param {object} [deps.sessionState] — Phase 3 Plan 3-02 (optional during transition)
+ * @param {object} [deps.ownerStore]   — { loadOwner, saveOwner, formatOwnerSeedBlock }
+ * @param {object} [deps.diary]        — createDiary instance
  */
-export function createOrchestrator({ bot, config, registry, logger = console }) {
+export function createOrchestrator({ bot, config, registry, logger = console, sessionState = null, ownerStore = null, diary = null }) {
   const goals = createGoalStore()
   const anthropic = createAnthropicClient(config)
   const ollama = createOllamaClient(config)
@@ -182,6 +212,11 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
       stillLearningLine(),
       combinedToolsFor()
     )
+    // Pitfall 4 (cache invariant): OWNER/DIARY content MUST NOT live in the
+    // cached system prefix. Structural defense — fail fast at construction
+    // time if a regression introduces them.
+    assertNoMemoryInSystemBlocks(cachedSystemBlocks, 'cachedSystemBlocks')
+    assertNoMemoryInSystemBlocks(cachedCombinedSystemBlocks, 'cachedCombinedSystemBlocks')
   }
   rebuildPersonalitySystem()
 
@@ -275,7 +310,21 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
     return `executed: ${count} movement step${count === 1 ? '' : 's'}${lastStr ? `; last_action_result: ${lastStr}` : ''}`
   }
 
-  function maybeWarnByteCap(loop, warned) {
+  // Pitfall 4 cache invariant: scan a system blocks array for OWNER/DIARY
+// markdown headers. Throws if any text block contains them. Defense-in-depth
+// against regressions that would invalidate the cached prefix.
+function assertNoMemoryInSystemBlocks(blocks, label) {
+  if (!Array.isArray(blocks)) return
+  for (const blk of blocks) {
+    const text = typeof blk === 'string' ? blk : (blk && blk.text) ?? ''
+    if (typeof text !== 'string') continue
+    if (text.includes('# Owner') || text.includes('# Diary')) {
+      throw new Error(`[sei/orch] cache invariant violated: ${label} contains OWNER/DIARY markdown — these must live in the seed user turn only (Pitfall 4).`)
+    }
+  }
+}
+
+function maybeWarnByteCap(loop, warned) {
     if (warned.flag) return warned
     if (loop.byteSize() > BYTE_WARN_THRESHOLD) {
       logger.warn(`[sei/orch] loop ${loop.id} exceeds ${BYTE_WARN_THRESHOLD} bytes (size=${loop.byteSize()}) — sanity warning (Q3)`)
@@ -335,13 +384,36 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
     logger.info?.(`[sei/orch] loop start (id=${loop.id}, event=${event})`)
     const byteWarn = { flag: false }
 
-    // Compose the first user turn. Plan 3-02 will inject OWNER.md / DIARY.md
-    // slice + seed:true here; for now we just append the first event/snapshot
-    // non-seed turn (still satisfies D-42 named blocks).
-    loop.appendUserTurn([
-      { type: 'text', name: 'snapshot', text: snapshotText() },
-      { type: 'text', name: 'event',    text: `Event: ${event}\nData: ${JSON.stringify(data ?? {})}` },
-    ])
+    // Compose the first user turn (D-45 / Plan 3-02). When the memory layer
+    // is wired (sessionState + ownerStore + diary), inject seed_owner +
+    // seed_diary blocks and mark the turn `seed: true` so Loop preserves
+    // them across iterations. Otherwise fall back to event/snapshot only.
+    const eventText = `Event: ${event}\nData: ${JSON.stringify(data ?? {})}`
+    if (sessionState && ownerStore && diary) {
+      let seedBlocks
+      try {
+        seedBlocks = await composeSeedBlocks({
+          sessionState, ownerStore, diary, config,
+          eventText, snapshotText: snapshotText(),
+        })
+      } catch (err) {
+        logger.warn(`[sei/orch] seed-block compose failed: ${err.message}; falling back to non-seed turn`)
+        seedBlocks = null
+      }
+      if (seedBlocks) {
+        loop.appendUserTurn(seedBlocks, { seed: true })
+      } else {
+        loop.appendUserTurn([
+          { type: 'text', name: 'snapshot', text: snapshotText() },
+          { type: 'text', name: 'event',    text: eventText },
+        ])
+      }
+    } else {
+      loop.appendUserTurn([
+        { type: 'text', name: 'snapshot', text: snapshotText() },
+        { type: 'text', name: 'event',    text: eventText },
+      ])
+    }
 
     // Bridge: external signal (FSM) -> loop.abortController so handlers
     // respect both. The fresh Loop's controller is what actions hook into.
@@ -354,7 +426,19 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
     try {
       await runIterations(loop, byteWarn)
       logger.info?.(`[sei/orch] loop terminal (id=${loop.id}, iterations=${loop.iterationCount})`)
-      // PHASE 3-03: compaction hook lands here (per-loop-batch summary trigger).
+      // Plan 3-02: hand the terminal Loop to sessionState so it can update
+      // per-loop-batch counters. No disk writes from this hook — Plan 3-03
+      // will subscribe here to fire the per-loop-batch summary trigger
+      // immediately AFTER sessionState.onLoopTerminal updates the counters.
+      if (sessionState) {
+        try {
+          const messagesByteSize = JSON.stringify(loop._internal.messages).length
+          await sessionState.onLoopTerminal({ messagesByteSize })
+        } catch (err) {
+          logger.warn?.(`[sei/orch] sessionState.onLoopTerminal failed: ${err.message}`)
+        }
+      }
+      // PHASE 3-03: compaction call lands here, after sessionState.onLoopTerminal.
     } catch (err) {
       logger.error?.(`[sei/orch] loop error (id=${loop.id}): ${err && err.message}`)
     } finally {
@@ -658,6 +742,10 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
       callPersonalityTwoCall, callPersonalityCombined, callMovement,
       chains, inflight,
       get currentLoop() { return currentLoop },
+      // Plan 3-02 harness seam: expose the cached system blocks so the
+      // verifier can prove OWNER/DIARY content does not leak into them.
+      getCachedSystemBlocks: () => cachedSystemBlocks,
+      getCachedCombinedSystemBlocks: () => cachedCombinedSystemBlocks,
     },
   }
 }

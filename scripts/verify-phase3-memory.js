@@ -725,6 +725,7 @@ CASES['seed-not-in-system-blocks'] = async () => {
     const sessionState = await createSessionState({ ownerMdPath, diary, config, bot, logger: silentLogger() })
 
     const fakeRegistry = { list: () => [], schema: () => null, execute: async () => 'ok' }
+    const { createOrchestrator } = await import('../src/llm/orchestrator.js')
     const orch = createOrchestrator({ bot, config, registry: fakeRegistry, logger: silentLogger(), sessionState, ownerStore, diary })
 
     const sysBlocks = orch._internal.getCachedSystemBlocks()
