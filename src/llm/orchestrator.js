@@ -5,6 +5,7 @@ import { createTokenBucket } from './rateLimiter.js'
 import { createDebouncer, createThrottle } from './debounce.js'
 import { createOllamaCircuit } from './circuit.js'
 import { createChainTracker } from './chains.js'
+import { createLoop } from './loop.js'
 import { renderPersona, capHitLine, capabilityParagraph, minecraftPrimer, stillLearningLine } from './persona.js'
 import { buildAnthropicTools, buildOllamaTools } from './schemaBridge.js'
 import { composeSnapshot } from '../observers/snapshot.js'
@@ -24,6 +25,7 @@ const SYSTEM_INSTRUCTIONS = [
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
   'If the snapshot shows an `in_flight:` line, your body is already doing that thing — do NOT hand off another movement intent this turn. You may `say` to acknowledge or report progress, then return.',
   'When the player gives a new instruction, any prior in-flight work is automatically aborted by the runtime — start fresh, do not try to resume the old task.',
+  'You are running inside an iteration loop: when you emit a tool_use, the runtime executes it and you will see the result on the next turn. End the loop by emitting only `say` (or no tool calls).',
 ].join('\n')
 
 const MOVEMENT_SYSTEM = [
@@ -47,6 +49,7 @@ const COMBINED_SYSTEM = [
   'Pick the smallest set of tool calls that fulfils the situation. Never describe coordinates or action names in prose; just call the tools.',
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
   'Keep any internal reasoning under 3 sentences.',
+  'You are running inside an iteration loop: when you emit a tool_use, the runtime executes it and you will see the result on the next turn. End the loop by emitting only `say` (or no tool calls).',
 ].join('\n')
 
 const ACTION_DESCRIPTIONS = {
@@ -57,12 +60,15 @@ const ACTION_DESCRIPTIONS = {
   look: 'Refresh your world snapshot — call this when you suspect the world has changed since you last looked. Returns a fresh snapshot on the next turn.',
 }
 
+const PERSONALITY_NAMES = new Set(['say', 'setGoals', 'look', 'handOffToMovement'])
+const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
+
 /**
  * @param {object} deps
  * @param {object} deps.bot
  * @param {object} deps.config
  * @param {object} deps.registry  // result of createDefaultRegistry() — already includes setGoals
- * @param {{warn:Function,info:Function,error:Function}} [deps.logger]
+ * @param {{warn:Function,info:Function,error:Function,debug?:Function}} [deps.logger]
  */
 export function createOrchestrator({ bot, config, registry, logger = console }) {
   const goals = createGoalStore()
@@ -85,7 +91,20 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
   // is in flight. Personality-only entries (setGoals/say/look) don't pause
   // follow; see currentBlocking() in inflight.js.
   setInflightProvider(() => inflight.currentBlocking() != null)
+  // Phase 3 D-59: chains is a no-op shim (kept to preserve any stragglers
+  // referencing it from prior phases).
   const chains = createChainTracker({ maxHops: config.llm.max_hops })
+
+  // ─── Phase 3 single-flight Loop state (D-39 / Pitfall 6) ─────────────
+  // At most one Loop is active at any time. Idle dispatches are gated on
+  // currentLoop === null (D-39 / SPEC A2). Owner-chat dispatches that arrive
+  // while a Loop is active enter the interrupt path (D-40). Anything else
+  // is dropped with a structured warn (defense-in-depth; the FSM should
+  // already prevent it).
+  let currentLoop = null
+  // Pending interrupt blocks supplied via abort signal — picked up by the
+  // catch arm to render the PLAYER INTERRUPT user turn.
+  let pendingInterrupt = null
 
   // Personality-only tools: setGoals, say, handOffToMovement
   const personalityTools = [
@@ -167,7 +186,7 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
   rebuildPersonalitySystem()
 
   // Last result string from any registry.execute() this orchestrator has performed.
-  // Fed back into the next personality turn via renderUserContext (D-35).
+  // Fed back into the next personality turn via composeSnapshot's lastActionResult.
   let lastActionResult = null
 
   // ─── Startup probe (D-13) — 3 retries × 2s ───
@@ -195,6 +214,8 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
   }
 
   // ─── Movement dispatch (LLM-03 / LLM-08) ───
+  // Stays stateless per SPEC: Qwen does NOT see history. The personality Loop
+  // sees the movement layer's outcome via a synthetic tool_result (D-41).
   async function callMovement(intent, signal) {
     const tools = movementToolsFor(circuit.isOpen() ? 'anthropic' : 'ollama')
     if (circuit.isOpen()) {
@@ -221,8 +242,381 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
     }
   }
 
-  // ─── Personality call (LLM-02 / LLM-06) ───
-  async function callPersonality(userBlock, signal) {
+  // ─── Snapshot helper ────────────────────────────────────────────────
+  function snapshotText() {
+    try {
+      return composeSnapshot(bot, { goals: goals.snapshot(), lastActionResult, inFlight: inflight.current() })
+    } catch (err) {
+      logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
+      return '(snapshot unavailable)'
+    }
+  }
+
+  // Run a registry action with inflight tracking so the snapshot reflects
+  // what the bot is doing right now AND follow yields for its full lifecycle.
+  async function runWithInflight(name, args, execOpts) {
+    const handle = inflight.start({ name, args })
+    try {
+      return await registry.execute(name, args, bot, execOpts)
+    } finally {
+      inflight.end(handle)
+    }
+  }
+
+  // Build a deterministic action-name-free summary string for personality
+  // history (D-04 preserved through D-41). Personality only ever sees:
+  //   "executed: <count> movement step(s); last_action_result: <string>"
+  function summarizeMovementBatch(results) {
+    const count = results.length
+    const last = results.length ? results[results.length - 1] : null
+    const lastStr = typeof last === 'string'
+      ? last
+      : (last && typeof last.ok !== 'undefined' ? `ok=${last.ok}` : '')
+    return `executed: ${count} movement step${count === 1 ? '' : 's'}${lastStr ? `; last_action_result: ${lastStr}` : ''}`
+  }
+
+  function maybeWarnByteCap(loop, warned) {
+    if (warned.flag) return warned
+    if (loop.byteSize() > BYTE_WARN_THRESHOLD) {
+      logger.warn(`[sei/orch] loop ${loop.id} exceeds ${BYTE_WARN_THRESHOLD} bytes (size=${loop.byteSize()}) — sanity warning (Q3)`)
+      warned.flag = true
+    }
+    return warned
+  }
+
+  // ─── Main dispatch (Loop-driven, D-38..D-45) ─────────────────────────
+  /**
+   * Single entry point. Wired to FSM `sei:dispatch` events.
+   *
+   * Single-flight (D-39 / Pitfall 6):
+   *  - currentLoop === null → start a fresh Loop and begin iterating.
+   *  - currentLoop !== null AND event is owner-chat → enter interrupt path.
+   *    The dispatch handler triggers loop.abortController; whatever Anthropic
+   *    call / action is in flight throws AbortError; the catch arm
+   *    synthesizes paired tool_result blocks for orphan tool_uses and
+   *    appends a PLAYER INTERRUPT user turn (D-40).
+   *  - currentLoop !== null AND event is anything else → drop with warn.
+   *
+   * Idle gate (D-39 / SPEC A2): events of type `idle` are dropped if a Loop
+   * is already running.
+   */
+  async function handleDispatch(event, data, signal) {
+    const isOwnerChat = event === 'chat' || event === 'sei:chat' || event === 'owner_chat'
+    const isIdle     = event === 'idle' || event === 'sei:idle'
+
+    // Defense-in-depth idle gate (D-39): the FSM should already prevent this,
+    // but if an idle tick races into the orchestrator while a Loop is active,
+    // drop it.
+    if (isIdle && currentLoop !== null) {
+      logger.debug?.(`[sei/orch] idle gated — currentLoop active (loop=${currentLoop.id}, iterations=${currentLoop.iterationCount})`)
+      return
+    }
+
+    // Single-flight branch: while a Loop is active, only owner-chat is
+    // allowed in (interrupt). Anything else is dropped.
+    if (currentLoop !== null) {
+      if (!isOwnerChat) {
+        logger.warn(`[sei/orch] dispatch ${event} arrived while loop active — dropping`)
+        return
+      }
+      // Owner chat mid-loop: signal interrupt.
+      const chatText = (data && (data.text ?? data.message)) ?? JSON.stringify(data ?? {})
+      pendingInterrupt = { chatText: String(chatText) }
+      try { currentLoop.abortController.abort() } catch {}
+      return
+    }
+
+    // ── Fresh Loop ──
+    // Pitfall 6: clean up any leaked container session from a prior dispatch.
+    try { await closeContainerSession() } catch {}
+
+    const loop = createLoop({ iterationCap: config.memory.iteration_cap, logger })
+    currentLoop = loop
+    logger.info?.(`[sei/orch] loop start (id=${loop.id}, event=${event})`)
+    const byteWarn = { flag: false }
+
+    // Compose the first user turn. Plan 3-02 will inject OWNER.md / DIARY.md
+    // slice + seed:true here; for now we just append the first event/snapshot
+    // non-seed turn (still satisfies D-42 named blocks).
+    loop.appendUserTurn([
+      { type: 'text', name: 'snapshot', text: snapshotText() },
+      { type: 'text', name: 'event',    text: `Event: ${event}\nData: ${JSON.stringify(data ?? {})}` },
+    ])
+
+    // Bridge: external signal (FSM) -> loop.abortController so handlers
+    // respect both. The fresh Loop's controller is what actions hook into.
+    const onExternalAbort = () => { try { loop.abortController.abort() } catch {} }
+    if (signal) {
+      if (signal.aborted) onExternalAbort()
+      else signal.addEventListener('abort', onExternalAbort, { once: true })
+    }
+
+    try {
+      await runIterations(loop, byteWarn)
+      logger.info?.(`[sei/orch] loop terminal (id=${loop.id}, iterations=${loop.iterationCount})`)
+      // PHASE 3-03: compaction hook lands here (per-loop-batch summary trigger).
+    } catch (err) {
+      logger.error?.(`[sei/orch] loop error (id=${loop.id}): ${err && err.message}`)
+    } finally {
+      if (signal) try { signal.removeEventListener?.('abort', onExternalAbort) } catch {}
+      currentLoop = null
+      pendingInterrupt = null
+      try { await closeContainerSession() } catch {}
+    }
+  }
+
+  /**
+   * Iteration loop — runs until terminal response, abort-and-resume, or cap.
+   *
+   * On abort (loop.abortController.signal.aborted), the catch arm synthesizes
+   * aborted tool_result blocks for any orphan tool_uses (Pitfall 3) and
+   * appends a `PLAYER INTERRUPT:` user turn (D-40). Then iteration continues
+   * on the same Loop.messages array — history is preserved.
+   *
+   * On iteration cap (loop.iterationCount >= cap, SPEC A9), one final call
+   * is made with tools=[] forcing a text-only response that we emit as a
+   * chat line. The Loop terminates gracefully; no exception is thrown.
+   */
+  async function runIterations(loop, byteWarn) {
+    const cap = config.memory.iteration_cap
+
+    while (true) {
+      // Cap check before the next call.
+      if (loop.iterationCount >= cap) {
+        await gracefulCapClose(loop)
+        return
+      }
+
+      const signal = loop.abortController.signal
+
+      let resp
+      try {
+        if (circuit.isOpen()) {
+          resp = await callPersonalityCombined(loop, signal)
+        } else {
+          resp = await callPersonalityTwoCall(loop, signal)
+        }
+      } catch (err) {
+        if (err && (err.name === 'AbortError' || signal.aborted)) {
+          await repairAfterAbort(loop)
+          replaceAbortController(loop)
+          continue
+        }
+        throw err
+      }
+      if (!resp) {
+        // Rate-limited; bail.
+        return
+      }
+
+      // Append assistant turn raw (preserves tool_use blocks 1:1)
+      loop.appendAssistant(buildAssistantContent(resp))
+
+      const toolUses = resp.toolUses ?? []
+      if (toolUses.length === 0) {
+        // Terminal: text-only response. Emit any text content as chat.
+        const text = (resp.text ?? '').trim()
+        if (text) { logChatOut(text); try { bot.chat(text) } catch {} }
+        return
+      }
+
+      // Process tool_uses. Two-call vs combined handles dispatch differently:
+      // in combined mode, movement actions execute here; in two-call mode the
+      // personality emits handOffToMovement which fans out to Ollama.
+      const handoffCall = toolUses.find(u => u.name === 'handOffToMovement')
+      const movementCalls = toolUses.filter(u => !PERSONALITY_NAMES.has(u.name))
+
+      // Collect tool_results in the SAME order as toolUses so pairing holds.
+      const results = new Array(toolUses.length)
+
+      try {
+        for (let i = 0; i < toolUses.length; i++) {
+          const u = toolUses[i]
+          if (signal.aborted) throw makeAbortError()
+          if (u.name === 'say') {
+            const line = String(u.input?.text ?? '').slice(0, 256)
+            logChatOut(line)
+            try { bot.chat(line) } catch {}
+            results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said', is_error: false }
+          } else if (u.name === 'setGoals') {
+            try {
+              const r = await runWithInflight('setGoals', u.input, { ...config, _goalStore: goals })
+              const s = typeof r === 'string' ? r : (r && typeof r.ok !== 'undefined' ? `setGoals:${r.ok ? 'ok' : 'fail'}` : 'setGoals:done')
+              lastActionResult = s
+              results[i] = { type: 'tool_result', tool_use_id: u.id, content: s, is_error: false }
+            } catch (err) {
+              lastActionResult = 'setGoals error'
+              logger.warn(`[sei/orch] setGoals failed: ${err.message}`)
+              results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err.message}`, is_error: true }
+            }
+          } else if (u.name === 'look') {
+            lastActionResult = 'looked'
+            results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'snapshot refreshed', is_error: false }
+          } else if (u.name === 'handOffToMovement') {
+            const intent = String(u.input?.intent ?? '')
+            let summary
+            try {
+              const movement = await callMovement(intent, signal)
+              const moveResults = []
+              for (const call of movement.toolCalls) {
+                if (signal.aborted) throw makeAbortError()
+                try {
+                  const r = await runWithInflight(call.name, call.args, {
+                    ...config,
+                    _goalStore: goals,
+                    signal,
+                  })
+                  const s = typeof r === 'string' ? r : (r && typeof r.ok !== 'undefined' ? `${call.name}:${r.ok ? 'ok' : 'fail'}` : 'done')
+                  lastActionResult = s
+                  moveResults.push(s)
+                  logActionResult(call.name, r)
+                } catch (err) {
+                  if (err && (err.name === 'AbortError' || signal.aborted)) throw err
+                  lastActionResult = `${call.name} error`
+                  moveResults.push(`error: ${err.message}`)
+                  logActionResult(call.name, `error: ${err.message}`)
+                }
+              }
+              summary = summarizeMovementBatch(moveResults)
+            } catch (err) {
+              if (err && (err.name === 'AbortError' || signal.aborted)) throw err
+              summary = `movement layer error: ${err.message}`
+            }
+            results[i] = { type: 'tool_result', tool_use_id: u.id, content: summary, is_error: false }
+          } else {
+            // Combined-path movement action: execute via registry directly.
+            try {
+              const r = await runWithInflight(u.name, u.input, {
+                ...config,
+                _goalStore: goals,
+                signal,
+              })
+              const s = typeof r === 'string' ? r : (r && typeof r.ok !== 'undefined' ? `${u.name}:${r.ok ? 'ok' : 'fail'}` : 'done')
+              lastActionResult = s
+              logActionResult(u.name, r)
+              results[i] = { type: 'tool_result', tool_use_id: u.id, content: s, is_error: false }
+            } catch (err) {
+              if (err && (err.name === 'AbortError' || signal.aborted)) throw err
+              lastActionResult = `${u.name} error`
+              logActionResult(u.name, `error: ${err.message}`)
+              results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err.message}`, is_error: true }
+            }
+          }
+        }
+      } catch (err) {
+        if (err && (err.name === 'AbortError' || signal.aborted)) {
+          // Abort fired mid-tool-dispatch. Synthesize results for any
+          // un-filled slots so pairing holds, then run the standard repair.
+          for (let i = 0; i < toolUses.length; i++) {
+            if (!results[i]) {
+              results[i] = {
+                type: 'tool_result',
+                tool_use_id: toolUses[i].id,
+                content: 'aborted: player interrupt',
+                is_error: false,
+              }
+            }
+          }
+          loop.appendToolResults(results, { snapshot: snapshotText(), eventText: pendingInterrupt?.chatText ? `PLAYER INTERRUPT: ${pendingInterrupt.chatText}` : 'PLAYER INTERRUPT' })
+          maybeWarnByteCap(loop, byteWarn)
+          pendingInterrupt = null
+          replaceAbortController(loop)
+          continue
+        }
+        throw err
+      }
+
+      // Determine whether to continue or terminate. If only personality-only
+      // tools fired (no handoff/movement) the LLM is done — terminal.
+      const continueLoop = !!handoffCall || movementCalls.length > 0
+      loop.appendToolResults(results, { snapshot: snapshotText() })
+      maybeWarnByteCap(loop, byteWarn)
+
+      if (!continueLoop) return
+    }
+  }
+
+  // Replace loop.abortController with a fresh one. Required after an abort
+  // so subsequent iterations don't immediately see signal.aborted.
+  function replaceAbortController(loop) {
+    const fresh = new AbortController()
+    Object.defineProperty(loop, 'abortController', {
+      configurable: true,
+      get() { return fresh },
+    })
+  }
+
+  function makeAbortError() {
+    const err = new Error('aborted')
+    err.name = 'AbortError'
+    return err
+  }
+
+  // anthropicClient returns { toolUses, text, ... } — reconstruct the
+  // assistant content array (text + tool_use blocks) for Loop append.
+  function buildAssistantContent(resp) {
+    const out = []
+    if (resp.text) out.push({ type: 'text', text: resp.text })
+    for (const u of resp.toolUses ?? []) {
+      out.push({ type: 'tool_use', id: u.id, name: u.name, input: u.input })
+    }
+    return out
+  }
+
+  async function repairAfterAbort(loop) {
+    const last = [...loop._internal.messages].reverse().find(m => m.role === 'assistant')
+    const orphans = last
+      ? last.content.filter(b => b && b.type === 'tool_use')
+      : []
+
+    const aborted = orphans.map(u => ({
+      type: 'tool_result',
+      tool_use_id: u.id,
+      content: 'aborted: player interrupt',
+      is_error: false,
+    }))
+
+    const chatText = pendingInterrupt?.chatText ?? ''
+    const eventText = chatText ? `PLAYER INTERRUPT: ${chatText}` : 'PLAYER INTERRUPT'
+
+    if (aborted.length > 0) {
+      loop.appendToolResults(aborted, { snapshot: snapshotText(), eventText })
+    } else {
+      loop.appendUserTurn([
+        { type: 'text', name: 'event',    text: eventText },
+        { type: 'text', name: 'snapshot', text: snapshotText() },
+      ])
+    }
+    pendingInterrupt = null
+    logger.info?.(`[sei/orch] PLAYER INTERRUPT preserved (loop=${loop.id}, history=${loop._internal.messages.length})`)
+  }
+
+  async function gracefulCapClose(loop) {
+    logger.warn(`[sei/orch] iteration cap hit — forcing graceful close (loop=${loop.id}, iterations=${loop.iterationCount})`)
+    loop.appendUserTurn([
+      { type: 'text', name: 'event',    text: 'You have hit the iteration cap. Wrap up with one short say.' },
+      { type: 'text', name: 'snapshot', text: snapshotText() },
+    ])
+    try {
+      const resp = await anthropic.call({
+        systemBlocks: cachedCombinedSystemBlocks,
+        tools: [],
+        messages: loop.buildAnthropicPayload(),
+        signal: loop.abortController.signal,
+        timeoutMs: config.anthropic.timeout_ms,
+      })
+      loop.appendAssistant(buildAssistantContent(resp))
+      const text = (resp.text ?? '').trim() || capHitLine(config.persona)
+      logChatOut(text)
+      try { bot.chat(text) } catch {}
+    } catch (err) {
+      logger.warn(`[sei/orch] graceful cap close call failed: ${err.message}; falling back to capHitLine`)
+      try { bot.chat(capHitLine(config.persona)) } catch {}
+    }
+  }
+
+  // ─── Personality call helpers (D-44 single seam) ─────────────────────
+  async function callPersonalityTwoCall(loop, signal) {
     if (!personalityBucket.tryAcquire()) {
       logger.warn('[sei/orch] Rate limit hit — dropping personality call')
       return null
@@ -230,16 +624,13 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
     return await anthropic.call({
       systemBlocks: cachedSystemBlocks,
       tools: personalityTools,
-      messages: [{ role: 'user', content: userBlock }],
+      messages: loop.buildAnthropicPayload(),
       signal,
+      timeoutMs: config.anthropic.timeout_ms,
     })
   }
 
-  // ─── Combined personality+movement call (single-Haiku fallback) ───
-  // Used when the Ollama circuit is open (executor=api or tripped). Issues
-  // ONE Anthropic call; the model can emit say/setGoals/look AND movement
-  // actions (goTo/dig/attack/...) in the same response. Halves API latency.
-  async function callCombined(userBlock, signal) {
+  async function callPersonalityCombined(loop, signal) {
     if (!personalityBucket.tryAcquire()) {
       logger.warn('[sei/orch] Rate limit hit — dropping combined call')
       return null
@@ -247,231 +638,26 @@ export function createOrchestrator({ bot, config, registry, logger = console }) 
     return await anthropic.call({
       systemBlocks: cachedCombinedSystemBlocks,
       tools: combinedToolsFor(),
-      messages: [{ role: 'user', content: userBlock }],
+      messages: loop.buildAnthropicPayload(),
       signal,
+      timeoutMs: config.anthropic.timeout_ms,
     })
-  }
-
-  // ─── Main dispatch loop (LLM-04 hop cap, LLM-07 abort propagation) ───
-  /**
-   * Single entry point. Wave 3 wires this to the FSM `sei:dispatch` event.
-   * The optional `chainId` is set by Wave 3 when the dispatch is a CONTINUATION
-   * (e.g. an FSM completion event for an action launched by an earlier chain).
-   * If absent, this is a fresh chain.
-   */
-  async function handleDispatch(event, data, signal) {
-    const isContinuation = !!(data?._chainId && chains.continue(data._chainId))
-    let chainId = isContinuation ? data._chainId : chains.begin(event)
-    // Pitfall 6: at the start of every fresh chain, ensure no container session
-    // leaked from a prior chain. Idempotent + try/catch so cleanup never throws.
-    if (!isContinuation) {
-      try { await closeContainerSession() } catch {}
-    }
-    // Follow is now gated by the inflight tracker (see setInflightProvider at
-    // construction). The dispatch lifecycle no longer pauses follow directly;
-    // pause now lasts for the *action* lifecycle so dig's approach + swing +
-    // pickup walk all complete without follow stealing the pathfinder.
-    let nextUser = renderUserContext(event, data, goals.snapshot())
-
-    /** Run a registry action with inflight tracking so the snapshot reflects
-     *  what the bot is doing right now AND follow yields for its full lifecycle. */
-    async function runWithInflight(name, args, execOpts) {
-      const handle = inflight.start({ name, args })
-      try {
-        return await registry.execute(name, args, bot, execOpts)
-      } finally {
-        inflight.end(handle)
-      }
-    }
-
-    function bump() {
-      const r = chains.increment(chainId)
-      if (r.capped) throw new HopCapHit(chainId, r.hops)
-    }
-
-    try {
-      if (signal.aborted) { try { await closeContainerSession() } catch {}; return }
-      bump()  // personality hop
-
-      // ── Single-call combined fallback path ──
-      // When Ollama is unavailable (executor=api or circuit tripped), one
-      // Haiku call emits personality AND movement tool_calls together.
-      if (circuit.isOpen()) {
-        const resp = await callCombined(nextUser, signal)
-        if (!resp) { chains.end(chainId); return }
-
-        const sayCalls    = resp.toolUses.filter(u => u.name === 'say')
-        const goalCalls   = resp.toolUses.filter(u => u.name === 'setGoals')
-        const lookCalls   = resp.toolUses.filter(u => u.name === 'look')
-        // Movement actions = anything not personality and not the no-op handoff.
-        const reservedNames = new Set(['say', 'setGoals', 'look', 'handOffToMovement'])
-        const movementCalls = resp.toolUses.filter(u => !reservedNames.has(u.name))
-
-        for (const c of sayCalls) {
-          const line = String(c.input?.text ?? '').slice(0, 256)
-          logChatOut(line)
-          bot.chat(line)
-        }
-        for (const c of goalCalls) {
-          try {
-            const result = await runWithInflight('setGoals', c.input, { ...config, _goalStore: goals })
-            if (typeof result === 'string') lastActionResult = result
-            else if (result && typeof result.ok !== 'undefined') lastActionResult = `setGoals:${result.ok ? 'ok' : 'fail'}`
-          } catch (err) {
-            lastActionResult = 'setGoals error'
-            logger.warn(`[sei/orch] setGoals failed: ${err.message}`)
-          }
-        }
-        if (lookCalls.length > 0 && movementCalls.length === 0) {
-          lastActionResult = 'looked'
-        }
-
-        if (movementCalls.length === 0) { chains.end(chainId); return }
-
-        for (const call of movementCalls) {
-          if (signal.aborted) { try { await closeContainerSession() } catch {}; chains.end(chainId); return }
-          try {
-            const result = await runWithInflight(call.name, call.input, {
-              ...config,
-              _goalStore: goals,
-              _chainId: chainId,
-              signal,
-            })
-            if (typeof result === 'string') lastActionResult = result
-            else if (result && typeof result.ok !== 'undefined') lastActionResult = `${call.name}:${result.ok ? 'ok' : 'fail'}`
-            logActionResult(call.name, result)
-          } catch (err) {
-            lastActionResult = `${call.name} error`
-            logActionResult(call.name, `error: ${err.message}`)
-            logger.warn(`[sei/orch] action ${call.name} failed: ${err.message}`)
-          }
-        }
-        // Do NOT end(chainId) here: completion events may continue this chain.
-        return
-      }
-
-      // ── Two-call path (Ollama healthy): personality then movement ──
-      const personalityResp = await callPersonality(nextUser, signal)
-      if (!personalityResp) { chains.end(chainId); return }
-
-      const sayCalls    = personalityResp.toolUses.filter(u => u.name === 'say')
-      const goalCalls   = personalityResp.toolUses.filter(u => u.name === 'setGoals')
-      const handoffCall = personalityResp.toolUses.find(u => u.name === 'handOffToMovement')
-      const lookCalls   = personalityResp.toolUses.filter(u => u.name === 'look')
-
-      for (const c of sayCalls) {
-        const line = String(c.input?.text ?? '').slice(0, 256)
-        logChatOut(line)
-        bot.chat(line)
-      }
-      for (const c of goalCalls) {
-        try {
-          const result = await runWithInflight('setGoals', c.input, { ...config, _goalStore: goals })
-          if (typeof result === 'string') lastActionResult = result
-          else if (result && typeof result.ok !== 'undefined') lastActionResult = `setGoals:${result.ok ? 'ok' : 'fail'}`
-        } catch (err) {
-          lastActionResult = 'setGoals error'
-          logger.warn(`[sei/orch] setGoals failed: ${err.message}`)
-        }
-      }
-
-      // look() is a no-op: snapshot is already recomposed on every personality
-      // call (renderUserContext), so receiving look() just signals "the LLM
-      // wants another think with fresh eyes". The chain tracker has already
-      // counted this personality hop. If look() is the ONLY tool emitted (no
-      // handoff), end the chain — the next event-driven dispatch will produce
-      // a fresh snapshot. Do not loop internally.
-      if (lookCalls.length > 0 && !handoffCall) {
-        lastActionResult = 'looked'
-      }
-
-      if (!handoffCall) { chains.end(chainId); return }
-
-      if (signal.aborted) { try { await closeContainerSession() } catch {}; chains.end(chainId); return }
-      bump()  // movement hop
-
-      const movement = await callMovement(String(handoffCall.input?.intent ?? ''), signal)
-      if (signal.aborted) { try { await closeContainerSession() } catch {}; chains.end(chainId); return }
-
-      // Dispatch movement tool_calls via Phase 1 registry. Tag completion events
-      // with chainId so FSM-driven re-dispatches keep counting against THIS chain.
-      for (const call of movement.toolCalls) {
-        if (signal.aborted) { try { await closeContainerSession() } catch {}; chains.end(chainId); return }
-        try {
-          const result = await runWithInflight(call.name, call.args, {
-            ...config,
-            _goalStore: goals,
-            _chainId: chainId,
-            signal,
-          })
-          if (typeof result === 'string') lastActionResult = result
-          else if (result && typeof result.ok !== 'undefined') lastActionResult = `${call.name}:${result.ok ? 'ok' : 'fail'}`
-          logActionResult(call.name, result)
-        } catch (err) {
-          lastActionResult = `${call.name} error`
-          logActionResult(call.name, `error: ${err.message}`)
-          logger.warn(`[sei/orch] action ${call.name} failed: ${err.message}`)
-        }
-      }
-      // Do NOT end(chainId) here: a completion event may continue this chain.
-      // Chain TTL (60s) sweeps if no continuation arrives.
-      return
-    } catch (err) {
-      if (err instanceof HopCapHit) {
-        logger.warn(`[sei/orch] hop cap hit (chain=${err.chainId}, hops=${err.hops}) on event ${event}`)
-        try { bot.chat(capHitLine(config.persona)) } catch {}
-        try { await closeContainerSession() } catch {}
-        chains.end(chainId)
-        return
-      }
-      if (err.name === 'AbortError' || signal.aborted) {
-        try { await closeContainerSession() } catch {}
-        chains.end(chainId)
-        return
-      }
-      logger.error(`[sei/orch] dispatch error on ${event}: ${err.message}`)
-      try { await closeContainerSession() } catch {}
-      chains.end(chainId)
-    }
-  }
-
-  // D-27: snapshot is injected into the USER message (after the cached system
-  // prefix breakpoint), so re-rendering it every personality turn does NOT
-  // invalidate the cached prefix. Snapshot is personality-only (D-28).
-  function renderUserContext(event, data, goalsSnapshot) {
-    let snapshot = ''
-    try {
-      snapshot = composeSnapshot(bot, { goals: goalsSnapshot, lastActionResult, inFlight: inflight.current() })
-    } catch (err) {
-      logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
-      snapshot = '(snapshot unavailable)'
-    }
-    return [
-      'World snapshot:',
-      snapshot,
-      '',
-      `Event: ${event}`,
-      `Data: ${JSON.stringify(data ?? {})}`,
-    ].join('\n')
   }
 
   return {
     start,
     handleDispatch,
     get executorStatus() { return circuit.state },
+    get currentLoop()    { return currentLoop },
     goals,
     debouncer: ingressDebouncer,
     throttle: ingressThrottle,
     inflight,
-    _internal: { circuit, personalityBucket, callPersonality, callMovement, callCombined, chains, inflight },
-  }
-}
-
-class HopCapHit extends Error {
-  constructor(chainId, hops) {
-    super('hop cap hit')
-    this.name = 'HopCapHit'
-    this.chainId = chainId
-    this.hops = hops
+    _internal: {
+      circuit, personalityBucket,
+      callPersonalityTwoCall, callPersonalityCombined, callMovement,
+      chains, inflight,
+      get currentLoop() { return currentLoop },
+    },
   }
 }

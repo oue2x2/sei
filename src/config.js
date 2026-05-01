@@ -35,6 +35,12 @@ export const ConfigSchema = z.object({
     // 'api'  = force Haiku-as-executor for both layers; skip the Ollama probe entirely.
     executor: z.enum(['auto', 'api']).default('auto'),
   }).default({}),
+  // Phase 3 D-59: only iteration_cap is consumed by Plan 3-01; the rest of
+  // the memory: block (paths, batch caps, consolidation cadence, byte
+  // budgets) lands in Plan 3-02 which adds the markdown layer.
+  memory: z.object({
+    iteration_cap: z.number().int().min(1).default(20),
+  }).default({}),
 })
 
 export function loadConfig(path = './config.json') {
