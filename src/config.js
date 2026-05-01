@@ -35,11 +35,20 @@ export const ConfigSchema = z.object({
     // 'api'  = force Haiku-as-executor for both layers; skip the Ollama probe entirely.
     executor: z.enum(['auto', 'api']).default('auto'),
   }).default({}),
-  // Phase 3 D-59: only iteration_cap is consumed by Plan 3-01; the rest of
-  // the memory: block (paths, batch caps, consolidation cadence, byte
-  // budgets) lands in Plan 3-02 which adds the markdown layer.
+  // Phase 3 D-59: full memory: block. Paths default to project root; budgets
+  // are byte-budgets (not token-budgets, per D-50). spawn_settle_delay_ms
+  // covers Pitfall 2 (bot.players populates a few ticks after spawn).
   memory: z.object({
+    owner_md_path: z.string().default('./OWNER.md'),
+    diary_md_path: z.string().default('./DIARY.md'),
     iteration_cap: z.number().int().min(1).default(20),
+    loop_batch_loop_count_cap: z.number().int().min(1).default(10),
+    loop_batch_context_cap_bytes: z.number().int().min(1024).default(32768),
+    sessions_per_consolidation: z.number().int().min(1).default(4),
+    diary_size_cap_bytes: z.number().int().min(1024).default(204800),
+    seed_diary_budget_bytes: z.number().int().min(256).default(3072),
+    seed_owner_budget_bytes: z.number().int().min(256).default(1024),
+    spawn_settle_delay_ms: z.number().int().min(0).default(500),
   }).default({}),
 })
 
