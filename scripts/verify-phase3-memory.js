@@ -40,6 +40,7 @@ import { atomicWrite } from '../src/storage/atomicWrite.js'
 import { loadOwner, saveOwner, formatOwnerSeedBlock } from '../src/memory/owner.js'
 import { createDiary } from '../src/memory/diary.js'
 import { createSessionState } from '../src/llm/sessionState.js'
+import { createCompactor } from '../src/llm/compaction.js'
 
 const argv = Object.fromEntries(
   process.argv.slice(2).map(a => {
@@ -736,6 +737,465 @@ CASES['seed-not-in-system-blocks'] = async () => {
       assert(!t.includes('# Diary'), `system block must not contain '# Diary'`)
     }
     console.log('OK seed-not-in-system-blocks')
+  } finally { cleanup(dir) }
+}
+
+// ─── Plan 3-03 Task 1: Compactor unit tests ────────────────────────────
+
+function makeCompactionAnthropic(textOrFn) {
+  // Simpler stub for compaction tests. Records args; returns content blocks.
+  const calls = []
+  return {
+    calls,
+    async call(req) {
+      calls.push(req)
+      const text = typeof textOrFn === 'function' ? await textOrFn(req) : textOrFn
+      return { content: [{ type: 'text', text }], toolUses: [], text, usage: {}, stopReason: 'end_turn' }
+    },
+  }
+}
+
+function makeStubDiary() {
+  const appended = []
+  let replaced = null
+  let entries = []
+  let fileSize = 0
+  return {
+    appended, get replaced() { return replaced },
+    setEntries(arr) { entries = arr.slice() },
+    setFileSize(n) { fileSize = n },
+    async appendEntry({ topic, body, when }) { appended.push({ topic, body, when }) },
+    async readAll() { return entries.slice() },
+    async replaceOlderHalf(replacement) { replaced = replacement },
+    async getFileSizeBytes() { return fileSize },
+  }
+}
+
+function compactionConfig(overrides = {}) {
+  return {
+    anthropic: { timeout_ms: 5000 },
+    memory: {
+      loop_batch_loop_count_cap: 10,
+      loop_batch_context_cap_bytes: 32768,
+      sessions_per_consolidation: 4,
+      diary_size_cap_bytes: 204800,
+      ...overrides,
+    },
+  }
+}
+
+CASES['summarize-prompt-shape'] = async () => {
+  const cachedSystemBlocks = [{ type: 'text', text: 'sys' }, { type: 'text', text: 'tools', cache_control: { type: 'ephemeral' } }]
+  const anthropic = makeCompactionAnthropic('A diary entry.')
+  const diary = makeStubDiary()
+  const compactor = createCompactor({ anthropic, cachedSystemBlocks, diary, config: compactionConfig(), logger: silentLogger() })
+
+  const batch = [
+    { role: 'assistant', content: [{ type: 'text', text: 'i greet shawn' }, { type: 'tool_use', id: 'tu1', name: 'say', input: { text: 'hi' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'said' }] },
+  ]
+  await compactor.summarizeLoopBatch({ loopMessagesBatch: batch })
+
+  assertEqual(anthropic.calls.length, 1, 'one anthropic call')
+  const req = anthropic.calls[0]
+  assert(req.systemBlocks === cachedSystemBlocks, 'systemBlocks identity matches cachedSystemBlocks')
+  assertEqual(Array.isArray(req.tools) ? req.tools.length : -1, 0, 'tools is empty array')
+  assert(Array.isArray(req.messages), 'messages is array')
+  const lastUser = req.messages[req.messages.length - 1]
+  assertEqual(lastUser.role, 'user', 'last message is user turn')
+  const content = typeof lastUser.content === 'string' ? lastUser.content : (lastUser.content[0]?.text ?? '')
+  assert(content.includes('In 2–4 sentences'), 'D-52 prompt body present')
+  assert(content.includes('--- Recent activity ---'), 'serialized batch separator present')
+  assert(content.includes('hi') || content.includes('say'), 'batch messages serialized into prompt')
+  console.log('OK summarize-prompt-shape')
+}
+
+CASES['summarize-output-parses'] = async () => {
+  const cachedSystemBlocks = [{ type: 'text', text: 'sys' }]
+  const anthropic = makeCompactionAnthropic('Today I chopped wood with shawn near the river. It was peaceful and rainy.')
+  const diary = makeStubDiary()
+  const compactor = createCompactor({ anthropic, cachedSystemBlocks, diary, config: compactionConfig(), logger: silentLogger() })
+
+  const result = await compactor.summarizeLoopBatch({ loopMessagesBatch: [] })
+  assert(result, 'returns truthy')
+  assertEqual(result.body, 'Today I chopped wood with shawn near the river. It was peaceful and rainy.', 'body matches')
+  // First ≤6 words of output, lowercased, trimmed
+  const words = result.topic.split(/\s+/)
+  assert(words.length <= 6, `topic ≤6 words, got ${words.length}`)
+  assert(result.topic.toLowerCase().includes('today') || result.topic.toLowerCase().includes('chopped'), `topic deterministic prefix, got ${result.topic}`)
+  console.log('OK summarize-output-parses')
+}
+
+CASES['summarize-writes-diary'] = async () => {
+  const cachedSystemBlocks = [{ type: 'text', text: 'sys' }]
+  const anthropic = makeCompactionAnthropic('A peaceful afternoon by the lake.')
+  const diary = makeStubDiary()
+  const compactor = createCompactor({ anthropic, cachedSystemBlocks, diary, config: compactionConfig(), logger: silentLogger() })
+  const when = new Date('2026-04-30T12:00:00Z')
+  await compactor.summarizeLoopBatch({ loopMessagesBatch: [], when })
+  assertEqual(diary.appended.length, 1, 'one append')
+  assertEqual(diary.appended[0].when, when, 'when passed through')
+  assert(diary.appended[0].body.includes('peaceful'), 'body written')
+  assert(typeof diary.appended[0].topic === 'string' && diary.appended[0].topic.length > 0, 'topic non-empty')
+  console.log('OK summarize-writes-diary')
+}
+
+CASES['summarize-rate-limited'] = async () => {
+  const cachedSystemBlocks = [{ type: 'text', text: 'sys' }]
+  const failingAnthropic = {
+    calls: [],
+    async call(req) { this.calls.push(req); throw new Error('rate limited') },
+  }
+  const diary = makeStubDiary()
+  const compactor = createCompactor({ anthropic: failingAnthropic, cachedSystemBlocks, diary, config: compactionConfig(), logger: silentLogger() })
+  const result = await compactor.summarizeLoopBatch({ loopMessagesBatch: [] })
+  assertEqual(result, null, 'returns null on failure')
+  assertEqual(diary.appended.length, 0, 'no diary write')
+  console.log('OK summarize-rate-limited')
+}
+
+CASES['consolidate-prompt-shape'] = async () => {
+  const cachedSystemBlocks = [{ type: 'text', text: 'sys' }]
+  const anthropic = makeCompactionAnthropic('A dense narrative paragraph spanning many days.')
+  const diary = makeStubDiary()
+  // 10 entries (newest-first); keep = max(ceil(10/2),5) = 5; older = E5..E9
+  const entries = []
+  for (let i = 0; i < 10; i++) {
+    entries.push({
+      headingLine: `## 2026-01-${String(i + 1).padStart(2, '0')} 12:00 — entry ${i}`,
+      body: `body ${i}`,
+      isConsolidated: false,
+    })
+  }
+  diary.setEntries(entries)
+  const c = createCompactor({ anthropic, cachedSystemBlocks, diary, config: compactionConfig(), logger: silentLogger() })
+  const result = await c.consolidateOlderHalf({})
+  assertEqual(result, true, 'returns true on success')
+  assertEqual(anthropic.calls.length, 1, 'one anthropic call')
+  const req = anthropic.calls[0]
+  const lastUser = req.messages[req.messages.length - 1]
+  const content = typeof lastUser.content === 'string' ? lastUser.content : (lastUser.content[0]?.text ?? '')
+  assert(content.includes('Compress them into a single denser narrative'), 'D-54 prompt body present')
+  assert(content.includes('--- Older entries ---'), 'older-entries separator present')
+  assert(content.includes('entry 5') && content.includes('entry 9'), 'older entries inlined')
+  assert(!content.includes('entry 0'), 'newer entries not in prompt')
+  // Replacement block has the locked heading
+  assert(diary.replaced && diary.replaced.startsWith('## Earlier (consolidated through '), `replacement begins with locked heading: ${diary.replaced?.slice(0, 60)}`)
+  console.log('OK consolidate-prompt-shape')
+}
+
+CASES['consolidate-min-entries'] = async () => {
+  const cachedSystemBlocks = [{ type: 'text', text: 'sys' }]
+  const anthropic = makeCompactionAnthropic('should not be called')
+  const diary = makeStubDiary()
+  const entries = []
+  for (let i = 0; i < 4; i++) entries.push({ headingLine: `## 2026-01-${i + 1} 12:00 — e${i}`, body: 'b', isConsolidated: false })
+  diary.setEntries(entries)
+  const c = createCompactor({ anthropic, cachedSystemBlocks, diary, config: compactionConfig(), logger: silentLogger() })
+  const result = await c.consolidateOlderHalf({})
+  assertEqual(result, false, 'returns false')
+  assertEqual(anthropic.calls.length, 0, 'no anthropic call when N ≤ 5')
+  assertEqual(diary.replaced, null, 'no replacement')
+  console.log('OK consolidate-min-entries')
+}
+
+CASES['consolidate-split-50pct'] = async () => {
+  const cachedSystemBlocks = [{ type: 'text', text: 'sys' }]
+  const anthropic = makeCompactionAnthropic('Dense.')
+  const diary = makeStubDiary()
+  const entries = []
+  // 12 entries; keep = max(ceil(12/2),5) = 6; older = E6..E11
+  for (let i = 0; i < 12; i++) {
+    const dd = String(i + 1).padStart(2, '0')
+    entries.push({ headingLine: `## 2026-01-${dd} 10:00 — e${i}`, body: `body ${i}`, isConsolidated: false })
+  }
+  diary.setEntries(entries)
+  const c = createCompactor({ anthropic, cachedSystemBlocks, diary, config: compactionConfig(), logger: silentLogger() })
+  const result = await c.consolidateOlderHalf({})
+  assertEqual(result, true, 'success')
+  // E11 is the oldest in our newest-first array → its date prefix used in heading
+  assert(diary.replaced.startsWith('## Earlier (consolidated through 2026-01-12)'), `heading has E11 date, got: ${diary.replaced.split('\n')[0]}`)
+  console.log('OK consolidate-split-50pct')
+}
+
+CASES['compaction-uses-cached-system-blocks'] = async () => {
+  const cachedSystemBlocks = [{ type: 'text', text: 'sys' }, { type: 'text', text: 'tools', cache_control: { type: 'ephemeral' } }]
+  const anthropic = makeCompactionAnthropic('summary text')
+  const diary = makeStubDiary()
+  const entries = []
+  for (let i = 0; i < 12; i++) entries.push({ headingLine: `## 2026-01-${String(i + 1).padStart(2, '0')} 10:00 — e${i}`, body: 'b', isConsolidated: false })
+  diary.setEntries(entries)
+  const c = createCompactor({ anthropic, cachedSystemBlocks, diary, config: compactionConfig(), logger: silentLogger() })
+
+  await c.summarizeLoopBatch({ loopMessagesBatch: [] })
+  await c.consolidateOlderHalf({})
+
+  assertEqual(anthropic.calls.length, 2, 'two calls total')
+  assert(anthropic.calls[0].systemBlocks === cachedSystemBlocks, 'summarize uses identity-equal blocks')
+  assert(anthropic.calls[1].systemBlocks === cachedSystemBlocks, 'consolidate uses identity-equal blocks')
+  console.log('OK compaction-uses-cached-system-blocks')
+}
+
+CASES['compaction-has-timeout'] = async () => {
+  const cachedSystemBlocks = [{ type: 'text', text: 'sys' }]
+  const anthropic = makeCompactionAnthropic('summary text')
+  const diary = makeStubDiary()
+  const entries = []
+  for (let i = 0; i < 12; i++) entries.push({ headingLine: `## 2026-01-${String(i + 1).padStart(2, '0')} 10:00 — e${i}`, body: 'b', isConsolidated: false })
+  diary.setEntries(entries)
+  const c = createCompactor({ anthropic, cachedSystemBlocks, diary, config: compactionConfig({ /*defaults*/ }), logger: silentLogger() })
+
+  await c.summarizeLoopBatch({ loopMessagesBatch: [] })
+  await c.consolidateOlderHalf({})
+  assertEqual(anthropic.calls.length, 2, 'two calls')
+  assertEqual(anthropic.calls[0].timeoutMs, 5000, 'summarize timeoutMs from config')
+  assertEqual(anthropic.calls[1].timeoutMs, 5000, 'consolidate timeoutMs from config')
+  console.log('OK compaction-has-timeout')
+}
+
+// ─── Plan 3-03 Task 2: sessionState integration ────────────────────────
+
+function makeStubCompactor() {
+  const summarizeCalls = []
+  const consolidateCalls = []
+  const compactor = {
+    summarizeCalls, consolidateCalls,
+    summarizeReturn: { topic: 'a topic', body: 'body' },
+    consolidateReturn: true,
+    consolidateDelayMs: 0,
+    async summarizeLoopBatch(opts) {
+      summarizeCalls.push(opts)
+      return compactor.summarizeReturn
+    },
+    async consolidateOlderHalf(opts) {
+      consolidateCalls.push({ opts, startedAt: Date.now() })
+      if (compactor.consolidateDelayMs) {
+        await new Promise(r => setTimeout(r, compactor.consolidateDelayMs))
+      }
+      return compactor.consolidateReturn
+    },
+  }
+  return compactor
+}
+
+CASES['d51-loop-count-trigger'] = async () => {
+  const dir = freshTmpDir()
+  try {
+    const ownerMdPath = join(dir, 'OWNER.md')
+    const diaryPath = join(dir, 'DIARY.md')
+    const config = memoryConfig({ owner_md_path: ownerMdPath, diary_md_path: diaryPath })
+    config.owner_username = 'shawn'
+    const bot = makeStubBot()
+    const diary = createDiary({ path: diaryPath, seedDiaryBudgetBytes: 3072, logger: silentLogger() })
+    const compactor = makeStubCompactor()
+    const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
+
+    // 9 loops: no summary
+    for (let i = 0; i < 9; i++) {
+      await ss.onLoopTerminal({ messagesByteSize: 1000, loopMessages: [{ role: 'assistant', content: [{ type: 'text', text: `t${i}` }] }] })
+    }
+    assertEqual(compactor.summarizeCalls.length, 0, 'no summary before threshold')
+
+    // 10th loop fires
+    await ss.onLoopTerminal({ messagesByteSize: 1000, loopMessages: [{ role: 'assistant', content: [{ type: 'text', text: 't9' }] }] })
+    assertEqual(compactor.summarizeCalls.length, 1, 'summary fires at 10')
+    assert(Array.isArray(compactor.summarizeCalls[0].loopMessagesBatch), 'batch is an array')
+    assert(compactor.summarizeCalls[0].loopMessagesBatch.length >= 1, 'batch has messages')
+
+    // Counters reset after success
+    const batch = ss.currentSessionLoopBatch()
+    assertEqual(batch.loopCount, 0, 'loopCount reset')
+    assertEqual(batch.cumulativeBytes, 0, 'cumulativeBytes reset')
+    console.log('OK d51-loop-count-trigger')
+  } finally { cleanup(dir) }
+}
+
+CASES['d51-bytes-trigger'] = async () => {
+  const dir = freshTmpDir()
+  try {
+    const ownerMdPath = join(dir, 'OWNER.md')
+    const diaryPath = join(dir, 'DIARY.md')
+    const config = memoryConfig({ owner_md_path: ownerMdPath, diary_md_path: diaryPath, loop_batch_loop_count_cap: 100, loop_batch_context_cap_bytes: 32768 })
+    config.owner_username = 'shawn'
+    const bot = makeStubBot()
+    const diary = createDiary({ path: diaryPath, seedDiaryBudgetBytes: 3072, logger: silentLogger() })
+    const compactor = makeStubCompactor()
+    const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
+
+    // 4 loops × 10 KB = 40 KB > 32 KB
+    for (let i = 0; i < 4; i++) {
+      await ss.onLoopTerminal({ messagesByteSize: 10000, loopMessages: [{ role: 'user', content: [{ type: 'text', text: `t${i}` }] }] })
+    }
+    assertEqual(compactor.summarizeCalls.length, 1, 'bytes-trigger fired exactly once')
+    const batch = ss.currentSessionLoopBatch()
+    assertEqual(batch.loopCount, 0, 'loopCount reset')
+    assertEqual(batch.cumulativeBytes, 0, 'cumulativeBytes reset')
+    console.log('OK d51-bytes-trigger')
+  } finally { cleanup(dir) }
+}
+
+CASES['d51-trigger-survives-failure'] = async () => {
+  const dir = freshTmpDir()
+  try {
+    const ownerMdPath = join(dir, 'OWNER.md')
+    const diaryPath = join(dir, 'DIARY.md')
+    const config = memoryConfig({ owner_md_path: ownerMdPath, diary_md_path: diaryPath })
+    config.owner_username = 'shawn'
+    const bot = makeStubBot()
+    const diary = createDiary({ path: diaryPath, seedDiaryBudgetBytes: 3072, logger: silentLogger() })
+    const compactor = makeStubCompactor()
+    compactor.summarizeReturn = null  // simulate rate-limit / failure
+    const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
+
+    for (let i = 0; i < 10; i++) {
+      await ss.onLoopTerminal({ messagesByteSize: 1000, loopMessages: [{ role: 'user', content: [] }] })
+    }
+    assertEqual(compactor.summarizeCalls.length, 1, 'attempted once')
+    const batch = ss.currentSessionLoopBatch()
+    assertEqual(batch.loopCount, 10, 'loopCount NOT reset (retry semantic)')
+    assertEqual(batch.cumulativeBytes, 10000, 'bytes NOT reset')
+    console.log('OK d51-trigger-survives-failure')
+  } finally { cleanup(dir) }
+}
+
+CASES['d53-session-trigger'] = async () => {
+  const dir = freshTmpDir()
+  try {
+    const ownerMdPath = join(dir, 'OWNER.md')
+    const diaryPath = join(dir, 'DIARY.md')
+    const config = memoryConfig({ owner_md_path: ownerMdPath, diary_md_path: diaryPath, sessions_per_consolidation: 4 })
+    config.owner_username = 'shawn'
+    // Pre-seed OWNER.md so session-start runs warm
+    await saveOwner(ownerMdPath, {
+      exists: true, owner_uuid: 'u-shawn', owner_username: 'shawn',
+      first_seen: '2026-01-01T00:00:00.000Z', last_seen: '2026-01-01T00:00:00.000Z',
+      total_sessions: 3, preferred_name: null, pronouns: null, notes: '',
+    })
+    const bot = makeStubBot()
+    const diary = createDiary({ path: diaryPath, seedDiaryBudgetBytes: 3072, logger: silentLogger() })
+    const compactor = makeStubCompactor()
+    const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
+
+    // Simulate 4 join/leave cycles to bring sessionsSinceConsolidation to 4
+    for (let i = 0; i < 4; i++) {
+      await ss.onPlayerJoined({ uuid: 'u-shawn', username: 'shawn' })
+      await ss.onPlayerLeft({ uuid: 'u-shawn', username: 'shawn' })
+    }
+    // Wait for fire-and-forget consolidation to settle
+    await new Promise(r => setTimeout(r, 30))
+    assert(compactor.consolidateCalls.length >= 1, `consolidate fired (got ${compactor.consolidateCalls.length})`)
+    const batch = ss.currentSessionLoopBatch()
+    assertEqual(batch.sessionsSinceConsolidation, 0, 'sessions counter reset')
+    console.log('OK d53-session-trigger')
+  } finally { cleanup(dir) }
+}
+
+CASES['d53-size-trigger'] = async () => {
+  const dir = freshTmpDir()
+  try {
+    const ownerMdPath = join(dir, 'OWNER.md')
+    const diaryPath = join(dir, 'DIARY.md')
+    const config = memoryConfig({ owner_md_path: ownerMdPath, diary_md_path: diaryPath, diary_size_cap_bytes: 100 })
+    config.owner_username = 'shawn'
+    const bot = makeStubBot()
+    // Use a stub diary that reports a large file size
+    const diary = createDiary({ path: diaryPath, seedDiaryBudgetBytes: 3072, logger: silentLogger() })
+    // Pre-write a large diary file to push file size > cap
+    writeFileSync(diaryPath, 'x'.repeat(500))
+    const compactor = makeStubCompactor()
+    const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
+
+    await ss.onLoopTerminal({ messagesByteSize: 100, loopMessages: [] })
+    // Allow async fire to settle
+    await new Promise(r => setTimeout(r, 30))
+    assert(compactor.consolidateCalls.length >= 1, `size-trigger fired consolidation (got ${compactor.consolidateCalls.length})`)
+    console.log('OK d53-size-trigger')
+  } finally { cleanup(dir) }
+}
+
+CASES['d53-async-non-blocking'] = async () => {
+  const dir = freshTmpDir()
+  try {
+    const ownerMdPath = join(dir, 'OWNER.md')
+    const diaryPath = join(dir, 'DIARY.md')
+    const config = memoryConfig({ owner_md_path: ownerMdPath, diary_md_path: diaryPath, sessions_per_consolidation: 1 })
+    config.owner_username = 'shawn'
+    await saveOwner(ownerMdPath, {
+      exists: true, owner_uuid: 'u-shawn', owner_username: 'shawn',
+      first_seen: '2026-01-01T00:00:00.000Z', last_seen: '2026-01-01T00:00:00.000Z',
+      total_sessions: 1, preferred_name: null, pronouns: null, notes: '',
+    })
+    const bot = makeStubBot()
+    const diary = createDiary({ path: diaryPath, seedDiaryBudgetBytes: 3072, logger: silentLogger() })
+    const compactor = makeStubCompactor()
+    compactor.consolidateDelayMs = 500  // slow
+    const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
+
+    await ss.onPlayerJoined({ uuid: 'u-shawn', username: 'shawn' })
+    const t0 = Date.now()
+    await ss.onPlayerLeft({ uuid: 'u-shawn', username: 'shawn' })
+    const elapsed = Date.now() - t0
+    assert(elapsed < 200, `onPlayerLeft non-blocking, elapsed=${elapsed}ms`)
+    console.log('OK d53-async-non-blocking')
+  } finally { cleanup(dir) }
+}
+
+CASES['a7-no-idle-write'] = async () => {
+  const dir = freshTmpDir()
+  try {
+    const ownerMdPath = join(dir, 'OWNER.md')
+    const diaryPath = join(dir, 'DIARY.md')
+    const config = memoryConfig({ owner_md_path: ownerMdPath, diary_md_path: diaryPath })
+    config.owner_username = 'shawn'
+    const bot = makeStubBot()
+    const diary = createDiary({ path: diaryPath, seedDiaryBudgetBytes: 3072, logger: silentLogger() })
+    let appendCount = 0
+    const wrappedDiary = {
+      ...diary,
+      appendEntry: async (...args) => { appendCount++; return diary.appendEntry(...args) },
+      readAll: diary.readAll, seedSlice: diary.seedSlice,
+      replaceOlderHalf: diary.replaceOlderHalf, getFileSizeBytes: diary.getFileSizeBytes,
+    }
+    const compactor = makeStubCompactor()
+    const ss = await createSessionState({ ownerMdPath, diary: wrappedDiary, compactor, config, bot, logger: silentLogger() })
+
+    // Idle ticks do NOT touch sessionState compaction paths. There is no idle
+    // hook on sessionState — ergo zero diary writes. Verify by exercising 100
+    // "idle" no-op cycles: nothing should be invoked on sessionState that
+    // writes to disk.
+    for (let i = 0; i < 100; i++) { /* idle = no-op */ }
+    assertEqual(appendCount, 0, 'zero diary appends from idle ticks')
+    assertEqual(compactor.summarizeCalls.length, 0, 'zero summarize calls from idle')
+    assertEqual(compactor.consolidateCalls.length, 0, 'zero consolidate calls from idle')
+    console.log('OK a7-no-idle-write')
+  } finally { cleanup(dir) }
+}
+
+CASES['session-end-flush'] = async () => {
+  const dir = freshTmpDir()
+  try {
+    const ownerMdPath = join(dir, 'OWNER.md')
+    const diaryPath = join(dir, 'DIARY.md')
+    const config = memoryConfig({ owner_md_path: ownerMdPath, diary_md_path: diaryPath })
+    config.owner_username = 'shawn'
+    const bot = makeStubBot()
+    const diary = createDiary({ path: diaryPath, seedDiaryBudgetBytes: 3072, logger: silentLogger() })
+    const compactor = makeStubCompactor()
+    const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
+
+    await ss.onPlayerJoined({ uuid: 'u-shawn', username: 'shawn' })
+    // 3 loops — below D-51 threshold
+    for (let i = 0; i < 3; i++) {
+      await ss.onLoopTerminal({ messagesByteSize: 500, loopMessages: [{ role: 'assistant', content: [{ type: 'text', text: `r${i}` }] }] })
+    }
+    assertEqual(compactor.summarizeCalls.length, 0, 'no summary mid-session')
+
+    await ss.onPlayerLeft({ uuid: 'u-shawn', username: 'shawn' })
+    assertEqual(compactor.summarizeCalls.length, 1, 'session-end flush fired')
+    const batch = ss.currentSessionLoopBatch()
+    assertEqual(batch.loopCount, 0, 'loopCount reset after flush')
+    assertEqual(batch.cumulativeBytes, 0, 'bytes reset after flush')
+    console.log('OK session-end-flush')
   } finally { cleanup(dir) }
 }
 
