@@ -9,7 +9,7 @@
 - [x] **Phase 1: Bot Substrate** - Mineflayer connection, action registry, FSM, and scripted reflex behavior (no LLMs yet)
 - [x] **Phase 2: Two-Layer LLM Loop** - Personality LLM (Haiku 3) + movement LLM (Ollama Qwen) wired into the FSM with guardrails
 - [x] **Phase 2.1: Expand Actions & Game State (INSERTED)** - Broaden Zod action registry beyond goTo/setGoals and surface inventory/surroundings/position to the personality LLM as text so Sei can actually play
-- [ ] **Phase 3: Memory & Persistence** - SQLite-backed identity, owner relationship, world progression, and LLM-directed compaction
+- [x] **Phase 3: Memory & Persistence** - Active-loop architecture (Loop owns canonical messages, single-flight gating, abort-and-resume, 20-iter cap), markdown OWNER.md + DIARY.md memory layer with seed-loader, and LLM-directed compaction (per-Loop summary + async session-end consolidation, both reusing cached system blocks). MEM-05 SQLite deferred to V2.
 - [ ] **Phase 4: Electron GUI & Packaging** - Setup form, Start/Stop, live log viewer, and bundled .dmg/.exe distribution
 
 ## Phase Details
