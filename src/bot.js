@@ -77,7 +77,6 @@ function createBotInstance(config) {
       startPosHealer(bot)
       startAutoEat(bot)
       startCombat(bot, config)
-      startChat(bot, config)
       startFollow(bot, config)
       const registry = createDefaultRegistry()
       createFSM(bot, config, registry)
@@ -125,6 +124,10 @@ function createBotInstance(config) {
             logger,
           })
           sessionState.setCompactor(compactor)
+          // 260502-h6i: chat behavior gets the orchestrator so the stop-verb
+          // pre-LLM fast path can abort the active Loop and clear owner_goals
+          // without paying a Haiku round-trip.
+          startChat(bot, config, orchestrator)
           bot.on('sei:dispatch', ({ event, data, signal }) => { orchestrator.handleDispatch(event, data, signal) })
           bot._seiDebouncer = orchestrator.debouncer
           bot._seiAttackThrottle = orchestrator.throttle

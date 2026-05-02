@@ -79,6 +79,8 @@ const MEMORY_CASES = [
   // 260502-h6i — owner chat preempt
   'owner-chat-preempts-not-drops',
   'non-owner-chat-still-drops',
+  // 260502-h6i — stop-verb pre-LLM hard cancel
+  'stop-verb-hard-cancel',
 ]
 
 const HARNESSES = [
