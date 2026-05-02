@@ -1274,6 +1274,70 @@ CASES['no-op-loop-skips-diary'] = async () => {
   } finally { cleanup(dir) }
 }
 
+// ─── 260502-h6i: owner-chat preempt verification ───────────────────────
+
+CASES['owner-chat-preempts-not-drops'] = async () => {
+  const { classifyChatEvent } = await import('../src/llm/orchestrator.js')
+  // The bug shape: chat behavior emits `sei:chat_received` with ownerSpoke:true.
+  const r1 = classifyChatEvent('sei:chat_received', { ownerSpoke: true, message: 'STOP doing that' })
+  assert(r1.isChatEvent, 'sei:chat_received is a chat event')
+  assert(r1.isOwnerChat, 'sei:chat_received with ownerSpoke=true is owner chat (preempts)')
+
+  // Legacy owner_chat shape still recognized.
+  const r2 = classifyChatEvent('owner_chat', { message: 'hi' })
+  assert(r2.isOwnerChat, 'legacy owner_chat is owner chat (no flag required)')
+
+  // The two other historical shapes work too.
+  const r3 = classifyChatEvent('sei:chat', { ownerSpoke: true, message: 'hi' })
+  assert(r3.isOwnerChat, 'sei:chat with ownerSpoke=true is owner chat')
+  const r4 = classifyChatEvent('chat', { ownerSpoke: true, message: 'hi' })
+  assert(r4.isOwnerChat, 'chat with ownerSpoke=true is owner chat')
+
+  // Sanity: simulate the orchestrator's single-flight decision tree.
+  // currentLoop active + owner chat → preempt (no drop log).
+  function simulate(event, data, currentLoopActive) {
+    const { isOwnerChat } = classifyChatEvent(event, data)
+    if (currentLoopActive && !isOwnerChat) return 'drop'
+    if (currentLoopActive &&  isOwnerChat) return 'preempt'
+    return 'fresh'
+  }
+  assertEqual(simulate('sei:chat_received', { ownerSpoke: true,  message: 'x' }, true), 'preempt', 'owner mid-loop preempts')
+  assertEqual(simulate('sei:chat_received', { ownerSpoke: true,  message: 'x' }, false), 'fresh',   'owner idle starts fresh')
+  console.log('OK owner-chat-preempts-not-drops')
+}
+
+CASES['non-owner-chat-still-drops'] = async () => {
+  const { classifyChatEvent } = await import('../src/llm/orchestrator.js')
+  // Non-owner sei:chat_received MUST NOT preempt.
+  const r = classifyChatEvent('sei:chat_received', { ownerSpoke: false, message: 'hi' })
+  assert(r.isChatEvent, 'sei:chat_received is still a chat event')
+  assert(!r.isOwnerChat, 'sei:chat_received without ownerSpoke is NOT owner chat')
+
+  // Missing ownerSpoke is treated as falsy.
+  const r2 = classifyChatEvent('sei:chat_received', { message: 'hi' })
+  assert(!r2.isOwnerChat, 'sei:chat_received with no ownerSpoke flag is NOT owner chat')
+
+  // null data is safe.
+  const r3 = classifyChatEvent('sei:chat_received', null)
+  assert(!r3.isOwnerChat, 'null data → not owner chat')
+
+  // Non-chat events are not chat events at all.
+  const idle = classifyChatEvent('idle', {})
+  assert(!idle.isChatEvent, 'idle is not a chat event')
+  assert(!idle.isOwnerChat, 'idle is not owner chat')
+
+  // Drop branch logic: currentLoop active + non-owner chat → drop.
+  function simulate(event, data, currentLoopActive) {
+    const { isOwnerChat } = classifyChatEvent(event, data)
+    if (currentLoopActive && !isOwnerChat) return 'drop'
+    if (currentLoopActive &&  isOwnerChat) return 'preempt'
+    return 'fresh'
+  }
+  assertEqual(simulate('sei:chat_received', { ownerSpoke: false, message: 'x' }, true), 'drop', 'non-owner mid-loop drops')
+  assertEqual(simulate('idle', {}, true), 'drop', 'idle mid-loop drops (defense-in-depth)')
+  console.log('OK non-owner-chat-still-drops')
+}
+
 // ─── 260502-h6i: prompt-cache fix verification ─────────────────────────
 
 CASES['cache-system-blocks-byte-stable'] = async () => {

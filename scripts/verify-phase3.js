@@ -76,6 +76,9 @@ const MEMORY_CASES = [
   'cache-marker-on-last-tool',
   // 260502-h6i — diary mutation gate
   'no-op-loop-skips-diary',
+  // 260502-h6i — owner chat preempt
+  'owner-chat-preempts-not-drops',
+  'non-owner-chat-still-drops',
 ]
 
 const HARNESSES = [

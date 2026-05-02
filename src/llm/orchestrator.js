@@ -65,6 +65,23 @@ const PERSONALITY_NAMES = new Set(['say', 'setGoals', 'handOffToMovement'])
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
 /**
+ * 260502-h6i: chat-event classification used by the dispatch single-flight
+ * branch. Owner chat preempts an active Loop; non-owner chat (or non-chat
+ * events) drops while a Loop is active. Exposed as a pure helper so the
+ * verify harness can assert the wiring without booting an orchestrator.
+ *
+ * Owner sources:
+ *   - any chat event with `data.ownerSpoke === true`
+ *   - the legacy `owner_chat` event name (no flag required)
+ */
+export function classifyChatEvent(event, data) {
+  const isChatEvent = event === 'chat' || event === 'sei:chat'
+                   || event === 'owner_chat' || event === 'sei:chat_received'
+  const isOwnerChat = isChatEvent && (data?.ownerSpoke === true || event === 'owner_chat')
+  return { isChatEvent, isOwnerChat }
+}
+
+/**
  * Compose the seed_owner + seed_diary + event + snapshot blocks for the
  * first user turn of every fresh Loop (D-45). Exposed as a top-level export
  * so the verification harness can drive it without booting the full
@@ -346,7 +363,10 @@ function maybeWarnByteCap(loop, warned) {
    * is already running.
    */
   async function handleDispatch(event, data, signal) {
-    const isOwnerChat = event === 'chat' || event === 'sei:chat' || event === 'owner_chat'
+    // 260502-h6i: chat events arrive from src/behaviors/chat.js as
+    // `sei:chat_received` with an `ownerSpoke` flag. The legacy `owner_chat`
+    // shape is preserved for backwards-compat.
+    const { isOwnerChat } = classifyChatEvent(event, data)
     const isIdle     = event === 'idle' || event === 'sei:idle'
 
     // Defense-in-depth idle gate (D-39): the FSM should already prevent this,
