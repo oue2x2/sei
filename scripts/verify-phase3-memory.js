@@ -990,14 +990,15 @@ CASES['d51-loop-count-trigger'] = async () => {
     const compactor = makeStubCompactor()
     const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
 
-    // 9 loops: no summary
+    // 9 loops: no summary. 260502-h6i: each loop carries a mutating tool_use
+    // so the diary trigger remains unconditional under the new mutation gate.
     for (let i = 0; i < 9; i++) {
-      await ss.onLoopTerminal({ messagesByteSize: 1000, loopMessages: [{ role: 'assistant', content: [{ type: 'text', text: `t${i}` }] }] })
+      await ss.onLoopTerminal({ messagesByteSize: 1000, loopMessages: [{ role: 'assistant', content: [{ type: 'tool_use', id: `u${i}`, name: 'dig', input: {} }] }] })
     }
     assertEqual(compactor.summarizeCalls.length, 0, 'no summary before threshold')
 
     // 10th loop fires
-    await ss.onLoopTerminal({ messagesByteSize: 1000, loopMessages: [{ role: 'assistant', content: [{ type: 'text', text: 't9' }] }] })
+    await ss.onLoopTerminal({ messagesByteSize: 1000, loopMessages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'u9', name: 'dig', input: {} }] }] })
     assertEqual(compactor.summarizeCalls.length, 1, 'summary fires at 10')
     assert(Array.isArray(compactor.summarizeCalls[0].loopMessagesBatch), 'batch is an array')
     assert(compactor.summarizeCalls[0].loopMessagesBatch.length >= 1, 'batch has messages')
@@ -1022,9 +1023,10 @@ CASES['d51-bytes-trigger'] = async () => {
     const compactor = makeStubCompactor()
     const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
 
-    // 4 loops × 10 KB = 40 KB > 32 KB
+    // 4 loops × 10 KB = 40 KB > 32 KB. 260502-h6i: include a mutating tool_use
+    // so the bytes trigger isn't masked by the new mutation gate.
     for (let i = 0; i < 4; i++) {
-      await ss.onLoopTerminal({ messagesByteSize: 10000, loopMessages: [{ role: 'user', content: [{ type: 'text', text: `t${i}` }] }] })
+      await ss.onLoopTerminal({ messagesByteSize: 10000, loopMessages: [{ role: 'assistant', content: [{ type: 'tool_use', id: `u${i}`, name: 'placeBlock', input: {} }] }] })
     }
     assertEqual(compactor.summarizeCalls.length, 1, 'bytes-trigger fired exactly once')
     const batch = ss.currentSessionLoopBatch()
@@ -1047,8 +1049,9 @@ CASES['d51-trigger-survives-failure'] = async () => {
     compactor.summarizeReturn = null  // simulate rate-limit / failure
     const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
 
+    // 260502-h6i: mutating tool_use ensures the gate lets the trigger fire.
     for (let i = 0; i < 10; i++) {
-      await ss.onLoopTerminal({ messagesByteSize: 1000, loopMessages: [{ role: 'user', content: [] }] })
+      await ss.onLoopTerminal({ messagesByteSize: 1000, loopMessages: [{ role: 'assistant', content: [{ type: 'tool_use', id: `u${i}`, name: 'dig', input: {} }] }] })
     }
     assertEqual(compactor.summarizeCalls.length, 1, 'attempted once')
     const batch = ss.currentSessionLoopBatch()
@@ -1184,9 +1187,10 @@ CASES['session-end-flush'] = async () => {
     const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
 
     await ss.onPlayerJoined({ uuid: 'u-shawn', username: 'shawn' })
-    // 3 loops — below D-51 threshold
+    // 3 loops — below D-51 threshold. 260502-h6i: mutating tool_use so the
+    // session-end flush still fires under the mutation gate.
     for (let i = 0; i < 3; i++) {
-      await ss.onLoopTerminal({ messagesByteSize: 500, loopMessages: [{ role: 'assistant', content: [{ type: 'text', text: `r${i}` }] }] })
+      await ss.onLoopTerminal({ messagesByteSize: 500, loopMessages: [{ role: 'assistant', content: [{ type: 'tool_use', id: `u${i}`, name: 'dig', input: {} }] }] })
     }
     assertEqual(compactor.summarizeCalls.length, 0, 'no summary mid-session')
 
@@ -1196,6 +1200,77 @@ CASES['session-end-flush'] = async () => {
     assertEqual(batch.loopCount, 0, 'loopCount reset after flush')
     assertEqual(batch.cumulativeBytes, 0, 'bytes reset after flush')
     console.log('OK session-end-flush')
+  } finally { cleanup(dir) }
+}
+
+// ─── 260502-h6i: diary mutation gate verification ──────────────────────
+
+CASES['no-op-loop-skips-diary'] = async () => {
+  const dir = freshTmpDir()
+  try {
+    const ownerMdPath = join(dir, 'OWNER.md')
+    const diaryPath = join(dir, 'DIARY.md')
+    const config = memoryConfig({ owner_md_path: ownerMdPath, diary_md_path: diaryPath, loop_batch_loop_count_cap: 1 })
+    config.owner_username = 'shawn'
+    const bot = makeStubBot()
+    const diary = createDiary({ path: diaryPath, seedDiaryBudgetBytes: 3072, logger: silentLogger() })
+    const compactor = makeStubCompactor()
+    const ss = await createSessionState({ ownerMdPath, diary, compactor, config, bot, logger: silentLogger() })
+
+    // Pure say + setGoals loop — no mutating action. Cap = 1 so this would
+    // ordinarily trigger the diary write; the mutation gate must skip it.
+    const noopLoop = [{
+      role: 'assistant',
+      content: [
+        { type: 'tool_use', id: 'a1', name: 'say', input: { text: 'hi' } },
+        { type: 'tool_use', id: 'a2', name: 'setGoals', input: { list: 'self', op: 'add', goal: 'be happy' } },
+      ],
+    }]
+    await ss.onLoopTerminal({ messagesByteSize: 800, loopMessages: noopLoop })
+    assertEqual(compactor.summarizeCalls.length, 0, 'no summary on no-op loop')
+    let batch = ss.currentSessionLoopBatch()
+    assertEqual(batch.loopCount, 0, 'loopCount reset after skipped no-op cadence')
+    assertEqual(batch.cumulativeBytes, 0, 'bytes reset after skipped no-op cadence')
+
+    // Now drive a mutating loop — cap fires → summary fires.
+    const digLoop = [{
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'b1', name: 'dig', input: { x: 0, y: 64, z: 0 } }],
+    }]
+    await ss.onLoopTerminal({ messagesByteSize: 800, loopMessages: digLoop })
+    assertEqual(compactor.summarizeCalls.length, 1, 'summary fires on mutating loop')
+    batch = ss.currentSessionLoopBatch()
+    assertEqual(batch.loopCount, 0, 'counters reset after successful summary')
+
+    // Sanity: goTo:fail must NOT count as mutation.
+    const failGoTo = [
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'goTo', input: { x: 1, y: 2, z: 3, range: 1 } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'goTo:fail' }],
+      },
+    ]
+    await ss.onLoopTerminal({ messagesByteSize: 500, loopMessages: failGoTo })
+    assertEqual(compactor.summarizeCalls.length, 1, 'goTo:fail does not trigger diary')
+
+    // goTo:ok IS mutating.
+    const okGoTo = [
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'd1', name: 'goTo', input: { x: 1, y: 2, z: 3, range: 1 } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'd1', content: 'goTo:ok' }],
+      },
+    ]
+    await ss.onLoopTerminal({ messagesByteSize: 500, loopMessages: okGoTo })
+    assertEqual(compactor.summarizeCalls.length, 2, 'goTo:ok triggers diary')
+
+    console.log('OK no-op-loop-skips-diary')
   } finally { cleanup(dir) }
 }
 

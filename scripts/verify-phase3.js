@@ -74,6 +74,8 @@ const MEMORY_CASES = [
   // 260502-h6i — prompt cache fix
   'cache-system-blocks-byte-stable',
   'cache-marker-on-last-tool',
+  // 260502-h6i — diary mutation gate
+  'no-op-loop-skips-diary',
 ]
 
 const HARNESSES = [

@@ -30,6 +30,50 @@
 
 import { loadOwner, saveOwner } from '../memory/owner.js'
 
+// 260502-h6i: diary writes must be gated on observable world-state mutation.
+// A loop is "mutating" when its assistant turns invoke any of these actions
+// directly (or `goTo` with an `ok` result — failures don't count).
+const MUTATING_ACTIONS = new Set([
+  'dig','placeBlock','attackEntity','dropItem','depositItem','withdrawItem',
+  'consumeItem','activateItem','equip','sleep','openContainer',
+])
+
+/**
+ * Walk a Loop's canonical messages array (assistant turns + paired
+ * user-tool-result turns) and decide whether any mutating action ran.
+ * `goTo` is mutating only when the matching tool_result content begins
+ * with `goTo:ok` — `goTo:fail` and aborted variants are non-mutating.
+ */
+function loopHasMutation(loopMessages) {
+  if (!Array.isArray(loopMessages)) return false
+  // Index tool_results by tool_use_id for O(1) lookup.
+  const resultById = new Map()
+  for (const msg of loopMessages) {
+    if (!msg || msg.role !== 'user' || !Array.isArray(msg.content)) continue
+    for (const blk of msg.content) {
+      if (blk && blk.type === 'tool_result' && blk.tool_use_id) {
+        const c = blk.content
+        const text = typeof c === 'string'
+          ? c
+          : Array.isArray(c) ? c.map(b => b && b.text).filter(Boolean).join(' ') : ''
+        resultById.set(blk.tool_use_id, text)
+      }
+    }
+  }
+  for (const msg of loopMessages) {
+    if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
+    for (const blk of msg.content) {
+      if (!blk || blk.type !== 'tool_use') continue
+      if (MUTATING_ACTIONS.has(blk.name)) return true
+      if (blk.name === 'goTo') {
+        const r = resultById.get(blk.id) ?? ''
+        if (typeof r === 'string' && r.startsWith('goTo:ok')) return true
+      }
+    }
+  }
+  return false
+}
+
 /**
  * @param {Object} opts
  * @param {string} opts.ownerMdPath
@@ -61,6 +105,11 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
   // Plan 3-03: accumulate Loop.messages arrays since the last DIARY write.
   // Flushed (and reset) on a successful summarizeLoopBatch.
   let loopBatchMessages = []
+  // 260502-h6i: only flush a loop-batch summary when at least one Loop in
+  // the batch performed a mutating action. Pure say/setGoals/lookAt loops
+  // (e.g. the bot answering "hi") would otherwise cause Haiku to confabulate
+  // a diary entry from the seed text.
+  let batchHasMutation = false
   // Pitfall 6 / Pitfall 7: single-flight gate for async consolidation —
   // prevents two consolidation passes from racing on DIARY.md.
   let consolidationLock = false
@@ -131,25 +180,34 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
     if (!player || !player.uuid) return
     if (player.uuid !== activeOwnerUuid) return
 
-    // D-56 session-end flush: if there are any pending uncompacted loops in
-    // the current session, fire one summarizeLoopBatch for the residual
-    // batch BEFORE we tear down the session. Awaited (not fire-and-forget)
-    // so the summary lands before counters reset.
+    // D-56 session-end flush: fire summarizeLoopBatch for any pending,
+    // uncompacted loops BEFORE we tear down the session. 260502-h6i: only
+    // when the residual batch contains at least one mutating action — a
+    // pure-chat-only session leaves no diary entry behind.
     if (compactor && (loopCount > 0 || cumulativeLoopBytes > 0)) {
-      try {
-        const result = await compactor.summarizeLoopBatch({
-          loopMessagesBatch: loopBatchMessages.flat(),
-          when: new Date(),
-        })
-        if (result) {
-          loopCount = 0
-          cumulativeLoopBytes = 0
-          loopBatchMessages = []
-        } else {
-          logger.warn?.('[sei/session] session-end flush: summary failed; leaving batch for next session')
+      if (!batchHasMutation) {
+        logger.info?.('[sei/session] session-end flush skipped — no mutation observed in residual batch')
+        loopCount = 0
+        cumulativeLoopBytes = 0
+        loopBatchMessages = []
+        batchHasMutation = false
+      } else {
+        try {
+          const result = await compactor.summarizeLoopBatch({
+            loopMessagesBatch: loopBatchMessages.flat(),
+            when: new Date(),
+          })
+          if (result) {
+            loopCount = 0
+            cumulativeLoopBytes = 0
+            loopBatchMessages = []
+            batchHasMutation = false
+          } else {
+            logger.warn?.('[sei/session] session-end flush: summary failed; leaving batch for next session')
+          }
+        } catch (err) {
+          logger.warn?.(`[sei/session] session-end flush failed: ${err.message}`)
         }
-      } catch (err) {
-        logger.warn?.(`[sei/session] session-end flush failed: ${err.message}`)
       }
     }
 
@@ -178,6 +236,7 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
     loopCount = 0
     cumulativeLoopBytes = 0
     loopBatchMessages = []
+    batchHasMutation = false
   }
 
   function findOwnerInPlayers() {
@@ -220,6 +279,10 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
     loopCount += 1
     if (Number.isFinite(messagesByteSize)) cumulativeLoopBytes += messagesByteSize
     if (Array.isArray(loopMessages)) loopBatchMessages.push(loopMessages)
+    // 260502-h6i: track mutation across the whole batch. A non-mutating loop
+    // alone never trips the diary trigger; a single mutating loop in the
+    // batch makes the entire pending batch eligible to flush.
+    if (loopHasMutation(loopMessages)) batchHasMutation = true
     logger.info?.(`[sei/session] loop terminal loop_count=${loopCount} cumulative_bytes=${cumulativeLoopBytes}`)
 
     if (compactor) {
@@ -228,23 +291,36 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
       const loopCap  = config.memory?.loop_batch_loop_count_cap  ?? Infinity
       const bytesCap = config.memory?.loop_batch_context_cap_bytes ?? Infinity
       if (loopCount >= loopCap || cumulativeLoopBytes >= bytesCap) {
-        try {
-          const result = await compactor.summarizeLoopBatch({
-            loopMessagesBatch: loopBatchMessages.flat(),
-            when: new Date(),
-          })
-          if (result) {
-            // Successful DIARY write — reset counters.
-            loopCount = 0
-            cumulativeLoopBytes = 0
-            loopBatchMessages = []
-          } else {
-            // Pitfall: leave the batch intact for retry on next loop-terminal
-            // (T-03-17 documented decision — failed summary doesn't lose data).
-            logger.warn?.('[sei/session] loop-batch summary failed; leaving batch for retry')
+        if (!batchHasMutation) {
+          // 260502-h6i: cadence cap fired but the entire batch was non-
+          // mutating chat. Drop the batch and reset counters so non-mutating
+          // history doesn't grow unbounded — and skip the diary write so
+          // Haiku doesn't confabulate an entry from the seed text.
+          logger.info?.('[sei/session] loop-batch cadence hit but no mutation observed — skipping diary write')
+          loopCount = 0
+          cumulativeLoopBytes = 0
+          loopBatchMessages = []
+          // batchHasMutation already false; no reset needed.
+        } else {
+          try {
+            const result = await compactor.summarizeLoopBatch({
+              loopMessagesBatch: loopBatchMessages.flat(),
+              when: new Date(),
+            })
+            if (result) {
+              // Successful DIARY write — reset counters.
+              loopCount = 0
+              cumulativeLoopBytes = 0
+              loopBatchMessages = []
+              batchHasMutation = false
+            } else {
+              // Pitfall: leave the batch intact for retry on next loop-terminal
+              // (T-03-17 documented decision — failed summary doesn't lose data).
+              logger.warn?.('[sei/session] loop-batch summary failed; leaving batch for retry')
+            }
+          } catch (err) {
+            logger.warn?.(`[sei/session] loop-batch summary threw: ${err.message}`)
           }
-        } catch (err) {
-          logger.warn?.(`[sei/session] loop-batch summary threw: ${err.message}`)
         }
       }
 
