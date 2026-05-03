@@ -1,5 +1,6 @@
 // src/observers/blocks.js — pure function of bot state
 import mcDataLib from 'minecraft-data'
+import { Vec3 } from 'vec3'
 import { getHealedPos } from './posHealer.js'
 
 const COLORS = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'light_gray', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black']
@@ -52,7 +53,7 @@ const NEIGHBOR_OFFSETS = [
  */
 export function isExposed(bot, pos) {
   for (const [dx, dy, dz] of NEIGHBOR_OFFSETS) {
-    const nb = bot.blockAt?.({ x: pos.x + dx, y: pos.y + dy, z: pos.z + dz })
+    const nb = bot.blockAt?.(new Vec3(pos.x + dx, pos.y + dy, pos.z + dz))
     if (!nb) continue // unloaded chunk: don't claim exposed (conservative)
     if (nb.boundingBox === 'empty') return true
     if (SEE_THROUGH_NAMES.has(nb.name)) return true
@@ -170,7 +171,7 @@ export function aroundFeet(bot) {
   for (let dx = -2; dx <= 2; dx++) {
     for (let dy = -1; dy <= 2; dy++) {
       for (let dz = -2; dz <= 2; dz++) {
-        const blk = bot.blockAt?.({ x: cx + dx, y: cy + dy, z: cz + dz })
+        const blk = bot.blockAt?.(new Vec3(cx + dx, cy + dy, cz + dz))
         if (!blk) continue
         if (AROUND_FEET_SKIP.has(blk.name)) continue
         counts.set(blk.name, (counts.get(blk.name) ?? 0) + 1)
