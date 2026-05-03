@@ -24,7 +24,7 @@ const SYSTEM_INSTRUCTIONS = [
   'You may call multiple tools in one response. Keep responses brief — under 3 sentences of internal reasoning.',
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
   'If the snapshot shows an `in_flight:` line, your body is already doing that thing — do NOT hand off another movement intent this turn. You may `say` to acknowledge or report progress, then return.',
-  'When the player gives a new instruction, any prior in-flight work is automatically aborted by the runtime — start fresh, do not try to resume the old task.',
+  'When the player gives a new instruction mid-task, the runtime aborts whatever was in flight and you will see a `PLAYER INTERRUPT:` line with their message. Acknowledge them with `say` and address the new request. The aborted task is visible in your prior tool_use history — if it still makes sense after handling the interrupt, you may resume it (and briefly say so). If not, drop it.',
   'You are running inside an iteration loop: when you emit a tool_use, the runtime executes it and you will see the result on the next turn. End the loop by emitting only `say` (or no tool calls).',
 ].join('\n')
 
@@ -44,7 +44,7 @@ const COMBINED_SYSTEM = [
   'In a single response you may: speak in chat (`say`), set goals (`setGoals`), and/or invoke movement actions (e.g. `goTo`, `dig`, `attack`, `equip`, `place`, `consume`, `sleep`, etc.).',
   'Movement rule: in one response you may emit AT MOST ONE TYPE of movement action. Multiple calls of the SAME movement action are fine and recommended (e.g. ten `dig` calls to chop a whole tree). Mixing different movement types (e.g. `dig` and `goTo` together) is not — pick one type per turn. Multiple same-type calls run sequentially: each waits for the prior to finish.',
   'In-flight rule: if the snapshot shows an `in_flight:` line, the bot is already doing that thing. Do NOT call any movement action this turn. You may `say` to the player (e.g. "still chopping the tree, give me a sec") or emit no tool calls.',
-  'Interrupt rule: when the player gives a new instruction mid-task, the runtime aborts whatever was in flight automatically. Treat it as a fresh start — do not try to resume the old work, just respond to the new ask.',
+  'Interrupt rule: when the player chats mid-task, the runtime aborts whatever was in flight and you will see a `PLAYER INTERRUPT:` line with their message. Acknowledge them with `say` and address the new request. The aborted task is visible in your prior tool_use history — if it still makes sense after handling the interrupt, you may resume it (and briefly say so). If not, drop it.',
   'You may always `say` to the player, even while busy — use it to acknowledge new instructions or report progress.',
   'Pick the smallest set of tool calls that fulfils the situation. Never describe coordinates or action names in prose; just call the tools.',
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
@@ -102,7 +102,11 @@ export async function composeSeedBlocks({ sessionState, ownerStore, diary, confi
   const seedDiaryText = await diary.seedSlice()
   return [
     { type: 'text', name: 'seed_owner', text: seedOwnerText },
-    { type: 'text', name: 'seed_diary', text: seedDiaryText },
+    // Cache breakpoint: owner+diary are static within a session. Marking the
+    // last static block extends the cached prefix (system + tools + seed_owner
+    // + seed_diary) across every loop in the session. Dynamic blocks (event,
+    // snapshot) stay uncached and re-bill per loop.
+    { type: 'text', name: 'seed_diary', text: seedDiaryText, cache_control: { type: 'ephemeral' } },
     { type: 'text', name: 'event',     text: eventText },
     { type: 'text', name: 'snapshot',  text: snapshotText },
   ]
@@ -525,6 +529,16 @@ function maybeWarnByteCap(loop, warned) {
         return
       }
 
+      // Mid-task narration: when the model emits text alongside tool_uses
+      // (and didn't call `say` itself), relay the text to chat. Without this
+      // the player only sees actions happen with no acknowledgment.
+      const midText = (resp.text ?? '').trim()
+      const calledSay = toolUses.some(u => u.name === 'say')
+      if (midText && !calledSay) {
+        logChatOut(midText)
+        try { bot.chat(midText) } catch {}
+      }
+
       // Process tool_uses. Two-call vs combined handles dispatch differently:
       // in combined mode, movement actions execute here; in two-call mode the
       // personality emits handOffToMovement which fans out to Ollama.
@@ -666,10 +680,29 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   async function repairAfterAbort(loop) {
-    const last = [...loop._internal.messages].reverse().find(m => m.role === 'assistant')
-    const orphans = last
-      ? last.content.filter(b => b && b.type === 'tool_use')
-      : []
+    const messages = loop._internal.messages
+    let lastAssistantIdx = -1
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') { lastAssistantIdx = i; break }
+    }
+    const last = lastAssistantIdx >= 0 ? messages[lastAssistantIdx] : null
+    const toolUses = last ? last.content.filter(b => b && b.type === 'tool_use') : []
+
+    // Collect tool_use_ids that already have a paired tool_result in any
+    // user turn AFTER the last assistant turn. Pre-h6i this scan was missing
+    // and we'd append a SECOND tool_result for the same id — Anthropic 400s
+    // and the loop dies, dumping the entire conversation history.
+    const alreadyPaired = new Set()
+    for (let i = lastAssistantIdx + 1; i < messages.length; i++) {
+      const turn = messages[i]
+      if (turn.role !== 'user') continue
+      for (const blk of turn.content) {
+        if (blk && blk.type === 'tool_result' && blk.tool_use_id) {
+          alreadyPaired.add(blk.tool_use_id)
+        }
+      }
+    }
+    const orphans = toolUses.filter(u => !alreadyPaired.has(u.id))
 
     const aborted = orphans.map(u => ({
       type: 'tool_result',
