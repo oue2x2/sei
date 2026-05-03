@@ -3,7 +3,7 @@
 import { vitals } from './vitals.js'
 import { world } from './world.js'
 import { inventory, heldItem } from './inventory.js'
-import { nearbyBlocks, INTERESTING_BLOCK_NAMES } from './blocks.js'
+import { nearbyBlocks, aroundFeet, INTERESTING_BLOCK_NAMES } from './blocks.js'
 import { nearbyEntities } from './entities.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 import { getFollowTargetLabel } from '../behaviors/follow.js'
@@ -74,6 +74,18 @@ export function composeSnapshot(bot, opts = {}) {
     ? invEntries.map(([k, n]) => `${k}×${n}`).join(' ')
     : 'empty'
   lines.push(`inventory: ${invStr}`)
+
+  // Around feet — grouped non-air blocks in 5x4x5 cube. Implicit coords (bot
+  // is standing in them); no #N handles minted (would flood the table).
+  // (D-1sk-03)
+  const feet = aroundFeet(bot)
+  if (feet.total === 0) {
+    lines.push('around feet: (clear)')
+  } else {
+    const parts = feet.groups.map(g => `${g.name}×${g.count}`)
+    const tail = feet.more > 0 ? ` (+${feet.more} more types)` : ''
+    lines.push(`around feet: ${parts.join(' ')}${tail}`)
+  }
 
   // Build #N handles in a single monotonic numbering across blocks then entities.
   const handles = []
