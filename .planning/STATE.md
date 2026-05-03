@@ -91,12 +91,13 @@ Next: Phase 3 — Memory & Persistence
 | 260429-ons | in_flight snapshot field + follow gates on action lifecycle + owner-chat preempts in-flight work + tighter action error strings + one-movement-type-per-turn rule | 2026-04-30 | 697f9a9 | [260429-ons-in-flight-snapshot-field-action-lifecycl](./quick/260429-ons-in-flight-snapshot-field-action-lifecycl/) |
 | 260502-h6i | Sei latency + diary hallucination fixes: cache_control on last tool, no-op compaction skip, remove look tool, owner-chat preempt (sei:chat_received), stop-verb pre-LLM hard cancel | 2026-05-02 | ce7d90e | [260502-h6i-fix-sei-latency-owner-chat-preempt-stop-](./quick/260502-h6i-fix-sei-latency-owner-chat-preempt-stop-/) |
 | 260503-1bu | Snapshot `recent_events:` deltas (kills, inventory gains, hp loss) + `prior_task:` interrupt-resume hint so bot resumes prior task after chat interrupt without reminder | 2026-05-03 | 1bbb67d | [260503-1bu-add-snapshot-delta-indicators-kills-inve](./quick/260503-1bu-add-snapshot-delta-indicators-kills-inve/) |
+| 260503-1sk | Exposure-filter `nearby blocks:` (no more xray), add `around feet:` 5×4×5 grouped line, expand interesting set to terrain blocks (sand, sandstone, gravel, dirt, grass_block, …), and double radius when local view is sparse — fixes "get me 10 sand" failure on beach | 2026-05-03 | 5abc8a8 | [260503-1sk-snapshot-blocks-only-show-exposed-non-xr](./quick/260503-1sk-snapshot-blocks-only-show-exposed-non-xr/) |
 
 ## Session Continuity
 
-- **Last action:** Quick task 260503-1bu — added stateful snapshot composer that injects a `recent_events:` line (kills, inventory gains, hp loss) only when deltas exist, and a `prior_task:` hint into PLAYER INTERRUPT turns so the LLM has an explicit cue to decide whether to resume the aborted task instead of asking "what next?". Live in-game verification deferred to user.
+- **Last action:** Quick task 260503-1sk — `nearbyBlocks` now filters by exposure (at least one air/water/lava/empty-bbox neighbor) so the snapshot stops showing buried ores through walls; new `around feet:` line lists every block name in a 5×4×5 cube around the bot grouped by count (e.g. `sand×12, grass_block×3`); INTERESTING_BLOCK_NAMES expanded with sand/sandstone/gravel/clay/dirt/grass_block/stone/glass/ice/snow_block/obsidian/terracotta; sparse-expand doubles the radius once when the initial result set is empty.
 - **Next action:** `/gsd-plan-phase 2.1` to research and plan the phase.
 
 ---
-*Last updated: 2026-05-03 — quick task 260503-1bu completed.*
+*Last updated: 2026-05-03 — quick task 260503-1sk completed.*
 | 2026-05-03 | fast | attack pursues + zod entity schema cleanup | done |
