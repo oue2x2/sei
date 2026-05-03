@@ -6,6 +6,7 @@ import { inventory, heldItem } from './inventory.js'
 import { nearbyBlocks, INTERESTING_BLOCK_NAMES } from './blocks.js'
 import { nearbyEntities } from './entities.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
+import { getFollowTargetLabel } from '../behaviors/follow.js'
 
 const MAX_BLOCKS = 8
 const MAX_ENTITIES = 6
@@ -45,7 +46,7 @@ export function composeSnapshot(bot, opts = {}) {
   const lines = []
   // Position / biome / time
   lines.push(`pos: ${w.pos.x},${w.pos.y},${w.pos.z}`)
-  lines.push(`biome: ${w.biome}  time: ${w.time.isDay ? 'day' : 'night'} (${w.time.timeOfDay})`)
+  lines.push(`biome: ${w.biome}  surroundings: ${w.surroundings}  time: ${w.time.isDay ? 'day' : 'night'} (${w.time.timeOfDay})`)
 
   // Vitals
   lines.push(`hp: ${v.hp}/20  food: ${v.food}/20  xp: lvl ${v.xp.level}`)
@@ -115,6 +116,10 @@ export function composeSnapshot(bot, opts = {}) {
   lines.push(`owner_goals: ${owner.length ? owner.join(' | ') : '(none)'}`)
   lines.push(`self_goals: ${self.length ? self.join(' | ') : '(none)'}`)
 
+  // Follow status — bot's awareness of its own auto-follow behavior
+  const followLabel = getFollowTargetLabel()
+  lines.push(`follow_target: ${followLabel ?? '(none)'}`)
+
   // Last action result
   if (lastActionResult) lines.push(`last_action_result: ${lastActionResult}`)
 
@@ -122,4 +127,123 @@ export function composeSnapshot(bot, opts = {}) {
   setHandles(handles)
 
   return lines.join('\n')
+}
+
+// v1 deltas are heuristic and observational. "killed X" infers from
+// disappearance from a 24-block radius — a mob that walked away will also
+// register. This is acceptable: the recent_events line is a hint, not an
+// authoritative event log. A future refinement would subscribe to
+// bot.on('entityDead') to confirm kills, but that wiring is out of scope
+// for this quick task.
+/**
+ * Create a stateful snapshot composer that tracks per-instance previous
+ * inventory / hp / mob-id state and injects a `recent_events:` line into
+ * each composed snapshot describing diffs since the prior call.
+ *
+ * The bare {@link composeSnapshot} export remains stateless for any callers
+ * that don't want delta tracking.
+ *
+ * @param {{ bot: import('mineflayer').Bot }} deps
+ */
+export function createSnapshotComposer({ bot }) {
+  let prevInventory = null
+  let prevHp = null
+  let prevEntityIds = null
+  let prevEntityMeta = new Map()
+
+  function sampleMobs() {
+    const me = bot.entity
+    if (!me) return { ids: new Set(), meta: new Map() }
+    const ids = new Set()
+    const meta = new Map()
+    for (const e of Object.values(bot.entities ?? {})) {
+      if (!e || e === me || !e.position) continue
+      if (e.username) continue   // players excluded from kill tracking
+      let dist
+      try { dist = e.position.distanceTo(me.position) } catch { continue }
+      if (dist > 24) continue
+      ids.add(e.id)
+      meta.set(e.id, { name: e.name ?? `entity-${e.id}` })
+    }
+    return { ids, meta }
+  }
+
+  function computeEvents(currInv, currHp, currMobs) {
+    const events = []
+
+    // 1. Inventory deltas — gains then losses, capped to 6 entries total.
+    if (prevInventory) {
+      const invEvents = []
+      // Gains / increases
+      for (const [k, v] of Object.entries(currInv)) {
+        const prev = prevInventory[k] ?? 0
+        if (v > prev) invEvents.push(`+${v - prev} ${k}`)
+      }
+      // Losses / removed keys
+      for (const [k, v] of Object.entries(prevInventory)) {
+        const curr = currInv[k] ?? 0
+        if (curr < v) invEvents.push(`-${v - curr} ${k}`)
+      }
+      const cap = 6
+      if (invEvents.length > cap) {
+        const extra = invEvents.length - cap
+        events.push(...invEvents.slice(0, cap), `(+${extra} more)`)
+      } else {
+        events.push(...invEvents)
+      }
+    }
+
+    // 2. Kill heuristic — group disappearances by name.
+    if (prevEntityIds) {
+      const killCounts = new Map()
+      for (const id of prevEntityIds) {
+        if (currMobs.ids.has(id)) continue
+        const live = bot.entities?.[id]
+        if (live && live.isValid !== false) continue
+        const meta = prevEntityMeta.get(id)
+        const name = meta?.name ?? `entity-${id}`
+        killCounts.set(name, (killCounts.get(name) ?? 0) + 1)
+      }
+      for (const [name, count] of killCounts) {
+        events.push(count > 1 ? `killed ${name} ×${count}` : `killed ${name}`)
+      }
+    }
+
+    // 3. HP loss only — regen is noisy.
+    if (prevHp != null && currHp < prevHp) {
+      events.push(`hp -${prevHp - currHp}`)
+    }
+
+    return events
+  }
+
+  return {
+    next(opts = {}) {
+      const base = composeSnapshot(bot, opts)
+      const currInv = inventory(bot)
+      const currHp = Math.round(bot.health ?? 0)
+      const currMobs = sampleMobs()
+      const events = computeEvents(currInv, currHp, currMobs)
+
+      // Update state AFTER computing — first call has no deltas.
+      prevInventory = currInv
+      prevHp = currHp
+      prevEntityIds = currMobs.ids
+      prevEntityMeta = currMobs.meta
+
+      if (events.length === 0) return base
+      const line = `recent_events: ${events.join('; ')}`
+      const lines = base.split('\n')
+      const idx = lines.findIndex(l => l.startsWith('last_action_result:'))
+      if (idx >= 0) lines.splice(idx + 1, 0, line)
+      else lines.push(line)
+      return lines.join('\n')
+    },
+    reset() {
+      prevInventory = null
+      prevHp = null
+      prevEntityIds = null
+      prevEntityMeta = new Map()
+    },
+  }
 }
