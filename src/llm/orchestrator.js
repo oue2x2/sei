@@ -8,10 +8,11 @@ import { createChainTracker } from './chains.js'
 import { createLoop } from './loop.js'
 import { renderPersona, capHitLine, capabilityParagraph, minecraftPrimer, stillLearningLine } from './persona.js'
 import { buildAnthropicTools, buildOllamaTools } from './schemaBridge.js'
-import { composeSnapshot } from '../observers/snapshot.js'
+import { composeSnapshot, createSnapshotComposer } from '../observers/snapshot.js'
 import { closeContainerSession } from '../behaviors/container.js'
 import { pauseFollow, setInflightProvider } from '../behaviors/follow.js'
 import { createInflightTracker } from './inflight.js'
+import { createChatRingBuffer } from './chatRingBuffer.js'
 import { logChatOut, logActionResult } from '../log.js'
 
 const SYSTEM_INSTRUCTIONS = [
@@ -25,6 +26,8 @@ const SYSTEM_INSTRUCTIONS = [
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
   'If the snapshot shows an `in_flight:` line, your body is already doing that thing — do NOT hand off another movement intent this turn. You may `say` to acknowledge or report progress, then return.',
   'When the player gives a new instruction mid-task, the runtime aborts whatever was in flight and you will see a `PLAYER INTERRUPT:` line with their message. Acknowledge them with `say` and address the new request. The aborted task is visible in your prior tool_use history — if it still makes sense after handling the interrupt, you may resume it (and briefly say so). If not, drop it.',
+  'EVERY owner message — not just stop verbs — pauses the body and aborts whatever movement was in flight. After answering, decide explicitly: resume the prior task (re-issue the same intent), drop it, or switch to what the owner just asked for. Do not assume the body is still doing the prior thing.',
+  'If you have tried the same approach 2+ times and it keeps failing (e.g. repeated `out of range`, `cant_reach`, `target gone`, `cannot break …`, or you are stuck in a hole with no climb path), STOP retrying. Use `say` to tell the owner what you tried, what is blocking you, and ask them for help (e.g. "I am stuck in a 1-wide pit, can you toss me dirt?"). Asking for help is correct behavior, not failure.',
   'You are running inside an iteration loop: when you emit a tool_use, the runtime executes it and you will see the result on the next turn. End the loop by emitting only `say` (or no tool calls).',
 ].join('\n')
 
@@ -45,6 +48,9 @@ const COMBINED_SYSTEM = [
   'Movement rule: in one response you may emit AT MOST ONE TYPE of movement action. Multiple calls of the SAME movement action are fine and recommended (e.g. ten `dig` calls to chop a whole tree). Mixing different movement types (e.g. `dig` and `goTo` together) is not — pick one type per turn. Multiple same-type calls run sequentially: each waits for the prior to finish.',
   'In-flight rule: if the snapshot shows an `in_flight:` line, the bot is already doing that thing. Do NOT call any movement action this turn. You may `say` to the player (e.g. "still chopping the tree, give me a sec") or emit no tool calls.',
   'Interrupt rule: when the player chats mid-task, the runtime aborts whatever was in flight and you will see a `PLAYER INTERRUPT:` line with their message. Acknowledge them with `say` and address the new request. The aborted task is visible in your prior tool_use history — if it still makes sense after handling the interrupt, you may resume it (and briefly say so). If not, drop it.',
+  'EVERY owner message — not just stop verbs — pauses the body and aborts the in-flight action. After answering, decide explicitly: resume the prior task (re-issue the action), drop it, or switch to what the owner just asked for. Do not assume the body kept going.',
+  'Hunting rule: to kill a moving mob, FIRST call `follow` with the target so the body trails it, THEN call `attackEntity` with `times` set high enough to amortize round-trips (e.g. `times: 5` for a sheep, `times: 8` for tougher mobs). One attackEntity call swings up to N times in a row, stopping early if the mob dies, moves out of reach, or you are interrupted. If it returns "moved out of reach", the follow is still active — just call attackEntity again. Do not chase manually with goTo for hunts; that is what follow is for. Call `unfollow` once the mob is dead.',
+  'If you have tried the same approach 2+ times and it keeps failing (repeated `out of range`, `cant_reach`, `target gone`, `cannot break …`, or you are stuck somewhere you cannot climb out of), STOP retrying. Use `say` to tell the owner what you tried, what is blocking you, and ask them for help (e.g. "I am stuck in a 1-wide pit, can you toss me some dirt?"). Asking for help is correct behavior, not failure.',
   'You may always `say` to the player, even while busy — use it to acknowledge new instructions or report progress.',
   'Pick the smallest set of tool calls that fulfils the situation. Never describe coordinates or action names in prose; just call the tools.',
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
@@ -57,6 +63,9 @@ const ACTION_DESCRIPTIONS = {
   setGoals: 'Add or remove a goal from owner_goals or self_goals.',
   say: 'Speak the given text in in-game chat.',
   handOffToMovement: 'Hand off a natural-language movement/interaction intent to the movement layer.',
+  follow: 'Continuously trail an entity at follow_range. Pass `player` (username), or `entity` / `entity_id` / `target` for a mob. Does NOT attack — pair with attackEntity if you want hits. The body trails the target on a 1s tick; an attackEntity call can land a swing as soon as the target is within reach. Default-on at spawn for the owner; the snapshot shows `follow_target` so you know who you are trailing.',
+  unfollow: 'Stop trailing the current follow target. The body holds position until you issue another movement.',
+  attackEntity: 'Swing at an entity. `times` (1–10, default 1) hits the target up to N times in one call with ~600ms between swings; stops early if the target dies, moves out of reach, or you are interrupted. Use a higher `times` when hunting to amortize LLM round-trips — e.g. `times: 5` for sheep/pig, `times: 8` for tougher mobs.',
 }
 
 // 260502-h6i: 'look' removed — snapshot already rides every user turn, so the
@@ -96,20 +105,24 @@ export function classifyChatEvent(event, data) {
  * @param {string} args.snapshotText
  * @returns {Promise<Array<{type:'text', name:string, text:string}>>}
  */
-export async function composeSeedBlocks({ sessionState, ownerStore, diary, config, eventText, snapshotText }) {
+export async function composeSeedBlocks({ sessionState, ownerStore, diary, config, eventText, snapshotText, recentChatText = null }) {
   const owner = sessionState.ownerData()
   const seedOwnerText = ownerStore.formatOwnerSeedBlock(owner, config.memory.seed_owner_budget_bytes)
   const seedDiaryText = await diary.seedSlice()
-  return [
+  const blocks = [
     { type: 'text', name: 'seed_owner', text: seedOwnerText },
     // Cache breakpoint: owner+diary are static within a session. Marking the
     // last static block extends the cached prefix (system + tools + seed_owner
     // + seed_diary) across every loop in the session. Dynamic blocks (event,
-    // snapshot) stay uncached and re-bill per loop.
+    // snapshot, recent_chat) stay uncached and re-bill per loop.
     { type: 'text', name: 'seed_diary', text: seedDiaryText, cache_control: { type: 'ephemeral' } },
-    { type: 'text', name: 'event',     text: eventText },
-    { type: 'text', name: 'snapshot',  text: snapshotText },
   ]
+  if (recentChatText) {
+    blocks.push({ type: 'text', name: 'recent_chat', text: `Recent chat (last few lines, oldest first):\n${recentChatText}` })
+  }
+  blocks.push({ type: 'text', name: 'event',    text: eventText })
+  blocks.push({ type: 'text', name: 'snapshot', text: snapshotText })
+  return blocks
 }
 
 /**
@@ -139,6 +152,14 @@ export function createOrchestrator({ bot, config, registry, logger = console, se
   // and follow.js can pause for the entire action lifecycle (not just the
   // dispatch lifecycle). See ./inflight.js.
   const inflight = createInflightTracker()
+  // Stateful snapshot composer — wraps composeSnapshot and injects a
+  // `recent_events:` line with inventory/kill/hp deltas since the prior
+  // snapshot for this orchestrator instance. See observers/snapshot.js.
+  const snapshotComposer = createSnapshotComposer({ bot })
+  // Recent chat ring buffer — injected into seed user turn so the LLM has
+  // context for short replies like "yes" / "do it" that would otherwise be
+  // ambiguous given Loop history is reset per dispatch (D-39).
+  const chatBuffer = createChatRingBuffer({ capacity: 10 })
   // Wire follow's lifecycle gate — follow yields while a *movement* action
   // is in flight. Personality-only entries (setGoals/say) don't pause
   // follow; see currentBlocking() in inflight.js.
@@ -297,11 +318,48 @@ export function createOrchestrator({ bot, config, registry, logger = console, se
   // ─── Snapshot helper ────────────────────────────────────────────────
   function snapshotText() {
     try {
-      return composeSnapshot(bot, { goals: goals.snapshot(), lastActionResult, inFlight: inflight.current() })
+      return snapshotComposer.next({ goals: goals.snapshot(), lastActionResult, inFlight: inflight.current() })
     } catch (err) {
       logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
       return '(snapshot unavailable)'
     }
+  }
+
+  // Walk loop history backwards to find the most recent in-flight task
+  // worth resuming. Skips personality-only tools (say/setGoals). Returns a
+  // short string suitable for inlining as `prior_task: <…>` in a PLAYER
+  // INTERRUPT user turn, or null if nothing worth surfacing.
+  function extractPriorTask(loop) {
+    const msgs = loop._internal.messages
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role !== 'assistant' || !Array.isArray(m.content)) continue
+      for (let j = m.content.length - 1; j >= 0; j--) {
+        const blk = m.content[j]
+        if (!blk || blk.type !== 'tool_use') continue
+        if (blk.name === 'say' || blk.name === 'setGoals') continue
+        if (blk.name === 'handOffToMovement') {
+          const intent = String(blk.input?.intent ?? '').slice(0, 120)
+          return intent ? `intent="${intent}"` : null
+        }
+        // Combined-mode movement action.
+        const a = blk.input ?? {}
+        const parts = []
+        if (typeof a.entity === 'string') parts.push(a.entity)
+        else if (typeof a.target === 'string') parts.push(a.target)
+        else if (typeof a.block === 'string') parts.push(a.block)
+        else if (typeof a.player === 'string') parts.push(a.player)
+        if (typeof a.times === 'number') parts.push(`times=${a.times}`)
+        return `${blk.name}${parts.length ? ' ' + parts.join(' ') : ''}`.slice(0, 120)
+      }
+    }
+    return null
+  }
+
+  function withPriorTaskHint(loop, eventText) {
+    const priorTask = extractPriorTask(loop)
+    if (!priorTask) return eventText
+    return `${eventText}\nprior_task: ${priorTask}\n(If the new request is a sub-task or quick favor, resume prior_task after handling it. If it replaces the goal, drop prior_task.)`
   }
 
   // Run a registry action with inflight tracking so the snapshot reflects
@@ -415,6 +473,7 @@ function maybeWarnByteCap(loop, warned) {
         seedBlocks = await composeSeedBlocks({
           sessionState, ownerStore, diary, config,
           eventText, snapshotText: snapshotText(),
+          recentChatText: chatBuffer.size ? chatBuffer.format() : null,
         })
       } catch (err) {
         logger.warn(`[sei/orch] seed-block compose failed: ${err.message}; falling back to non-seed turn`)
@@ -453,12 +512,14 @@ function maybeWarnByteCap(loop, warned) {
       if (sessionState) {
         try {
           const messagesByteSize = JSON.stringify(loop._internal.messages).length
-          // Plan 3-03: pass the canonical Loop.messages array so sessionState
-          // can accumulate the loop-batch and hand it to compactor.summarizeLoopBatch
-          // when the D-51 cadence is satisfied.
+          // Pass the originating event so sessionState can gate the diary
+          // write to idle-driven loops only — chat-driven and join-driven
+          // loops accumulate counters but defer the actual compaction call
+          // until the bot returns to idle.
           await sessionState.onLoopTerminal({
             messagesByteSize,
             loopMessages: loop._internal.messages,
+            event,
           })
         } catch (err) {
           logger.warn?.(`[sei/orch] sessionState.onLoopTerminal failed: ${err.message}`)
@@ -525,7 +586,11 @@ function maybeWarnByteCap(loop, warned) {
       if (toolUses.length === 0) {
         // Terminal: text-only response. Emit any text content as chat.
         const text = (resp.text ?? '').trim()
-        if (text) { logChatOut(text); try { bot.chat(text) } catch {} }
+        if (text) {
+          logChatOut(text)
+          try { bot.chat(text) } catch {}
+          chatBuffer.push(config.persona?.name ?? 'sei', text)
+        }
         return
       }
 
@@ -537,6 +602,7 @@ function maybeWarnByteCap(loop, warned) {
       if (midText && !calledSay) {
         logChatOut(midText)
         try { bot.chat(midText) } catch {}
+        chatBuffer.push(config.persona?.name ?? 'sei', midText)
       }
 
       // Process tool_uses. Two-call vs combined handles dispatch differently:
@@ -556,6 +622,7 @@ function maybeWarnByteCap(loop, warned) {
             const line = String(u.input?.text ?? '').slice(0, 256)
             logChatOut(line)
             try { bot.chat(line) } catch {}
+            chatBuffer.push(config.persona?.name ?? 'sei', line)
             results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said', is_error: false }
           } else if (u.name === 'setGoals') {
             try {
@@ -633,7 +700,10 @@ function maybeWarnByteCap(loop, warned) {
               }
             }
           }
-          loop.appendToolResults(results, { snapshot: snapshotText(), eventText: pendingInterrupt?.chatText ? `PLAYER INTERRUPT: ${pendingInterrupt.chatText}` : 'PLAYER INTERRUPT' })
+          const interruptEventText = pendingInterrupt?.chatText
+            ? `PLAYER INTERRUPT: ${pendingInterrupt.chatText}`
+            : 'PLAYER INTERRUPT'
+          loop.appendToolResults(results, { snapshot: snapshotText(), eventText: withPriorTaskHint(loop, interruptEventText) })
           maybeWarnByteCap(loop, byteWarn)
           pendingInterrupt = null
           replaceAbortController(loop)
@@ -713,12 +783,13 @@ function maybeWarnByteCap(loop, warned) {
 
     const chatText = pendingInterrupt?.chatText ?? ''
     const eventText = chatText ? `PLAYER INTERRUPT: ${chatText}` : 'PLAYER INTERRUPT'
+    const eventTextWithHint = withPriorTaskHint(loop, eventText)
 
     if (aborted.length > 0) {
-      loop.appendToolResults(aborted, { snapshot: snapshotText(), eventText })
+      loop.appendToolResults(aborted, { snapshot: snapshotText(), eventText: eventTextWithHint })
     } else {
       loop.appendUserTurn([
-        { type: 'text', name: 'event',    text: eventText },
+        { type: 'text', name: 'event',    text: eventTextWithHint },
         { type: 'text', name: 'snapshot', text: snapshotText() },
       ])
     }
@@ -788,6 +859,8 @@ function maybeWarnByteCap(loop, warned) {
     debouncer: ingressDebouncer,
     throttle: ingressThrottle,
     inflight,
+    /** Record an incoming chat line in the ring buffer (chat.js calls this). */
+    recordIncomingChat: (who, text) => chatBuffer.push(who, text),
     _internal: {
       circuit, personalityBucket,
       callPersonalityTwoCall, callPersonalityCombined, callMovement,
