@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { goTo } from './behaviors/pathfind.js'
+import { setFollowTarget } from './behaviors/follow.js'
+import { resolveEntity } from './observers/targeting.js'
 import { digAction } from './behaviors/dig.js'
 import { placeBlockAction } from './behaviors/place.js'
 import { equipAction } from './behaviors/equip.js'
@@ -133,17 +135,62 @@ export function createDefaultRegistry() {
     equipAction
   )
 
+  // `target` must be a "#N" handle or an entity/block name — never a coordinate
+  // string. Schema-level rejection avoids prompt clutter when the LLM tries
+  // `target: "-60,71,-117"` (which would name-resolve to nothing).
+  const EntityTarget = z.string().refine(
+    (s) => !s.includes(','),
+    { message: 'target must be #N or an entity name, not coordinates' },
+  )
+
   registry.register(
     'attackEntity',
     z.object({
       entity: z.string().optional(),
-      target: z.string().optional(),
-      entity_id: z.number().optional(),
+      target: EntityTarget.optional(),
+      times: z.number().int().min(1).max(10).default(1),
     }).refine(
-      (a) => a.entity || a.target || a.entity_id != null,
-      { message: 'must specify entity name, #N target, or entity_id' }
+      (a) => a.entity || a.target,
+      { message: 'must specify entity name or #N target' }
     ),
     attackEntityAction
+  )
+
+  registry.register(
+    'follow',
+    z.object({
+      entity: z.string().optional(),
+      target: EntityTarget.optional(),
+      player: z.string().optional(),
+    }).refine(
+      (a) => a.entity || a.target || a.player,
+      { message: 'must specify entity name, #N target, or player username' }
+    ),
+    async (args, bot) => {
+      if (args.player) {
+        if (!bot.players?.[args.player]) return `no such player: ${args.player}`
+        setFollowTarget({ kind: 'player', username: args.player })
+        return `following ${args.player}`
+      }
+      const ent = resolveEntity(args, bot)
+      if (!ent) return 'target gone'
+      if (ent.type === 'player' || ent.username) {
+        setFollowTarget({ kind: 'player', username: ent.username })
+        return `following ${ent.username}`
+      }
+      const label = ent.name ?? ent.displayName ?? `entity-${ent.id}`
+      setFollowTarget({ kind: 'entity', entityId: ent.id, label })
+      return `following ${label}`
+    }
+  )
+
+  registry.register(
+    'unfollow',
+    z.object({}),
+    async () => {
+      setFollowTarget(null)
+      return 'unfollowed'
+    }
   )
 
   registry.register(
