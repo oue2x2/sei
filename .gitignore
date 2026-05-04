@@ -1,7 +1,9 @@
 config.json
+config.example.json
 node_modules/
 mineflayer/
 .claude/
+test/
 
 # user-specific memory — generated during onboarding / at runtime
 memory/OWNER.md

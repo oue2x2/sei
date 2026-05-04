@@ -35,10 +35,30 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const PROJECT_ROOT = resolve(__dirname, '..', '..')
 const CONFIG_PATH = resolve(PROJECT_ROOT, 'config.json')
-const EXAMPLE_PATH = resolve(PROJECT_ROOT, 'config.example.json')
 const MEMORY_DIR = resolve(PROJECT_ROOT, 'memory')
 const OWNER_MD_PATH = resolve(MEMORY_DIR, 'OWNER.md')
 const INDEX_PATH = resolve(PROJECT_ROOT, 'src', 'index.js')
+
+const DEFAULT_CONFIG = {
+  host: '127.0.0.1',
+  port: 25565,
+  auth: 'offline',
+  username: 'Sui',
+  owner_username: 'YourMinecraftName',
+  minecraft_version: '1.21.1',
+  reconnect_delay_ms: 5000,
+  pathfinder_timeout_ms: 12000,
+  follow_range: 3,
+  persona: {
+    name: 'Sui',
+    backstory: 'A curious companion who enjoys exploring blocky worlds alongside their friend.',
+    tone: 'friendly',
+  },
+  anthropic: { api_key: '' },
+  ollama: { host: 'http://127.0.0.1:11434', model: 'qwen3.5:7b-instruct' },
+  llm: { rate_limit_per_min: 30, debounce_ms: 500, max_hops: 5, idle_fallback_ms: 10000 },
+  chat: { mode: 'prod' },
+}
 
 // ─── Banner ──────────────────────────────────────────────────────────────
 function banner() {
@@ -86,7 +106,7 @@ function readJSON(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
 }
 function loadExisting() {
-  return readJSON(CONFIG_PATH) ?? readJSON(EXAMPLE_PATH) ?? {}
+  return readJSON(CONFIG_PATH) ?? DEFAULT_CONFIG
 }
 function writeConfig(cfg) {
   writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8')
@@ -161,24 +181,26 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
   const chatModeValue = chatMode.startsWith('messages-only') ? 'prod' : 'dev'
 
   // Compose merged config — preserve any keys we didn't ask about.
-  const example = readJSON(EXAMPLE_PATH) ?? {}
   const cfg = {
-    ...example,
+    ...DEFAULT_CONFIG,
     ...existing,
     username: characterName,
     owner_username: ownerUsername,
     persona: {
-      ...(existing.persona ?? example.persona ?? {}),
+      ...DEFAULT_CONFIG.persona,
+      ...(existing.persona ?? {}),
       name: characterName,
       backstory,
       tone,
     },
     anthropic: {
-      ...(existing.anthropic ?? example.anthropic ?? {}),
+      ...DEFAULT_CONFIG.anthropic,
+      ...(existing.anthropic ?? {}),
       api_key: apiKey,
     },
     chat: {
-      ...(existing.chat ?? example.chat ?? {}),
+      ...DEFAULT_CONFIG.chat,
+      ...(existing.chat ?? {}),
       mode: chatModeValue,
     },
   }
