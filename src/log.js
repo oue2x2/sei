@@ -1,6 +1,6 @@
 // src/log.js — transparent live logging for debugging.
-// All chat in/out, personality LLM (Haiku) queries+responses, and movement LLM
-// (Ollama) queries+responses are emitted on stdout with stable tag prefixes.
+// All chat in/out and Haiku queries+responses are emitted on stdout with
+// stable tag prefixes.
 
 const MAX_INLINE = 2000  // truncate very long payloads inline
 
@@ -37,16 +37,6 @@ export function logHaikuQuery({ messages, tools }) {
 export function logHaikuResponse({ text, toolUses, usage, stopReason }) {
   const calls = (toolUses ?? []).map(u => `${u.name}(${trunc(safeStringify(u.input))})`).join(' | ')
   emit('[haiku!]', `stop=${stopReason} text=${trunc(text || '')} calls=${calls || '(none)'} usage=${safeStringify(usage)}`)
-}
-
-// ─── Movement LLM (Ollama / Qwen) ────────────────────────────────────────
-export function logOllamaQuery({ messages, tools }) {
-  const userMsg = messages?.find(m => m.role === 'user')?.content
-  emit('[qwen?]', `tools=${(tools ?? []).map(t => t.function?.name ?? t.name).join(',')} user=${trunc(userMsg)}`)
-}
-export function logOllamaResponse({ text, toolCalls }) {
-  const calls = (toolCalls ?? []).map(c => `${c.name}(${trunc(safeStringify(c.args))})`).join(' | ')
-  emit('[qwen!]', `text=${trunc(text || '')} calls=${calls || '(none)'}`)
 }
 
 // ─── Position healer ─────────────────────────────────────────────────────

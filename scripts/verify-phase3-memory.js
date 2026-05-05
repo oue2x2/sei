@@ -715,8 +715,7 @@ CASES['seed-not-in-system-blocks'] = async () => {
       reconnect_delay_ms: 0, pathfinder_timeout_ms: 1000, follow_range: 3,
       persona: { name: 'Sei', backstory: 'b', tone: 'curious' },
       anthropic: { api_key: 'k', model: 'claude-haiku-4-5-20251001', timeout_ms: 1000 },
-      ollama: { host: 'http://x', model: 'q', timeout_ms: 1000 },
-      llm: { rate_limit_per_min: 30, debounce_ms: 500, max_hops: 5, idle_fallback_ms: 10000, executor: 'api' },
+      llm: { rate_limit_per_min: 30, debounce_ms: 500, max_hops: 5, idle_fallback_ms: 10000 },
     }
     config.owner_username = 'shawn'
     const bot = makeStubBot()
@@ -730,8 +729,7 @@ CASES['seed-not-in-system-blocks'] = async () => {
     const orch = createOrchestrator({ bot, config, registry: fakeRegistry, logger: silentLogger(), sessionState, ownerStore, diary })
 
     const sysBlocks = orch._internal.getCachedSystemBlocks()
-    const combinedBlocks = orch._internal.getCachedCombinedSystemBlocks()
-    for (const blk of [...sysBlocks, ...combinedBlocks]) {
+    for (const blk of sysBlocks) {
       const t = typeof blk === 'string' ? blk : (blk && blk.text) ?? ''
       assert(!t.includes('# Owner'), `system block must not contain '# Owner'`)
       assert(!t.includes('# Diary'), `system block must not contain '# Diary'`)
@@ -1484,8 +1482,7 @@ CASES['cache-system-blocks-byte-stable'] = async () => {
       reconnect_delay_ms: 0, pathfinder_timeout_ms: 1000, follow_range: 3,
       persona: { name: 'Sei', backstory: 'curious explorer', tone: 'curious' },
       anthropic: { api_key: 'k', model: 'claude-haiku-4-5-20251001', timeout_ms: 1000 },
-      ollama: { host: 'http://x', model: 'q', timeout_ms: 1000 },
-      llm: { rate_limit_per_min: 30, debounce_ms: 500, max_hops: 5, idle_fallback_ms: 10000, executor: 'api' },
+      llm: { rate_limit_per_min: 30, debounce_ms: 500, max_hops: 5, idle_fallback_ms: 10000 },
       owner_username: 'shawn',
     })
     const fakeRegistry = { list: () => [], schema: () => null, execute: async () => 'ok' }

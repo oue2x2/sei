@@ -50,7 +50,7 @@ Next: Phase 3 — Memory & Persistence
 
 ### Decisions (from PROJECT.md / research)
 
-- Two-layer LLM: Haiku 3 personality + Ollama Qwen 2.5 movement, natural-language hand-off
+- Single-layer LLM: Haiku 4.5 combined personality + movement dispatch, single API call per iteration (collapsed from two-layer architecture in 260505-iqo).
 - Closed Zod-typed action registry; LLM never generates code or coordinates
 - Event-sourced FSM with priority queue; one outstanding action tracked by AbortController
 - better-sqlite3 for persistence; LLM-directed compaction at semantic boundaries
@@ -60,13 +60,11 @@ Next: Phase 3 — Memory & Persistence
 - mineflayer-auto-eat plugin exposed as 'loader' named export, not default
 - chat.js uses bot.username for addressed-check to match actual in-game bot name
 - Default Anthropic model claude-haiku-4-5-20251001 (Haiku 3 retired April 2026, D-20)
-- Default Ollama model qwen3.5:7b-instruct (non-instruct emits thinking traces, D-21)
 - ANTHROPIC_API_KEY env-var fallback supported in loadConfig (schema stays strict)
-- Per-call new Ollama() instance to isolate abort() scope (Pitfall 3)
 - Anthropic cached system prefix: 3 blocks, cache_control ephemeral on LAST block (D-18)
 - Hop counter is chain-scoped (keyed by _chainId) not per-dispatch — closes LLM-04 leak across FSM completion re-entries
-- Personality LLM tools restricted to say/handOffToMovement/setGoals; mineflayer registry actions reserved for movement layer (D-04)
-- setGoals lives in the registry but movement subRegistry filters it out
+- LLM tools: say, setGoals + full mineflayer registry (combined call). setGoals lives in registry but tools list filters it out to avoid duplication (D-04 collapsed into combined-call rules in 260505-iqo).
+- API-only architecture (260505-iqo): Ollama executor + circuit breaker + handOffToMovement tool removed. Single Anthropic call per iteration with full combined tool set.
 
 ### Todos
 

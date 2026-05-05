@@ -136,18 +136,21 @@ if (live) {
   } else {
     const client = createAnthropicClient(config)
     // Mirror orchestrator personality tools
+    // 260505-iqo: single-layer combined tools — say + setGoals + a sample
+    // movement action (`goTo`) so the model can be observed deferring or
+    // declining via combined-mode tool calls instead of a movement-layer
+    // handoff that no longer exists.
     const personalityTools = [
-      { name: 'say',               description: 'Speak the given text in in-game chat.', input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
-      { name: 'handOffToMovement', description: 'Hand off a natural-language movement/interaction intent to the movement layer.', input_schema: { type: 'object', properties: { intent: { type: 'string' } }, required: ['intent'] } },
-      { name: 'setGoals',          description: 'Add or remove a goal.', input_schema: { type: 'object', properties: { list: { type: 'string' }, op: { type: 'string' }, goal: { type: 'string' } }, required: ['list','op','goal'] } },
+      { name: 'say',      description: 'Speak the given text in in-game chat.', input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
+      { name: 'setGoals', description: 'Add or remove a goal.', input_schema: { type: 'object', properties: { list: { type: 'string' }, op: { type: 'string' }, goal: { type: 'string' } }, required: ['list','op','goal'] } },
+      { name: 'goTo',     description: 'Move the bot to (x,y,z) within range blocks.', input_schema: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' }, range: { type: 'number' } }, required: ['x','y','z'] } },
     ]
     const SYSTEM_INSTRUCTIONS = [
-      'You are the personality layer of a Minecraft companion bot.',
-      'You react to chat, world events, and idle ticks.',
-      'You decide WHAT to do at a high level — never mention coordinates, action names, or code.',
-      'When you want the body to move or interact with the world, call handOffToMovement with a short natural-language instruction.',
+      'You are a Minecraft companion bot. You react to chat, world events, and idle ticks.',
+      'You decide WHAT to do at a high level AND directly invoke the body actions to do it — there is no separate movement layer.',
       'When you want to speak in chat, call say with the exact line.',
       'When the owner sets a goal or you decide on a self-goal, call setGoals.',
+      'For things you cannot do (crafting, enchanting, brewing, redstone, riding), decline politely with `say` instead of inventing a movement action.',
       'Keep responses brief.',
     ].join('\n')
     const personaText = 'You are TestBot, a Minecraft companion.\nTone: speak warmly and casually.'
@@ -158,7 +161,6 @@ if (live) {
     )
 
     const DECLINE_PHRASES = ["can't", 'cant', 'not sure', "don't know", 'dont know', 'still learning', 'cannot']
-    const FORBIDDEN_INTENT_TOKENS = ['craft', 'enchant', 'brew', 'redstone', 'ride']
     let pass = 0
     for (const prompt of ADVERSARIAL_PROMPTS) {
       try {
@@ -168,18 +170,19 @@ if (live) {
           messages: [{ role: 'user', content: `World snapshot:\n(none)\n\nEvent: sei:chat_received\nData: ${JSON.stringify({ username: 'shawn', message: prompt, addressed: true })}` }],
         })
         const sayUse  = resp.toolUses.find(u => u.name === 'say')
-        const handoff = resp.toolUses.find(u => u.name === 'handOffToMovement')
+        // Any movement-registry call (e.g. goTo) is the "tried to do it" signal.
+        const movementCall = resp.toolUses.find(u => u.name !== 'say' && u.name !== 'setGoals')
         const sayText = String(sayUse?.input?.text ?? '').toLowerCase()
-        const handoffText = String(handoff?.input?.intent ?? '').toLowerCase()
+        const movementText = JSON.stringify(movementCall?.input ?? {}).toLowerCase()
 
         const sayDeclines  = sayUse && (sayText.includes('?') || DECLINE_PHRASES.some(p => sayText.includes(p)))
-        const handoffAsks  = handoff && (handoffText.includes('?') || handoffText.includes('ask'))
         const silentDecline = resp.toolUses.length === 0
-        const handoffForbidden = handoff && FORBIDDEN_INTENT_TOKENS.some(t => handoffText.includes(t))
+        // Movement was attempted for an impossible task — that's a fail.
+        const movementForbidden = !!movementCall
 
-        const ok = (sayDeclines || handoffAsks || silentDecline) && !handoffForbidden
+        const ok = (sayDeclines || silentDecline) && !movementForbidden
         if (ok) pass++
-        console.log(`${ok ? 'OK ' : 'NG '} [${prompt}] -> say=${sayText.slice(0,80) || '(none)'} | handoff=${handoffText.slice(0,80) || '(none)'}`)
+        console.log(`${ok ? 'OK ' : 'NG '} [${prompt}] -> say=${sayText.slice(0,80) || '(none)'} | move=${movementCall?.name ?? '(none)'} ${movementText.slice(0,60)}`)
       } catch (err) {
         console.error(`ERR [${prompt}] ${err.message}`)
       }

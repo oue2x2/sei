@@ -21,22 +21,3 @@ export function buildAnthropicTools(registry, descriptions = {}) {
   })
 }
 
-/**
- * Convert every action in `registry` into the Ollama `tools` shape:
- *   { type: 'function', function: { name, description, parameters: <JSON Schema> } }
- */
-export function buildOllamaTools(registry, descriptions = {}) {
-  return registry.list().map(name => {
-    const zodSchema = registry.schema(name)
-    const json = zodToJsonSchema(zodSchema, { name, $refStrategy: 'none' })
-    const parameters = json.definitions?.[name] ?? json
-    return {
-      type: 'function',
-      function: {
-        name,
-        description: descriptions[name] ?? `Action: ${name}`,
-        parameters,
-      },
-    }
-  })
-}

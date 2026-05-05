@@ -55,7 +55,6 @@ const DEFAULT_CONFIG = {
     tone: 'friendly',
   },
   anthropic: { api_key: '' },
-  ollama: { host: 'http://127.0.0.1:11434', model: 'qwen3.5:7b-instruct' },
   llm: { rate_limit_per_min: 30, debounce_ms: 500, max_hops: 5, idle_fallback_ms: 10000 },
   chat: { mode: 'prod' },
 }
