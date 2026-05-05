@@ -41,7 +41,6 @@ const INDEX_PATH = resolve(PROJECT_ROOT, 'src', 'index.js')
 
 const DEFAULT_CONFIG = {
   host: '127.0.0.1',
-  port: 25565,
   auth: 'offline',
   username: 'Sui',
   owner_username: 'YourMinecraftName',
@@ -216,11 +215,11 @@ function requireOnboarded(cmdName) {
 // ─── Subcommands ─────────────────────────────────────────────────────────
 async function cmdStart() {
   requireOnboarded('start')
-  // Spawn `node src/index.js --lan`. We do NOT import the bot here because
+  // Spawn `node src/index.js`. We do NOT import the bot here because
   // mineflayer pulls native modules; keeping start as a child process means
   // the CLI itself stays light.
   const { spawn } = await import('node:child_process')
-  const child = spawn(process.execPath, [INDEX_PATH, '--lan'], {
+  const child = spawn(process.execPath, [INDEX_PATH], {
     stdio: 'inherit',
     cwd: PROJECT_ROOT,
   })

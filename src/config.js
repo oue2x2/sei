@@ -3,7 +3,6 @@ import { readFileSync } from 'fs'
 
 export const ConfigSchema = z.object({
   host: z.string(),
-  port: z.number().int().min(1).max(65535),
   auth: z.enum(['offline', 'microsoft']),
   username: z.string(),
   owner_username: z.string(),
@@ -50,7 +49,6 @@ export function loadConfig(path = './config.json', overrides = {}) {
   if (!raw.anthropic?.api_key) {
     raw.anthropic = { ...(raw.anthropic ?? {}), api_key: process.env.ANTHROPIC_API_KEY ?? '' }
   }
-  if (overrides.port != null) raw.port = overrides.port
   if (overrides.host != null) raw.host = overrides.host
   return ConfigSchema.parse(raw)
 }

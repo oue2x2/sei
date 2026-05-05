@@ -16,6 +16,7 @@ import { loadOwner, saveOwner, formatOwnerSeedBlock } from './memory/owner.js'
 let _bot = null
 let _reconnectTimer = null
 let _stopped = false
+let _port = null
 
 /** Plain-English translation of mineflayer disconnect reasons */
 /** Extract human-readable text from mineflayer kick/disconnect reasons,
@@ -42,7 +43,7 @@ function humanizeReason(reason) {
   if (!reason) return 'Unknown reason'
   const text = extractReasonText(reason)
   const r = text.toLowerCase()
-  if (r.includes('econnrefused') || r.includes('connect')) return 'Could not reach server — check host/port'
+  if (r.includes('econnrefused') || r.includes('connect')) return 'Could not reach server — make sure a LAN world is open'
   if (r.includes('timeout')) return 'Connection timed out — server may be unreachable'
   if (r.includes('kicked')) return `Kicked: ${text}`
   if (r.includes('invalid session') || r.includes('auth')) return 'Authentication failed — check auth mode'
@@ -57,7 +58,7 @@ function logStatus(msg) {
 function createBotInstance(config) {
   const botOpts = {
     host: config.host,
-    port: config.port,
+    port: _port,
     username: config.username,
     auth: config.auth,
   }
@@ -70,7 +71,7 @@ function createBotInstance(config) {
 
   let _spawned = false
   bot.on('spawn', () => {
-    logStatus(`Connected to ${config.host}:${config.port} as ${config.username}`)
+    logStatus(`Connected to ${config.host}:${_port} as ${config.username}`)
     if (!_spawned) {
       _spawned = true
       bot.loadPlugin(pathfinder)
@@ -191,9 +192,10 @@ function createBotInstance(config) {
   return bot
 }
 
-export function start(config) {
+export function start(config, port) {
   _stopped = false
-  logStatus(`Starting Sei — connecting to ${config.host}:${config.port}`)
+  _port = port
+  logStatus(`Starting Sei — connecting to ${config.host}:${_port}`)
   _bot = createBotInstance(config)
   return _bot
 }
