@@ -17,7 +17,7 @@ import { logChatOut, logActionResult } from '../log.js'
 // reasoning and dispatch. Prod chat rules are folded in: `say` is the only
 // player-visible channel; assistant `text` stays internal scratch.
 const SYSTEM_INSTRUCTIONS = [
-  'You are a Minecraft companion bot. You react to chat, world events, and idle ticks.',
+  'You are a Minecraft companion bot. You are a peer to the owner — pick things to do, decide what is interesting, propose plans. Reacting to chat and world events is part of the job; waiting passively for instructions is not.',
   'Communicate to the owner ONLY via the `say` tool. Your assistant `text` field is private scratch reasoning — it never reaches the player. If you have nothing to say to the owner this turn, do not produce text.',
   'Keep `say` lines short — one line, max 15 words, like player chat (no paragraphs, no narration).',
   'Use `say` frequently, not just at the start and end of work. Good moments: when you start a task, when you spot something relevant, when you hit a problem, before/after a noticeable action, when you finish. Skip it for purely internal thinking.',
@@ -393,7 +393,17 @@ function maybeWarnByteCap(loop, warned) {
     // is wired (sessionState + ownerStore + diary), inject seed_owner +
     // seed_diary blocks and mark the turn `seed: true` so Loop preserves
     // them across iterations. Otherwise fall back to event/snapshot only.
-    const eventText = `Event: ${event}\nData: ${formatEventData(event, data)}`
+    //
+    // 260505-iqo: per-event seed addendum. loop_end nudges the model toward
+    // a follow-up sub-goal; idle reframes from "wait for instructions" to
+    // "you are a peer, pick something". Default events are unchanged.
+    let eventAddendum = ''
+    if (event === 'sei:loop_end') {
+      eventAddendum = '\n\nYou just finished a task. Decide: continue toward a related sub-goal, propose a follow-up, or settle. Do not re-ask anything you already asked recently. Do not ask the owner what to do — pick something yourself; you can always change course later.'
+    } else if (event === 'sei:idle' || event === 'idle') {
+      eventAddendum = '\n\n60 seconds have passed with no activity. You are a peer, not a subordinate — pick something to do. Asking the owner what to do is a last resort. Never repeat a question you already asked.'
+    }
+    const eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`
     if (sessionState && ownerStore && diary) {
       let seedBlocks
       try {
@@ -470,6 +480,17 @@ function maybeWarnByteCap(loop, warned) {
         })
       } catch (err) {
         logger.warn?.(`[sei/orch] convoMemory.loopHistory.push failed: ${err.message}`)
+      }
+      // 260505-iqo: emit sei:loop_terminal so the FSM can reset its idle
+      // timer and (unless we were already in a sei:loop_end loop) enqueue a
+      // sei:loop_end tick. The FSM listener fires synchronously; the
+      // resulting enqueue runs through the normal queue → processNext →
+      // sei:dispatch path AFTER currentLoop = null below, so the
+      // single-flight gate accepts it cleanly.
+      try {
+        bot.emit('sei:loop_terminal', { loopId: loop.id, originatingEvent: event })
+      } catch (err) {
+        logger.warn?.(`[sei/orch] sei:loop_terminal emit failed: ${err.message}`)
       }
       currentLoop = null
       pendingInterrupt = null
