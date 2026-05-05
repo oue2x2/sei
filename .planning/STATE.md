@@ -104,3 +104,5 @@ Next: Phase 3 — Memory & Persistence
 ---
 *Last updated: 2026-05-05 — quick task 260505-iqo completed.*
 | 2026-05-03 | fast | attack pursues + zod entity schema cleanup | done |
+| 2026-05-05 | fast | docs cleanup: remove two-layer/ollama from README+ARCHITECTURE | done |
+| 2026-05-05 | fast | drop port from persisted config; LAN discovery is the only path | done |
