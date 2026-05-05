@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-05-01T00:07:55.788Z"
+last_updated: "2026-05-05T00:37:31.487Z"
 progress:
   total_phases: 5
   completed_phases: 3
@@ -93,12 +93,13 @@ Next: Phase 3 — Memory & Persistence
 | 260503-1bu | Snapshot `recent_events:` deltas (kills, inventory gains, hp loss) + `prior_task:` interrupt-resume hint so bot resumes prior task after chat interrupt without reminder | 2026-05-03 | 1bbb67d | [260503-1bu-add-snapshot-delta-indicators-kills-inve](./quick/260503-1bu-add-snapshot-delta-indicators-kills-inve/) |
 | 260503-1sk | Exposure-filter `nearby blocks:` (no more xray), add `around feet:` 5×4×5 grouped line, expand interesting set to terrain blocks (sand, sandstone, gravel, dirt, grass_block, …), and double radius when local view is sparse — fixes "get me 10 sand" failure on beach | 2026-05-03 | 5abc8a8 | [260503-1sk-snapshot-blocks-only-show-exposed-non-xr](./quick/260503-1sk-snapshot-blocks-only-show-exposed-non-xr/) |
 | 260503-cli | Prod/dev chat mode split (only `say` reaches chat in prod, ≤15 words) + Sei=framework / character=Sui rebrand + light-blue `sei` CLI for onboarding/start/config + README rewrite | 2026-05-03 | cfe75b0 | [260503-cli-prod-chat-mode-rebrand](./quick/260503-cli-prod-chat-mode-rebrand/) |
+| 260504-oh9 | Fix sei CLI silent exit under npx/global-install (entrypoint guard now realpath-resolves argv[1]) + first-run gate so `sei start`/`sei config` refuse without `config.json` + README switched to `npm link` + `sei` | 2026-05-04 | fdbc8ca | [260504-oh9-fix-sei-cli-entrypoint-guard-silent-exit](./quick/260504-oh9-fix-sei-cli-entrypoint-guard-silent-exit/) |
 
 ## Session Continuity
 
-- **Last action:** Quick task 260503-cli — added `chat.mode` (prod/dev) gating narration→chat in orchestrator, defaults flipped to "Sui" for character name, new `sei` CLI (zero new deps) handles onboarding/start/config, README rewritten to frame Sei as a framework with Phase 4 GUI roadmap and credits.
-- **Next action:** `/gsd-plan-phase 3` to begin memory & persistence work, OR re-run `sei config` to pick up new prod chat mode locally.
+- **Last action:** Quick task 260504-oh9 — fixed `npx sei` (and global-install / `npm link`) silent-exit bug by realpath-resolving `process.argv[1]` in the entrypoint guard; added a `requireOnboarded()` gate so `sei start` and `sei config` refuse to run before onboarding has produced `config.json`; README quickstart now installs globally with `npm link` and runs as bare `sei`.
+- **Next action:** `/gsd-plan-phase 3` to begin memory & persistence work.
 
 ---
-*Last updated: 2026-05-03 — quick task 260503-cli completed.*
+*Last updated: 2026-05-04 — quick task 260504-oh9 completed.*
 | 2026-05-03 | fast | attack pursues + zod entity schema cleanup | done |
