@@ -2,10 +2,14 @@
  * Event-sourced FSM with priority queue.
  *
  * Priority constants (D-08):
- *   P0 = safety (attacked, critical health)
- *   P1 = chat received
- *   P2 = movement/action completion
- *   P3 = idle fallback
+ *   P0   = safety (attacked, critical health)
+ *   P1   = chat received
+ *   P2   = movement/action completion
+ *   P2.5 = end-of-loop tick (260505-iqo) — fires after every real-activity
+ *          loop terminal, prompting the model to decide a follow-up sub-goal
+ *          rather than wait for the 60s idle fallback. Above P3 so it
+ *          preempts a queued idle; below P2 so chat preempts it.
+ *   P3   = idle fallback (60s)
  *
  * Phase 2 will inject LLM handlers by replacing the scripted
  * response functions. The 'sei:dispatch' event is the hook point.
@@ -15,6 +19,7 @@ export const Priority = Object.freeze({
   P0_SAFETY: 0,
   P1_CHAT: 1,
   P2_MOVEMENT: 2,
+  P2_5_LOOP_END: 2.5,
   P3_IDLE: 3,
 })
 
@@ -69,6 +74,10 @@ export function createFSM(bot, config, registry) {
     queue.push({ priority, event, data })
     // Sort by priority ascending (lower number = higher priority)
     queue.sort((a, b) => a.priority - b.priority)
+    // 260505-iqo: any event ingestion postpones the idle fallback so the 60s
+    // timer counts from the latest activity, not from the last processNext
+    // dequeue. Safe to call repeatedly (clearTimeout + setTimeout).
+    resetIdleTimer()
     scheduleProcess()
   }
 
@@ -104,8 +113,6 @@ export function createFSM(bot, config, registry) {
 
     const controller = new AbortController()
     currentAction = { controller, priority: item.priority }
-
-    resetIdleTimer()
 
     try {
       await handleEvent(item.event, item.data, controller.signal)
@@ -150,6 +157,13 @@ export function createFSM(bot, config, registry) {
         break
       }
 
+      case 'sei:loop_end': {
+        // 260505-iqo: orchestrator handles via sei:dispatch above. The
+        // event-specific seed addendum (loop_end vs idle vs default) is
+        // composed by the orchestrator's event-text branch.
+        break
+      }
+
       default:
         break
     }
@@ -160,10 +174,25 @@ export function createFSM(bot, config, registry) {
   bot.on('sei:attacked', (data) => enqueue(Priority.P0_SAFETY, 'sei:attacked', data))
   bot.on('sei:chat_received', (data) => enqueue(Priority.P1_CHAT, 'sei:chat_received', data))
   // Initial-greeting on join. Same priority as chat so the orchestrator opens
-  // a fresh Loop and the bot speaks BEFORE the idle timer fires. The idle
-  // timer is reset by processNext so the next sei:idle is idle_fallback_ms
-  // *after* the join greeting completes.
+  // a fresh Loop and the bot speaks BEFORE the idle timer fires. enqueue()
+  // resets the idle timer so the next sei:idle is idle_fallback_ms *after*
+  // the join greeting completes.
   bot.on('sei:joined', (data) => enqueue(Priority.P1_CHAT, 'sei:joined', data))
+  // 260505-iqo: end-of-loop tick. Distinct from sei:idle (60s fallback). Fires
+  // after every real-activity loop terminal so the model can decide "continue
+  // toward a sub-goal" instead of waiting for the idle fallback. The
+  // orchestrator emits sei:loop_terminal from its handleDispatch finally
+  // block, with data.originatingEvent set to the event that started the
+  // just-finished loop — we suppress the daisy-chain by NOT enqueueing a
+  // fresh sei:loop_end when the just-finished loop was itself triggered by
+  // sei:loop_end.
+  bot.on('sei:loop_terminal', (data) => {
+    // Reset the idle timer so the 60s countdown restarts from the actual end
+    // of activity, not from whenever processNext last ran.
+    resetIdleTimer()
+    if (data?.originatingEvent === 'sei:loop_end') return
+    enqueue(Priority.P2_5_LOOP_END, 'sei:loop_end', { originatingEvent: data?.originatingEvent ?? null })
+  })
 
   // Start idle timer
   resetIdleTimer()

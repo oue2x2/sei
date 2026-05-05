@@ -1,63 +1,27 @@
 import { createAnthropicClient } from './anthropicClient.js'
-import { createOllamaClient } from './ollamaClient.js'
 import { createGoalStore } from './goals.js'
 import { createTokenBucket } from './rateLimiter.js'
 import { createDebouncer, createThrottle } from './debounce.js'
-import { createOllamaCircuit } from './circuit.js'
 import { createChainTracker } from './chains.js'
 import { createLoop } from './loop.js'
 import { renderPersona, capHitLine, capabilityParagraph, minecraftPrimer, stillLearningLine } from './persona.js'
-import { buildAnthropicTools, buildOllamaTools } from './schemaBridge.js'
+import { buildAnthropicTools } from './schemaBridge.js'
 import { composeSnapshot, createSnapshotComposer } from '../observers/snapshot.js'
 import { closeContainerSession } from '../behaviors/container.js'
 import { pauseFollow, setInflightProvider } from '../behaviors/follow.js'
 import { createInflightTracker } from './inflight.js'
-import { createChatRingBuffer } from './chatRingBuffer.js'
+import { createConvoMemory } from './convoMemory.js'
 import { logChatOut, logActionResult } from '../log.js'
 
-// Appended to system prompts when config.chat.mode === 'prod'. Pulled into a
-// module constant so both SYSTEM_INSTRUCTIONS and COMBINED_SYSTEM share one
-// source of truth and the cached system prefix stays byte-stable across
-// instances using the same mode.
-const PROD_CHAT_GUIDANCE = [
-  'CHAT MODE: prod. The ONLY way to speak to the player is `say`. Your text/reasoning never reaches the player — it is just for your own thinking.',
+// Single combined system prompt — one Haiku call per iteration handles both
+// reasoning and dispatch. Prod chat rules are folded in: `say` is the only
+// player-visible channel; assistant `text` stays internal scratch.
+const SYSTEM_INSTRUCTIONS = [
+  'You are a Minecraft companion bot. You are a peer to the owner — pick things to do, decide what is interesting, propose plans. Reacting to chat and world events is part of the job; waiting passively for instructions is not.',
+  'Communicate to the owner ONLY via the `say` tool. Your assistant `text` field is private scratch reasoning — it never reaches the player. If you have nothing to say to the owner this turn, do not produce text.',
   'Keep `say` lines short — one line, max 15 words, like player chat (no paragraphs, no narration).',
   'Use `say` frequently, not just at the start and end of work. Good moments: when you start a task, when you spot something relevant, when you hit a problem, before/after a noticeable action, when you finish. Skip it for purely internal thinking.',
-].join('\n')
-
-const DEV_CHAT_GUIDANCE = [
-  'CHAT MODE: dev. Every natural-language string you emit reaches the player\'s chat — your `say` calls AND any text/reasoning alongside or instead of tool calls. Treat your text as part of the conversation.',
-].join('\n')
-
-const SYSTEM_INSTRUCTIONS = [
-  'You are the personality layer of a Minecraft companion bot.',
-  'You react to chat, world events, and idle ticks.',
-  'You decide WHAT to do at a high level — never mention coordinates, action names, or code.',
-  'When you want the body to move or interact with the world, call handOffToMovement with a short natural-language instruction (e.g. "go check what shawn is building over by the water").',
-  'When you want to speak in chat, call say with the exact line.',
-  'When the owner sets a goal or you decide on a self-goal, call setGoals.',
-  'You may call multiple tools in one response. Keep responses brief — under 3 sentences of internal reasoning.',
-  'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
-  'If the snapshot shows an `in_flight:` line, your body is already doing that thing — do NOT hand off another movement intent this turn. You may `say` to acknowledge or report progress, then return.',
-  'When the player gives a new instruction mid-task, the runtime aborts whatever was in flight and you will see a `PLAYER INTERRUPT:` line with their message. Acknowledge them with `say` and address the new request. The aborted task is visible in your prior tool_use history — if it still makes sense after handling the interrupt, you may resume it (and briefly say so). If not, drop it.',
-  'EVERY owner message — not just stop verbs — pauses the body and aborts whatever movement was in flight. After answering, decide explicitly: resume the prior task (re-issue the same intent), drop it, or switch to what the owner just asked for. Do not assume the body is still doing the prior thing.',
-  'If you have tried the same approach 2+ times and it keeps failing (e.g. repeated `out of range`, `cant_reach`, `target gone`, `cannot break …`, or you are stuck in a hole with no climb path), STOP retrying. Use `say` to tell the owner what you tried, what is blocking you, and ask them for help (e.g. "I am stuck in a 1-wide pit, can you toss me dirt?"). Asking for help is correct behavior, not failure.',
-  'You are running inside an iteration loop: when you emit a tool_use, the runtime executes it and you will see the result on the next turn. End the loop by emitting only `say` (or no tool calls).',
-].join('\n')
-
-const MOVEMENT_SYSTEM = [
-  'You translate natural-language intent into one or more registered action calls.',
-  'You ONLY emit tool_calls — no prose. Pick the action(s) that best fulfill the intent.',
-  'If the intent is unclear or no action fits, emit no tool_calls.',
-].join('\n')
-
-// Single-call fallback (executor=api or Ollama tripped). Combines personality
-// reasoning and movement dispatch into one Haiku turn so we pay one API
-// round-trip instead of two. handOffToMovement is omitted — there is no
-// second layer to hand off to.
-const COMBINED_SYSTEM = [
-  'You are a Minecraft companion bot. You react to chat, world events, and idle ticks.',
-  'You decide WHAT to do at a high level AND directly invoke the body actions to do it — there is no separate movement layer in this mode.',
+  'You decide WHAT to do at a high level AND directly invoke the body actions to do it.',
   'In a single response you may: speak in chat (`say`), set goals (`setGoals`), and/or invoke movement actions (e.g. `goTo`, `dig`, `attack`, `equip`, `place`, `consume`, `sleep`, etc.).',
   'Movement rule: in one response you may emit AT MOST ONE TYPE of movement action. Multiple calls of the SAME movement action are fine and recommended (e.g. ten `dig` calls to chop a whole tree). Mixing different movement types (e.g. `dig` and `goTo` together) is not — pick one type per turn. Multiple same-type calls run sequentially: each waits for the prior to finish.',
   'In-flight rule: if the snapshot shows an `in_flight:` line, the bot is already doing that thing. Do NOT call any movement action this turn. You may `say` to the player (e.g. "still chopping the tree, give me a sec") or emit no tool calls.',
@@ -76,15 +40,15 @@ const ACTION_DESCRIPTIONS = {
   goTo: 'Move the bot to the given (x, y, z) coordinates within `range` blocks.',
   setGoals: 'Add or remove a goal from owner_goals or self_goals.',
   say: 'Speak the given text in in-game chat.',
-  handOffToMovement: 'Hand off a natural-language movement/interaction intent to the movement layer.',
   follow: 'Continuously trail an entity at follow_range. Pass `player` (username), or `entity` / `entity_id` / `target` for a mob. Does NOT attack — pair with attackEntity if you want hits. The body trails the target on a 1s tick; an attackEntity call can land a swing as soon as the target is within reach. Default-on at spawn for the owner; the snapshot shows `follow_target` so you know who you are trailing.',
   unfollow: 'Stop trailing the current follow target. The body holds position until you issue another movement.',
   attackEntity: 'Swing at an entity. `times` (1–10, default 1) hits the target up to N times in one call with ~600ms between swings; stops early if the target dies, moves out of reach, or you are interrupted. Use a higher `times` when hunting to amortize LLM round-trips — e.g. `times: 5` for sheep/pig, `times: 8` for tougher mobs.',
 }
 
-// 260502-h6i: 'look' removed — snapshot already rides every user turn, so the
-// extra round-trip yielded no new information.
-const PERSONALITY_NAMES = new Set(['say', 'setGoals', 'handOffToMovement'])
+// Tool names that are personality-only (do not require a follow-up
+// iteration). Anything outside this set is a movement-registry action and
+// keeps the loop running so the model can react to its result.
+const PERSONALITY_NAMES = new Set(['say', 'setGoals'])
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
 /**
@@ -146,7 +110,12 @@ export function classifyChatEvent(event, data) {
  * @param {string} args.snapshotText
  * @returns {Promise<Array<{type:'text', name:string, text:string}>>}
  */
-export async function composeSeedBlocks({ sessionState, ownerStore, diary, config, eventText, snapshotText, recentChatText = null }) {
+export async function composeSeedBlocks({
+  sessionState, ownerStore, diary, config, eventText, snapshotText,
+  recentLoopHistoryText = null,
+  recentOwnerChatText = null,
+  yourRecentMessagesText = null,
+}) {
   const owner = sessionState.ownerData()
   const seedOwnerText = ownerStore.formatOwnerSeedBlock(owner, config.memory.seed_owner_budget_bytes)
   const seedDiaryText = await diary.seedSlice()
@@ -154,12 +123,18 @@ export async function composeSeedBlocks({ sessionState, ownerStore, diary, confi
     { type: 'text', name: 'seed_owner', text: seedOwnerText },
     // Cache breakpoint: owner+diary are static within a session. Marking the
     // last static block extends the cached prefix (system + tools + seed_owner
-    // + seed_diary) across every loop in the session. Dynamic blocks (event,
-    // snapshot, recent_chat) stay uncached and re-bill per loop.
+    // + seed_diary) across every loop in the session. Dynamic blocks
+    // (recent_*, event, snapshot) stay uncached and re-bill per loop.
     { type: 'text', name: 'seed_diary', text: seedDiaryText, cache_control: { type: 'ephemeral' } },
   ]
-  if (recentChatText) {
-    blocks.push({ type: 'text', name: 'recent_chat', text: `Recent chat (last few lines, oldest first):\n${recentChatText}` })
+  if (recentLoopHistoryText) {
+    blocks.push({ type: 'text', name: 'recent_loop_history', text: recentLoopHistoryText })
+  }
+  if (recentOwnerChatText) {
+    blocks.push({ type: 'text', name: 'recent_owner_chat', text: recentOwnerChatText })
+  }
+  if (yourRecentMessagesText) {
+    blocks.push({ type: 'text', name: 'your_recent_messages', text: yourRecentMessagesText })
   }
   blocks.push({ type: 'text', name: 'event',    text: eventText })
   blocks.push({ type: 'text', name: 'snapshot', text: snapshotText })
@@ -179,8 +154,6 @@ export async function composeSeedBlocks({ sessionState, ownerStore, diary, confi
 export function createOrchestrator({ bot, config, registry, logger = console, sessionState = null, ownerStore = null, diary = null }) {
   const goals = createGoalStore()
   const anthropic = createAnthropicClient(config)
-  const ollama = createOllamaClient(config)
-  const circuit = createOllamaCircuit({ tripAt: 3 })
   const personalityBucket = createTokenBucket({
     capacity: config.llm.rate_limit_per_min,
     refillPerMin: config.llm.rate_limit_per_min,
@@ -197,10 +170,12 @@ export function createOrchestrator({ bot, config, registry, logger = console, se
   // `recent_events:` line with inventory/kill/hp deltas since the prior
   // snapshot for this orchestrator instance. See observers/snapshot.js.
   const snapshotComposer = createSnapshotComposer({ bot })
-  // Recent chat ring buffer — injected into seed user turn so the LLM has
-  // context for short replies like "yes" / "do it" that would otherwise be
-  // ambiguous given Loop history is reset per dispatch (D-39).
-  const chatBuffer = createChatRingBuffer({ capacity: 10 })
+  // Conversation memory (260505-iqo): split owner/self recentChat sub-buffers
+  // and a loopHistory ring of completed-loop summaries. Injected into the seed
+  // user turn so the LLM has cross-loop continuity (short replies like "yes" /
+  // "do it" need owner context; loopHistory keeps the bot from re-asking
+  // questions or rediscovering tasks across cold-composed loops).
+  const convoMemory = createConvoMemory()
   // Wire follow's lifecycle gate — follow yields while a *movement* action
   // is in flight. Personality-only entries (setGoals/say) don't pause
   // follow; see currentBlocking() in inflight.js.
@@ -220,17 +195,12 @@ export function createOrchestrator({ bot, config, registry, logger = console, se
   // catch arm to render the PLAYER INTERRUPT user turn.
   let pendingInterrupt = null
 
-  // Personality-only tools: setGoals, say, handOffToMovement
+  // Personality-only tools: setGoals, say
   const personalityTools = [
     {
       name: 'say',
       description: ACTION_DESCRIPTIONS.say,
       input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-    },
-    {
-      name: 'handOffToMovement',
-      description: ACTION_DESCRIPTIONS.handOffToMovement,
-      input_schema: { type: 'object', properties: { intent: { type: 'string' } }, required: ['intent'] },
     },
     {
       name: 'setGoals',
@@ -247,49 +217,26 @@ export function createOrchestrator({ bot, config, registry, logger = console, se
     },
   ]
 
-  // Movement registry tools (exclude setGoals — that's personality-only)
-  function movementToolsFor(provider) {
+  // Combined tools = personality tools + movement registry tools (excluding
+  // setGoals, which is already on the personality side).
+  function combinedToolsFor() {
     const subRegistry = {
       list:   () => registry.list().filter(n => n !== 'setGoals'),
       schema: (n) => registry.schema(n),
     }
-    return provider === 'anthropic'
-      ? buildAnthropicTools(subRegistry, ACTION_DESCRIPTIONS)
-      : buildOllamaTools(subRegistry, ACTION_DESCRIPTIONS)
-  }
-
-  // Combined tools = personality tools (minus handOffToMovement, useless in
-  // single-call mode) + movement registry tools (minus setGoals, which is
-  // already on the personality side).
-  function combinedToolsFor() {
-    const movementTools = movementToolsFor('anthropic')
-    const personalityForCombined = personalityTools.filter(t => t.name !== 'handOffToMovement')
-    const seen = new Set(personalityForCombined.map(t => t.name))
-    const merged = [...personalityForCombined]
+    const movementTools = buildAnthropicTools(subRegistry, ACTION_DESCRIPTIONS)
+    const seen = new Set(personalityTools.map(t => t.name))
+    const merged = [...personalityTools]
     for (const t of movementTools) {
       if (!seen.has(t.name)) { merged.push(t); seen.add(t.name) }
     }
     return merged
   }
 
-  // Chat-mode guidance: prepended to the cached system prefix so the model
-  // sees the active mode upfront. Bytes-stable per mode so prompt cache hits
-  // hold across loops within a session.
-  const chatModeGuidance = config.chat?.mode === 'dev' ? DEV_CHAT_GUIDANCE : PROD_CHAT_GUIDANCE
-
   let cachedSystemBlocks = null
-  let cachedCombinedSystemBlocks = null
   function rebuildPersonalitySystem() {
     cachedSystemBlocks = anthropic.buildCachedSystem(
-      `${SYSTEM_INSTRUCTIONS}\n\n${chatModeGuidance}`,
-      renderPersona(config.persona),
-      capabilityParagraph(),
-      minecraftPrimer(),
-      stillLearningLine(),
-      personalityTools
-    )
-    cachedCombinedSystemBlocks = anthropic.buildCachedSystem(
-      `${COMBINED_SYSTEM}\n\n${chatModeGuidance}`,
+      SYSTEM_INSTRUCTIONS,
       renderPersona(config.persona),
       capabilityParagraph(),
       minecraftPrimer(),
@@ -300,7 +247,6 @@ export function createOrchestrator({ bot, config, registry, logger = console, se
     // cached system prefix. Structural defense — fail fast at construction
     // time if a regression introduces them.
     assertNoMemoryInSystemBlocks(cachedSystemBlocks, 'cachedSystemBlocks')
-    assertNoMemoryInSystemBlocks(cachedCombinedSystemBlocks, 'cachedCombinedSystemBlocks')
   }
   rebuildPersonalitySystem()
 
@@ -308,58 +254,9 @@ export function createOrchestrator({ bot, config, registry, logger = console, se
   // Fed back into the next personality turn via composeSnapshot's lastActionResult.
   let lastActionResult = null
 
-  // ─── Startup probe (D-13) — 3 retries × 2s ───
-  async function probeOllamaWithRetry() {
-    for (let i = 0; i < 3; i++) {
-      if (await ollama.probe()) return true
-      await new Promise(r => setTimeout(r, 2000))
-    }
-    return false
-  }
-
-  async function start() {
-    if (config.llm.executor === 'api') {
-      circuit.trip('forced api-only via config.llm.executor')
-      logger.info('[sei/orch] Forced API-only mode — Haiku-as-executor for both layers; skipping Ollama probe.')
-      return
-    }
-    const ok = await probeOllamaWithRetry()
-    if (!ok) {
-      circuit.trip('startup probe failed')
-      logger.warn('[sei/orch] Ollama unreachable at startup — using Haiku-as-executor for this session.')
-    } else {
-      logger.info(`[sei/orch] Ollama reachable at ${ollama.host} — model ${ollama.model}`)
-    }
-  }
-
-  // ─── Movement dispatch (LLM-03 / LLM-08) ───
-  // Stays stateless per SPEC: Qwen does NOT see history. The personality Loop
-  // sees the movement layer's outcome via a synthetic tool_result (D-41).
-  async function callMovement(intent, signal) {
-    const tools = movementToolsFor(circuit.isOpen() ? 'anthropic' : 'ollama')
-    if (circuit.isOpen()) {
-      const resp = await anthropic.call({
-        systemBlocks: [{ type: 'text', text: MOVEMENT_SYSTEM }],
-        tools,
-        messages: [{ role: 'user', content: intent }],
-        signal,
-      })
-      return { toolCalls: resp.toolUses.map(u => ({ name: u.name, args: u.input })) }
-    }
-    const messages = [
-      { role: 'system', content: MOVEMENT_SYSTEM },
-      { role: 'user',   content: intent },
-    ]
-    try {
-      const resp = await ollama.call({ messages, tools, signal })
-      circuit.recordSuccess()
-      return { toolCalls: resp.toolCalls }
-    } catch (err) {
-      const newState = circuit.recordFailure()
-      logger.warn(`[sei/orch] Ollama call failed (${err.message}); circuit state=${newState}`)
-      throw err
-    }
-  }
+  // `start()` is a no-op kept for API compatibility with bot.js, which calls
+  // `orchestrator.start().catch(...)` at spawn-wire time.
+  async function start() {}
 
   // ─── Snapshot helper ────────────────────────────────────────────────
   function snapshotText() {
@@ -384,10 +281,6 @@ export function createOrchestrator({ bot, config, registry, logger = console, se
         const blk = m.content[j]
         if (!blk || blk.type !== 'tool_use') continue
         if (blk.name === 'say' || blk.name === 'setGoals') continue
-        if (blk.name === 'handOffToMovement') {
-          const intent = String(blk.input?.intent ?? '').slice(0, 120)
-          return intent ? `intent="${intent}"` : null
-        }
         // Combined-mode movement action.
         const a = blk.input ?? {}
         const parts = []
@@ -417,18 +310,6 @@ export function createOrchestrator({ bot, config, registry, logger = console, se
     } finally {
       inflight.end(handle)
     }
-  }
-
-  // Build a deterministic action-name-free summary string for personality
-  // history (D-04 preserved through D-41). Personality only ever sees:
-  //   "executed: <count> movement step(s); last_action_result: <string>"
-  function summarizeMovementBatch(results) {
-    const count = results.length
-    const last = results.length ? results[results.length - 1] : null
-    const lastStr = typeof last === 'string'
-      ? last
-      : (last && typeof last.ok !== 'undefined' ? `ok=${last.ok}` : '')
-    return `executed: ${count} movement step${count === 1 ? '' : 's'}${lastStr ? `; last_action_result: ${lastStr}` : ''}`
   }
 
   // Pitfall 4 cache invariant: scan a system blocks array for OWNER/DIARY
@@ -512,14 +393,26 @@ function maybeWarnByteCap(loop, warned) {
     // is wired (sessionState + ownerStore + diary), inject seed_owner +
     // seed_diary blocks and mark the turn `seed: true` so Loop preserves
     // them across iterations. Otherwise fall back to event/snapshot only.
-    const eventText = `Event: ${event}\nData: ${formatEventData(event, data)}`
+    //
+    // 260505-iqo: per-event seed addendum. loop_end nudges the model toward
+    // a follow-up sub-goal; idle reframes from "wait for instructions" to
+    // "you are a peer, pick something". Default events are unchanged.
+    let eventAddendum = ''
+    if (event === 'sei:loop_end') {
+      eventAddendum = '\n\nYou just finished a task. Decide: continue toward a related sub-goal, propose a follow-up, or settle. Do not re-ask anything you already asked recently. Do not ask the owner what to do — pick something yourself; you can always change course later.'
+    } else if (event === 'sei:idle' || event === 'idle') {
+      eventAddendum = '\n\n60 seconds have passed with no activity. You are a peer, not a subordinate — pick something to do. Asking the owner what to do is a last resort. Never repeat a question you already asked.'
+    }
+    const eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`
     if (sessionState && ownerStore && diary) {
       let seedBlocks
       try {
         seedBlocks = await composeSeedBlocks({
           sessionState, ownerStore, diary, config,
           eventText, snapshotText: snapshotText(),
-          recentChatText: chatBuffer.size ? chatBuffer.format() : null,
+          recentLoopHistoryText: convoMemory.loopHistory.formatBlock(),
+          recentOwnerChatText: convoMemory.recentChat.formatOwnerBlock(),
+          yourRecentMessagesText: convoMemory.recentChat.formatSelfBlock(),
         })
       } catch (err) {
         logger.warn(`[sei/orch] seed-block compose failed: ${err.message}; falling back to non-seed turn`)
@@ -575,6 +468,30 @@ function maybeWarnByteCap(loop, warned) {
       logger.error?.(`[sei/orch] loop error (id=${loop.id}): ${err && err.message}`)
     } finally {
       if (signal) try { signal.removeEventListener?.('abort', onExternalAbort) } catch {}
+      // Push completed-loop summary BEFORE clearing currentLoop so that any
+      // observers (none today, but defensive) see consistent state.
+      try {
+        convoMemory.loopHistory.push({
+          loopId: loop.id,
+          startedAt: loop.startedAt,
+          endedAt: Date.now(),
+          event,
+          loopMessages: loop._internal.messages,
+        })
+      } catch (err) {
+        logger.warn?.(`[sei/orch] convoMemory.loopHistory.push failed: ${err.message}`)
+      }
+      // 260505-iqo: emit sei:loop_terminal so the FSM can reset its idle
+      // timer and (unless we were already in a sei:loop_end loop) enqueue a
+      // sei:loop_end tick. The FSM listener fires synchronously; the
+      // resulting enqueue runs through the normal queue → processNext →
+      // sei:dispatch path AFTER currentLoop = null below, so the
+      // single-flight gate accepts it cleanly.
+      try {
+        bot.emit('sei:loop_terminal', { loopId: loop.id, originatingEvent: event })
+      } catch (err) {
+        logger.warn?.(`[sei/orch] sei:loop_terminal emit failed: ${err.message}`)
+      }
       currentLoop = null
       pendingInterrupt = null
       try { await closeContainerSession() } catch {}
@@ -607,11 +524,7 @@ function maybeWarnByteCap(loop, warned) {
 
       let resp
       try {
-        if (circuit.isOpen()) {
-          resp = await callPersonalityCombined(loop, signal)
-        } else {
-          resp = await callPersonalityTwoCall(loop, signal)
-        }
+        resp = await callPersonality(loop, signal)
       } catch (err) {
         if (err && (err.name === 'AbortError' || signal.aborted)) {
           await repairAfterAbort(loop)
@@ -630,38 +543,25 @@ function maybeWarnByteCap(loop, warned) {
 
       const toolUses = resp.toolUses ?? []
       if (toolUses.length === 0) {
-        // Terminal: text-only response. In dev mode, emit any text content as
-        // chat so the model's reasoning is visible in-game. In prod mode the
-        // text is internal-only — log it but do not relay to the player.
+        // Terminal: text-only response. Assistant `text` is private scratch —
+        // never relayed to the player and never pushed into the chat buffer.
+        // The model is expected to call `say` for player-facing speech.
         const text = (resp.text ?? '').trim()
-        if (text) {
-          logChatOut(text)
-          if (chatModeGuidance === DEV_CHAT_GUIDANCE) {
-            try { bot.chat(text) } catch {}
-            chatBuffer.push(config.persona?.name ?? 'sei', text)
-          }
-        }
+        if (text) logger.debug?.(`[sei/orch] terminal text (private, not relayed): ${text}`)
         return
       }
 
       // Mid-task narration: when the model emits text alongside tool_uses
-      // (and didn't call `say` itself). In dev mode this gets relayed to chat
-      // so the player sees the model's reasoning. In prod mode it's internal
-      // only — the model is expected to call `say` for player-facing speech.
+      // (and didn't call `say`). Logged at debug only — never reaches chat
+      // or the chat buffer (260505-iqo say/think separation).
       const midText = (resp.text ?? '').trim()
-      const calledSay = toolUses.some(u => u.name === 'say')
-      if (midText && !calledSay) {
-        logChatOut(midText)
-        if (chatModeGuidance === DEV_CHAT_GUIDANCE) {
-          try { bot.chat(midText) } catch {}
-          chatBuffer.push(config.persona?.name ?? 'sei', midText)
-        }
+      if (midText) {
+        const calledSay = toolUses.some(u => u.name === 'say')
+        if (!calledSay) logger.debug?.(`[sei/orch] mid-loop text (private, not relayed): ${midText}`)
       }
 
-      // Process tool_uses. Two-call vs combined handles dispatch differently:
-      // in combined mode, movement actions execute here; in two-call mode the
-      // personality emits handOffToMovement which fans out to Ollama.
-      const handoffCall = toolUses.find(u => u.name === 'handOffToMovement')
+      // Process tool_uses. Single-layer: every movement tool fires from the
+      // same combined response — no separate movement layer.
       const movementCalls = toolUses.filter(u => !PERSONALITY_NAMES.has(u.name))
 
       // Collect tool_results in the SAME order as toolUses so pairing holds.
@@ -675,7 +575,7 @@ function maybeWarnByteCap(loop, warned) {
             const line = String(u.input?.text ?? '').slice(0, 256)
             logChatOut(line)
             try { bot.chat(line) } catch {}
-            chatBuffer.push(config.persona?.name ?? 'sei', line)
+            convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
             results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said', is_error: false }
           } else if (u.name === 'setGoals') {
             try {
@@ -688,37 +588,6 @@ function maybeWarnByteCap(loop, warned) {
               logger.warn(`[sei/orch] setGoals failed: ${err.message}`)
               results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err.message}`, is_error: true }
             }
-          } else if (u.name === 'handOffToMovement') {
-            const intent = String(u.input?.intent ?? '')
-            let summary
-            try {
-              const movement = await callMovement(intent, signal)
-              const moveResults = []
-              for (const call of movement.toolCalls) {
-                if (signal.aborted) throw makeAbortError()
-                try {
-                  const r = await runWithInflight(call.name, call.args, {
-                    ...config,
-                    _goalStore: goals,
-                    signal,
-                  })
-                  const s = typeof r === 'string' ? r : (r && typeof r.ok !== 'undefined' ? `${call.name}:${r.ok ? 'ok' : 'fail'}` : 'done')
-                  lastActionResult = s
-                  moveResults.push(s)
-                  logActionResult(call.name, r)
-                } catch (err) {
-                  if (err && (err.name === 'AbortError' || signal.aborted)) throw err
-                  lastActionResult = `${call.name} error`
-                  moveResults.push(`error: ${err.message}`)
-                  logActionResult(call.name, `error: ${err.message}`)
-                }
-              }
-              summary = summarizeMovementBatch(moveResults)
-            } catch (err) {
-              if (err && (err.name === 'AbortError' || signal.aborted)) throw err
-              summary = `movement layer error: ${err.message}`
-            }
-            results[i] = { type: 'tool_result', tool_use_id: u.id, content: summary, is_error: false }
           } else {
             // Combined-path movement action: execute via registry directly.
             try {
@@ -766,8 +635,8 @@ function maybeWarnByteCap(loop, warned) {
       }
 
       // Determine whether to continue or terminate. If only personality-only
-      // tools fired (no handoff/movement) the LLM is done — terminal.
-      const continueLoop = !!handoffCall || movementCalls.length > 0
+      // tools fired (no movement) the LLM is done — terminal.
+      const continueLoop = movementCalls.length > 0
       loop.appendToolResults(results, { snapshot: snapshotText() })
       maybeWarnByteCap(loop, byteWarn)
 
@@ -858,44 +727,37 @@ function maybeWarnByteCap(loop, warned) {
     ])
     try {
       const resp = await anthropic.call({
-        systemBlocks: cachedCombinedSystemBlocks,
+        systemBlocks: cachedSystemBlocks,
         tools: [],
         messages: loop.buildAnthropicPayload(),
         signal: loop.abortController.signal,
         timeoutMs: config.anthropic.timeout_ms,
       })
       loop.appendAssistant(buildAssistantContent(resp))
+      // Cap-close is a one-shot terminal wrap-up: the prior iteration forced
+      // tools=[], so the model has no `say` tool available. Treat the returned
+      // text (or capHitLine fallback) as the equivalent of a `say` and surface
+      // it on chat + convoMemory so the timeline stays coherent.
       const text = (resp.text ?? '').trim() || capHitLine(config.persona)
       logChatOut(text)
       try { bot.chat(text) } catch {}
+      convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', text)
     } catch (err) {
       logger.warn(`[sei/orch] graceful cap close call failed: ${err.message}; falling back to capHitLine`)
-      try { bot.chat(capHitLine(config.persona)) } catch {}
+      const fallback = capHitLine(config.persona)
+      try { bot.chat(fallback) } catch {}
+      convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', fallback)
     }
   }
 
-  // ─── Personality call helpers (D-44 single seam) ─────────────────────
-  async function callPersonalityTwoCall(loop, signal) {
+  // ─── Personality call (single seam, single Anthropic combined turn) ──
+  async function callPersonality(loop, signal) {
     if (!personalityBucket.tryAcquire()) {
       logger.warn('[sei/orch] Rate limit hit — dropping personality call')
       return null
     }
     return await anthropic.call({
       systemBlocks: cachedSystemBlocks,
-      tools: personalityTools,
-      messages: loop.buildAnthropicPayload(),
-      signal,
-      timeoutMs: config.anthropic.timeout_ms,
-    })
-  }
-
-  async function callPersonalityCombined(loop, signal) {
-    if (!personalityBucket.tryAcquire()) {
-      logger.warn('[sei/orch] Rate limit hit — dropping combined call')
-      return null
-    }
-    return await anthropic.call({
-      systemBlocks: cachedCombinedSystemBlocks,
       tools: combinedToolsFor(),
       messages: loop.buildAnthropicPayload(),
       signal,
@@ -906,23 +768,22 @@ function maybeWarnByteCap(loop, warned) {
   return {
     start,
     handleDispatch,
-    get executorStatus() { return circuit.state },
     get currentLoop()    { return currentLoop },
     goals,
     debouncer: ingressDebouncer,
     throttle: ingressThrottle,
     inflight,
-    /** Record an incoming chat line in the ring buffer (chat.js calls this). */
-    recordIncomingChat: (who, text) => chatBuffer.push(who, text),
+    /** Record an incoming chat line in convoMemory (chat.js calls this). */
+    recordIncomingChat: (who, text) => convoMemory.recentChat.pushOwner(who, text),
     _internal: {
-      circuit, personalityBucket,
-      callPersonalityTwoCall, callPersonalityCombined, callMovement,
+      personalityBucket,
+      callPersonality,
       chains, inflight,
       get currentLoop() { return currentLoop },
+      get convoMemory() { return convoMemory },
       // Plan 3-02 harness seam: expose the cached system blocks so the
       // verifier can prove OWNER/DIARY content does not leak into them.
       getCachedSystemBlocks: () => cachedSystemBlocks,
-      getCachedCombinedSystemBlocks: () => cachedCombinedSystemBlocks,
       // Plan 3-03: bot.js reads these to construct the compactor with the
       // SAME anthropic client + cachedSystemBlocks reference (Pitfall 4
       // cache hit guarantee — cache_control marker stays valid).

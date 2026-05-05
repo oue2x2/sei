@@ -13,7 +13,7 @@
  * Cases (Task 2 — orchestrator integration):
  *   interrupt               — abort synthesizes aborted tool_results + PLAYER INTERRUPT user turn
  *   cap-graceful            — 20-iteration cap terminates with forced say (tools=[])
- *   combined-path           — Ollama-tripped path uses the same Loop seam
+ *   combined-path           — combined-call path uses the same Loop seam
  *   single-flight           — second concurrent dispatch routes through interrupt or is dropped
  *   idle-gated              — idle event does NOT trigger an Anthropic call while a Loop is active
  *   per-loop-byte-warn      — Loop > 100 KB serialized emits a warn-level structured log
@@ -321,11 +321,11 @@ CASES['cap-graceful'] = async () => {
 
 CASES['combined-path'] = async () => {
   // The Loop is constructed once and reused for both the personality call and
-  // any subsequent iterations triggered by tool_use responses, regardless of
-  // whether the orchestrator is on the two-call or combined-call path.
+  // any subsequent iterations triggered by tool_use responses on the single
+  // combined-call path.
   const loop = createLoop({ iterationCap: 20, logger: silentLogger() })
 
-  // Path 1: combined-call (Ollama tripped) — emits a movement tool_use
+  // Path 1: combined-call — emits a movement tool_use
   loop.appendUserTurn([
     { type: 'text', name: 'snapshot', text: 'S1' },
     { type: 'text', name: 'event',    text: 'idle tick' },

@@ -2,7 +2,7 @@
 
 ## Project
 
-Sei is a Minecraft AI companion system with a two-layer LLM architecture (Haiku 3 personality + Ollama Qwen movement), mineflayer bot control, and an Electron GUI for non-technical users. See `.planning/PROJECT.md` for full context.
+Sei is a Minecraft AI companion system with a single-layer combined Haiku LLM (reasoning + dispatch in one call), mineflayer bot control, and an Electron GUI for non-technical users. See `.planning/PROJECT.md` for full context.
 
 ## GSD Workflow
 
@@ -30,15 +30,15 @@ This project uses the GSD planning system. Planning artifacts live in `.planning
 
 ## Key Architecture Decisions
 
-1. **Three-process Electron**: main ↔ renderer (contextIsolation) ↔ utilityProcess (bot + LLMs). Mineflayer must run in utilityProcess only.
-2. **Closed action registry**: movement LLM calls Zod-typed actions, never generates code or coordinates
+1. **Three-process Electron**: main ↔ renderer (contextIsolation) ↔ utilityProcess (bot + LLM). Mineflayer must run in utilityProcess only.
+2. **Closed action registry**: the LLM calls Zod-typed actions directly, never generates code or coordinates. Single Haiku layer combines reasoning + dispatch in one call.
 3. **Event-sourced FSM**: priority queue (P0 safety → P1 chat → P2 completion → P3 idle), single outstanding action token with AbortController
 4. **LLM-directed memory compaction**: personality LLM decides when to compact at semantic boundaries, not a mechanical timer
-5. **Every external call has a timeout**: pathfinder, Ollama, Anthropic — no exceptions
+5. **Every external call has a timeout**: pathfinder, Anthropic — no exceptions
 
 ## Critical Pitfalls
 
 - Pathfinder silent hangs → wrap every call with wall-clock timeout
-- Two-layer LLM runaway loop → hard recursion cap (5 hops) + 500ms debounce from day one
+- Single-layer iteration runaway → iteration_cap (default 20) bounds tool-use chains; abort on owner chat preempts mid-iteration.
 - Native ABI mismatch → `@electron/rebuild` in postinstall, test packaged builds on clean VMs
 - macOS screen recording → screenshot is v2, treat as optional, degrade gracefully

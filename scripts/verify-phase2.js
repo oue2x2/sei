@@ -25,7 +25,6 @@ function assert(cond, msg) {
 const config = loadConfig()
 assert(config.persona?.name, 'config has persona.name')
 assert(typeof config.anthropic?.model === 'string', 'anthropic.model set')
-assert(config.ollama?.model?.includes('instruct'), 'ollama.model is instruct variant (D-21)')
 assert(config.llm?.max_hops === 5, 'llm.max_hops defaults to 5')
 
 const registry = createDefaultRegistry()
@@ -52,7 +51,6 @@ const stubBot = {
 
 const orch = createOrchestrator({ bot: stubBot, config, registry, logger: console })
 
-assert(orch.executorStatus === 'qwen' || orch.executorStatus === 'haiku-fallback', 'executorStatus initialized')
 assert(typeof orch.handleDispatch === 'function', 'handleDispatch exposed')
 assert(orch._internal?.chains && typeof orch._internal.chains.size === 'function', 'chain tracker exposed on _internal')
 
@@ -60,9 +58,8 @@ await registry.execute('setGoals', { list: 'owner', op: 'add', goal: 'kill cows'
 assert(orch.goals.snapshot().owner_goals[0] === 'kill cows', 'setGoals via registry mutates goal store')
 
 if (live) {
-  console.log('\n--- LIVE MODE: probing Ollama and calling Anthropic ---')
+  console.log('\n--- LIVE MODE: calling Anthropic ---')
   await orch.start()
-  console.log('Executor after probe:', orch.executorStatus)
 
   // (1) Synthetic CHAT dispatch
   const chatStart = chatCalls

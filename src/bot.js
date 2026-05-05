@@ -132,7 +132,7 @@ function createBotInstance(config) {
           bot._seiDebouncer = orchestrator.debouncer
           bot._seiAttackThrottle = orchestrator.throttle
           orchestrator.start().catch(err => logStatus(`Orchestrator start failed: ${err.message}`))
-          logStatus(`Sei online. Executor: ${orchestrator.executorStatus}`)
+          logStatus('Sei online.')
 
           // Initial greeting: fire a non-idle `sei:joined` event so the bot
           // speaks immediately on connect rather than waiting for the idle
