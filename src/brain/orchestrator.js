@@ -21,6 +21,26 @@ import { createInflightTracker } from './inflight.js'
 import { createConvoMemory } from './convoMemory.js'
 import { logChatOut, logActionResult } from './log.js'
 
+// Post-process say() text per D-7 (Plan 03.1-03):
+//   lowercase, strip [.,!?;:—–"`], KEEP apostrophes (contractions),
+//   collapse whitespace, cap at 256 chars.
+// Internal `text` (think) is exempt — it never passes through this; full-mode
+// `[think] ` debug relay also bypasses this on purpose so reasoning text stays
+// readable in chat for the operator.
+// Implementation note: stripped chars are replaced with a SPACE (not empty)
+// so word-joining cases like "move—shelter" become "move shelter", not
+// "moveshelter". The trailing whitespace collapse + trim folds the extra
+// spaces back down to a single one (or zero at edges). This matches Plan
+// 03.1-03's documented expected outputs verbatim.
+export function postProcessSay(s) {
+  return String(s ?? '')
+    .toLowerCase()
+    .replace(/[.,!?;:—–"`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 256)
+}
+
 // Single combined system prompt — one Haiku call per iteration handles both
 // reasoning and dispatch. Prod chat rules are folded in: `say` is the only
 // player-visible channel; assistant `text` stays internal scratch.
@@ -667,7 +687,10 @@ function maybeWarnByteCap(loop, warned) {
           const u = toolUses[i]
           if (signal.aborted) throw makeAbortError()
           if (u.name === 'say') {
-            const line = String(u.input?.text ?? '').slice(0, 256)
+            // D-7 (Plan 03.1-03): strip punctuation/lowercase/cap before
+            // transmit AND before pushing to convoMemory.recentChat.pushSelf
+            // so the bot's "memory" of what it said matches what the owner saw.
+            const line = postProcessSay(u.input?.text)
             logChatOut(line)
             try { adapter.chat(line) } catch {}
             convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
