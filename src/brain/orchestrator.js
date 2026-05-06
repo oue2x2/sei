@@ -73,7 +73,10 @@ const ACTION_DESCRIPTIONS = {
   follow: 'Continuously trail an entity at follow_range. Pass `player` (username), or `entity` / `entity_id` / `target` for a mob. Does NOT attack — pair with attackEntity if you want hits. The body trails the target on a 1s tick; an attackEntity call can land a swing as soon as the target is within reach. Default-on at spawn for the owner; the snapshot shows `follow_target` so you know who you are trailing.',
   unfollow: 'Stop trailing the current follow target. The body holds position until you issue another movement.',
   attackEntity: 'Swing at an entity. `times` (1–10, default 1) hits the target up to N times in one call with ~600ms between swings; stops early if the target dies, moves out of reach, or you are interrupted. Use a higher `times` when hunting to amortize LLM round-trips — e.g. `times: 5` for sheep/pig, `times: 8` for tougher mobs.',
-  dig: 'Break a block. Prefer `{ block: "<name>" }` to dig the NEAREST EXPOSED block of that name within maxDistance (default 32, max 64) — you do NOT need to read coordinates from the snapshot first. Use `{ target: "#N" }` for a specific snapshot handle. Use `{ x, y, z }` only when you must dig a precise coordinate. The bot pathfinds into reach automatically; if "out of range" comes back, it walked as close as it could — call `dig` again or move with `goTo` first.',
+  // Plan 03.1-05 Task 2 (D-W-3, D-W-6): canonical text lives next to dig.js
+  // as DIG_DESCRIPTION; this string is kept in sync so the LLM-facing copy
+  // and the adapter contract docstring don't drift.
+  dig: 'Break a block. Prefer `{ block: "<name>" }` to dig the NEAREST EXPOSED block of that name within maxDistance (default 32, max 64) — `maxDistance` is a SEARCH RADIUS for finding the named block, not a reach radius. Actual swing reach is fixed at 4.5m and the bot pathfinds into reach automatically. For repeated digs of the same block type, prefer `{block:"<name>"}` which auto-finds nearest each call. `#N` references (e.g. {target:"#3"}) rotate every snapshot — only valid in the SAME turn the snapshot listed them; switch to `{block:"<name>"}` if you see "stale target". Use `{ x, y, z }` only when you must dig a precise coordinate.',
 }
 
 // Tool names that are personality-only (do not require a follow-up
@@ -827,6 +830,59 @@ function maybeWarnByteCap(loop, warned) {
       // same combined response — no separate movement layer.
       const movementCalls = toolUses.filter(u => !PERSONALITY_NAMES.has(u.name))
 
+      // Plan 03.1-05 Task 2 (D-W-10): dropItem of ≥4 items requires a paired
+      // say() in the SAME turn. If missing, synthesize aborts for every
+      // tool_use and append a reminder. One reprompt max via
+      // _dropItemReprompted.
+      const bigDrop = toolUses.find(u => u.name === 'dropItem' && Number(u.input?.count ?? 1) >= 4)
+      if (bigDrop && !toolUses.some(t => t.name === 'say') && !loop._dropItemReprompted) {
+        loop._dropItemReprompted = true
+        const aborted = toolUses.map(u => ({
+          type: 'tool_result',
+          tool_use_id: u.id,
+          content: 'aborted: dropping 4+ items requires a say() in the same turn explaining why',
+          is_error: false,
+        }))
+        const cnt = Number(bigDrop.input?.count ?? 1)
+        const itm = bigDrop.input?.item ?? 'items'
+        loop.appendToolResults(aborted, {
+          snapshot: snapshotText(),
+          eventText: `You tried to drop ${cnt} ${itm} without saying anything to the owner. Re-issue with a say() in the same batch (e.g., "dropping the sand, we need wood now").`,
+        })
+        maybeWarnByteCap(loop, byteWarn)
+        continue
+      }
+
+      // Plan 03.1-05 Task 2 (D-W-2, D-W-3, D-H-5): cap parallel dig calls at
+      // 1 per turn. The first dig executes; subsequent digs synthesize an
+      // abort result. Decided cap=1 over chopping-2-block-tree regression
+      // (RESEARCH A2): the 5-identical-dig and 7-way-dig storms outweigh the
+      // legit case; the LLM can re-issue dig next turn.
+      let _digSeen = false
+      const _digCapped = new Set()
+      for (const u of toolUses) {
+        if (u.name !== 'dig') continue
+        if (_digSeen) _digCapped.add(u.id)
+        else _digSeen = true
+      }
+
+      // Plan 03.1-05 Task 2 (D-H-6): same-turn follow + attackEntity collapse.
+      // combat.js startAttacking already auto-pursues moving mobs, so an
+      // explicit follow paired with attackEntity in the SAME tool batch is
+      // redundant — and historically produced "target gone" because follow
+      // resolves the entity reference before attack lands the first swing.
+      const _attackTargets = new Set(
+        toolUses
+          .filter(u => u.name === 'attackEntity')
+          .map(u => u.input?.target ?? u.input?.entity)
+          .filter(Boolean)
+      )
+      const _followNoop = new Set(
+        toolUses
+          .filter(u => u.name === 'follow' && _attackTargets.has(u.input?.entity ?? u.input?.target))
+          .map(u => u.id)
+      )
+
       // Collect tool_results in the SAME order as toolUses so pairing holds.
       const results = new Array(toolUses.length)
 
@@ -834,14 +890,43 @@ function maybeWarnByteCap(loop, warned) {
         for (let i = 0; i < toolUses.length; i++) {
           const u = toolUses[i]
           if (signal.aborted) throw makeAbortError()
+          if (_digCapped.has(u.id)) {
+            // Parallel-dig cap (D-W-2 / D-W-3 / D-H-5): only one dig per turn.
+            results[i] = {
+              type: 'tool_result',
+              tool_use_id: u.id,
+              content: 'aborted: only one dig per turn allowed; re-issue next turn or use {block:"<name>"} for repeat digs',
+              is_error: false,
+            }
+            continue
+          }
+          if (_followNoop.has(u.id)) {
+            // follow + attackEntity in same turn (D-H-6): combat reflex
+            // auto-pursues, so the explicit follow becomes a no-op rather
+            // than racing the attack and returning "target gone".
+            results[i] = {
+              type: 'tool_result',
+              tool_use_id: u.id,
+              content: 'already pursuing: combat reflex auto-pursues moving mobs; attackEntity alone is enough',
+              is_error: false,
+            }
+            continue
+          }
           if (u.name === 'say') {
             // D-7 (Plan 03.1-03): strip punctuation/lowercase/cap before
             // transmit AND before pushing to convoMemory.recentChat.pushSelf
             // so the bot's "memory" of what it said matches what the owner saw.
             const line = postProcessSay(u.input?.text)
-            logChatOut(line)
-            try { adapter.chat(line) } catch {}
-            convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
+            // Plan 03.1-05 Task 2 (D-W-4): empty-text turns are excluded from
+            // the convoMemory self-buffer entirely so the bot never sees itself
+            // restating inventory / a blank message in your_recent_messages.
+            if (line && line.trim().length > 0) {
+              logChatOut(line)
+              try { adapter.chat(line) } catch {}
+              convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
+            } else {
+              logger.debug?.(`[sei/orch] empty say() output skipped from chat + self-buffer (D-W-4)`)
+            }
             results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said', is_error: false }
           } else if (u.name === 'setGoals') {
             try {

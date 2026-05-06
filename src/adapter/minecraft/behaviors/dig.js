@@ -8,6 +8,18 @@ const PICKUP_TIMEOUT_MS = 3000
 const DIG_REACH = 4.5  // mineflayer's effective reach for breaking blocks
 
 /**
+ * Plan 03.1-05 Task 2 (D-W-3, D-W-6): tool description shown to the LLM.
+ * Earlier versions buried the `maxDistance:32` semantic and the LLM was
+ * reading it as a SWING REACH (so it would walk away thinking "32 blocks is
+ * too far") rather than a SEARCH RADIUS for finding the named block.
+ * Adding the #N rotation caveat stops the snapshot-handle-stale-target loop
+ * (D-W-6 — five identical {target:'#3'} digs after the snapshot rotated).
+ * Lives in dig.js so the description sits next to the implementation it
+ * describes (orchestrator imports it via ACTION_DESCRIPTIONS).
+ */
+export const DIG_DESCRIPTION = "Break a block. Prefer `{ block: \"<name>\" }` to dig the NEAREST EXPOSED block of that name within maxDistance (default 32, max 64) — `maxDistance` is a SEARCH RADIUS for finding the named block, not a reach radius. Actual swing reach is fixed at 4.5m and the bot pathfinds into reach automatically. For repeated digs of the same block type, prefer `{block:\"<name>\"}` which auto-finds nearest each call. `#N` references (e.g. {target:\"#3\"}) rotate every snapshot — only valid in the SAME turn the snapshot listed them; switch to `{block:\"<name>\"}` if you see \"stale target\". Use `{ x, y, z }` only when you must dig a precise coordinate."
+
+/**
  * Dig a block. Single-flight; refuses if another dig is in flight.
  * Returns deterministic *what*-only result strings (D-35) — every failure
  * carries enough context that the LLM does not have to guess (e.g. it does
