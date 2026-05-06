@@ -88,6 +88,16 @@ Plans:
 - [ ] 3-02-markdown-memory-layer-PLAN.md — atomicWrite, OWNER.md, DIARY.md, sessionState, owner UUID detection (D-48), seed-message loader (D-45)
 - [ ] 3-03-compaction-calls-PLAN.md — per-loop-batch summary (D-51), async consolidation (D-53), prompts (D-52, D-54), phase-level verification harness
 
+### Phase 03.1: Behavior polish and AI/game decoupling refactor (analysis-driven from logs/) (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 3
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 03.1 to break down)
+
 ### Phase 4: Electron GUI & Packaging
 **Goal**: A non-technical user can double-click an installer, fill in a setup form, and press Start to run Sei — with all errors explained in plain English and native modules working in the packaged build.
 **Depends on**: Phase 3

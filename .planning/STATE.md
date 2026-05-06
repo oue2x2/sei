@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-05-06T04:35:00.000Z"
+last_updated: "2026-05-06T07:07:56.134Z"
 progress:
-  total_phases: 5
-  completed_phases: 3
+  total_phases: 6
+  completed_phases: 4
   total_plans: 12
-  completed_plans: 9
-  percent: 75
+  completed_plans: 12
+  percent: 100
 ---
 
 # State: Sei
@@ -29,7 +29,7 @@ Next: Phase 3 — Memory & Persistence
 - **Plan:** Phase 2.1 complete (2.1-01, 2.1-02, 2.1-03 all done)
 - **Status:** Executing Phase 03
 - **Progress:** Phases 3/4 complete (incl. 2.1)
-- **Next action:** `/gsd-verify-work 2.1` to formally verify, then `/gsd-discuss-phase 3` to begin memory work.
+- **Next action:** /gsd-plan-phase 3.1 — analysis-driven behavior polish + AI/game decoupling
 
 ```
 [DONE] Phase 1    Bot Substrate
@@ -78,6 +78,7 @@ Next: Phase 3 — Memory & Persistence
 ### Roadmap Evolution
 
 - Phase 2.1 inserted after Phase 2: Expand action registry beyond goTo/setGoals and surface inventory/surroundings/position to personality LLM as text (URGENT). Conflict-checked against Phase 3 (Memory) and Phase 4 (GUI) — no overlap; Phase 3 still owns SQLite persistence and compaction.
+- Phase 3.1 inserted after Phase 3: Behavior polish and AI/game decoupling refactor (analysis-driven from logs/) (URGENT)
 
 ### Blockers
 
