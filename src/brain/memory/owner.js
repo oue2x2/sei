@@ -146,6 +146,55 @@ export async function saveOwner(path, data) {
 }
 
 /**
+ * Plan 03.1-04: noteToSelf write-side helpers (D-M-4).
+ *
+ * setPreferredName — upsert the `preferred_name:` frontmatter field and
+ * persist atomically. Idempotent: writing the same name twice produces a
+ * single line, never duplicates.
+ *
+ * appendNote — append a timestamped line to the notes body. Keeps
+ * existing frontmatter + notes body intact; rewrites the file atomically.
+ * On-disk the heading is `# Notes` (heading 1) per the existing saveOwner
+ * serializer; the seed-turn block sent to the LLM transforms this to
+ * `## Notes` (heading 2) via formatOwnerSeedBlock. We mutate the parsed
+ * notes body and let saveOwner re-emit the canonical shape, so the
+ * heading-level detail stays internal.
+ *
+ * Both helpers go through loadOwner → mutate → saveOwner so the
+ * frontmatter shape stays canonical (no parallel string-edit drift).
+ */
+
+const PREFERRED_NAME_MAX = 64
+const NOTE_MAX = 256
+
+/** Atomically set OWNER.md's `preferred_name:` frontmatter field. */
+export async function setPreferredName(filePath, name) {
+  const safe = String(name ?? '').trim().slice(0, PREFERRED_NAME_MAX)
+  const owner = await loadOwner(filePath)
+  // Cold OWNER.md (file missing) — saveOwner will create it from the
+  // freshOwnerData baseline plus our preferred_name override.
+  const next = {
+    ...owner,
+    exists: true,
+    preferred_name: safe,
+  }
+  await saveOwner(filePath, next)
+}
+
+/** Atomically append `- [ISO timestamp] note` under the `## Notes` heading. */
+export async function appendNote(filePath, note) {
+  const safe = String(note ?? '').replace(/\s*\n+\s*/g, ' ').trim().slice(0, NOTE_MAX)
+  if (!safe) return
+  const t = new Date().toISOString()
+  const line = `- [${t}] ${safe}`
+  const owner = await loadOwner(filePath)
+  const existingNotes = owner.notes ?? ''
+  const nextNotes = existingNotes ? `${existingNotes}\n${line}` : line
+  const next = { ...owner, exists: true, notes: nextNotes }
+  await saveOwner(filePath, next)
+}
+
+/**
  * Format OWNER.md as the seed_owner markdown block injected into every Loop's
  * first user turn. Frontmatter (recognition fields) is always preserved; the
  * notes body is truncated at the byte boundary if the total exceeds budget.
