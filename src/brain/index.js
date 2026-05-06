@@ -1,8 +1,8 @@
 // src/brain/index.js
 //
 // Brain entry point. Wires the orchestrator + memory layer + priority queue,
-// then attaches the supplied adapter. Game-agnostic — no mineflayer import,
-// no src/adapter/ import.
+// then attaches the supplied adapter. Game-agnostic — no game-runtime
+// import, no src/adapter/ import.
 //
 // Boot composer (src/index.js) provides:
 //   - config (validated by src/config.js)

@@ -12,9 +12,10 @@
  *   P3   = idle fallback (60s)
  *
  * The priority queue is the brain's view of the FSM. Adapter-side wires
- * (see src/adapter/minecraft/fsmWires.js for the minecraft impl) translate
- * game-specific events into AdapterHandlers calls, which brain.start() then
- * routes through this queue's enqueue() with the correct priority.
+ * (see src/adapter/<game>/fsmWires.js — the minecraft impl is the
+ * reference) translate game-specific events into AdapterHandlers calls,
+ * which brain.start() then routes through this queue's enqueue() with
+ * the correct priority.
  */
 
 export const Priority = Object.freeze({

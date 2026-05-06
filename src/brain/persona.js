@@ -60,9 +60,10 @@ const STILL_LEARNING_LINE =
 /** D-30: ~150-token NL capability paragraph with inline "can't" list. */
 export function capabilityParagraph() { return CAPABILITY_PARAGRAPH }
 
-// D-31 minecraftPrimer() moved to src/adapter/minecraft/primer.js — brain now
-// receives the primer string via adapter.worldPrimer() at orchestrator
-// startup, never imports it directly. (Plan 03.1-02 D-5/D-6 seam.)
+// D-31 minecraftPrimer() moved to the adapter side (src/adapter/<game>/
+// primer.js for the reference minecraft impl) — brain now receives the
+// primer string via adapter.worldPrimer() at orchestrator startup, never
+// imports it directly. (Plan 03.1-02 D-5/D-6 seam.)
 
 /** D-32: single sentence, "still learning, asks the human" persona trait. */
 export function stillLearningLine() { return STILL_LEARNING_LINE }
