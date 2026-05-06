@@ -5,6 +5,12 @@ export const ConfigSchema = z.object({
   host: z.string(),
   auth: z.enum(['offline', 'microsoft']),
   username: z.string(),
+  // chat_mode: 'chat' (default) — only `say()` lines reach Minecraft chat.
+  // 'full' — assistant `text` (private scratch) ALSO reaches chat with a
+  // `[think] ` prefix so the owner can watch the bot's reasoning in real
+  // time. Default keeps existing config.json files (which lack the field)
+  // on the prior behavior.
+  chat_mode: z.enum(['chat', 'full']).default('chat'),
   owner_username: z.string(),
   minecraft_version: z.string().default('auto'),
   reconnect_delay_ms: z.number().int().min(0).default(5000),

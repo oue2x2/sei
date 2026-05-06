@@ -161,6 +161,15 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
   const toneDef = Math.max(0, toneOpts.indexOf(prevPersona.tone ?? 'friendly'))
   const tone = await pick(rl, 'tone:', toneOpts, toneDef)
 
+  const chatModeOpts = ['chat', 'full']
+  const prevChatMode = existing.chat_mode === 'full' ? 1 : 0
+  const chatMode = await pick(
+    rl,
+    'chat mode (chat = only say() reaches Minecraft; full = also print bot thinking with [think] prefix):',
+    chatModeOpts,
+    prevChatMode,
+  )
+
   const apiKey = await ask(rl, 'anthropic api key (or blank to use $ANTHROPIC_API_KEY):', {
     def: existing.anthropic?.api_key ?? '',
   })
@@ -170,6 +179,7 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
     ...DEFAULT_CONFIG,
     ...existing,
     username: characterName,
+    chat_mode: chatMode,
     owner_username: ownerUsername,
     persona: {
       ...DEFAULT_CONFIG.persona,
@@ -185,6 +195,7 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
     },
   }
   // Strip the legacy chat-mode field if a previous onboarding wrote it.
+  // (the new field is `chat_mode`, distinct name, no collision)
   delete cfg.chat
   if (playerName) cfg.owner_preferred_name = playerName
 

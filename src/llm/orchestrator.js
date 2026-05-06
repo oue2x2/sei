@@ -544,20 +544,41 @@ function maybeWarnByteCap(loop, warned) {
       const toolUses = resp.toolUses ?? []
       if (toolUses.length === 0) {
         // Terminal: text-only response. Assistant `text` is private scratch —
-        // never relayed to the player and never pushed into the chat buffer.
-        // The model is expected to call `say` for player-facing speech.
+        // in `chat` mode (default) it stays internal. In `full` mode the same
+        // text is relayed to chat with a `[think] ` prefix so the owner can
+        // watch the bot's reasoning. The model is otherwise expected to call
+        // `say` for player-facing speech.
         const text = (resp.text ?? '').trim()
-        if (text) logger.debug?.(`[sei/orch] terminal text (private, not relayed): ${text}`)
+        if (text) {
+          if (config.chat_mode === 'full') {
+            const line = ('[think] ' + text).slice(0, 256)
+            logChatOut(line)
+            try { bot.chat(line) } catch {}
+            convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
+          } else {
+            logger.debug?.(`[sei/orch] terminal text (private, not relayed): ${text}`)
+          }
+        }
         return
       }
 
       // Mid-task narration: when the model emits text alongside tool_uses
-      // (and didn't call `say`). Logged at debug only — never reaches chat
-      // or the chat buffer (260505-iqo say/think separation).
+      // (and didn't call `say`). In `chat` mode (default) this stays at
+      // debug only. In `full` mode it is relayed to chat with `[think] `
+      // prefix (260505-iqo say/think separation preserved by the prefix).
       const midText = (resp.text ?? '').trim()
       if (midText) {
         const calledSay = toolUses.some(u => u.name === 'say')
-        if (!calledSay) logger.debug?.(`[sei/orch] mid-loop text (private, not relayed): ${midText}`)
+        if (!calledSay) {
+          if (config.chat_mode === 'full') {
+            const line = ('[think] ' + midText).slice(0, 256)
+            logChatOut(line)
+            try { bot.chat(line) } catch {}
+            convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
+          } else {
+            logger.debug?.(`[sei/orch] mid-loop text (private, not relayed): ${midText}`)
+          }
+        }
       }
 
       // Process tool_uses. Single-layer: every movement tool fires from the
