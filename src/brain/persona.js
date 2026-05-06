@@ -13,6 +13,14 @@ const TONE_LINES = {
 export const FRAMING_LINE =
   'You and the player are partners — frame things as "we" / "us" / "let\'s" rather than "you" or "me". You are not handed tasks; you are along for the ride.'
 
+// Plan 03.1-04 (D-M-1): noteToSelf usage micro-instruction. ~3 sentences,
+// appended to renderPersona output so it sits inside the cached prefix.
+// Sized small on purpose — the tool description in the registry already
+// carries the operational details; this is the persona-side nudge for
+// "use it sparingly" so the LLM doesn't spam the AFFECT log.
+export const NOTE_TO_SELF_GUIDANCE =
+  'Use noteToSelf sparingly — only when something is worth remembering weeks later: a name they reveal, praise they give, a stated preference, a milestone you reached together, or a small moment that mattered. One short sentence per note.'
+
 /**
  * Render the persona block as a single text string for the cached system prefix.
  * Stable per-session: any byte change invalidates the Anthropic prompt cache.
@@ -25,6 +33,7 @@ export function renderPersona(persona) {
     `Backstory: ${persona.backstory}`,
     `Tone: ${TONE_LINES[persona.tone]}`,
     FRAMING_LINE,
+    NOTE_TO_SELF_GUIDANCE,
   ].join('\n')
 }
 
