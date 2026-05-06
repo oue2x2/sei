@@ -40,6 +40,29 @@ const TargetShape = z.object({
 
 const Vec3Shape = z.object({ x: z.number(), y: z.number(), z: z.number() })
 
+/**
+ * Plan 03.1-05 Task 3 (D-H-9): coords-at-known-player detector. When goTo is
+ * called with (x, y, z) that match a known player's current position to
+ * within ~1.5 blocks, treat it as "go to the player" and bump the default
+ * range to 2 so the bot stops at conversation distance instead of trying to
+ * stand on top of them. The LLM emitted goTo with range=0 when sent to a
+ * player and then sat in pathfind retries; default range:2 closes that loop.
+ */
+function isCoordsAtKnownPlayer(bot, x, y, z) {
+  if (!bot?.players) return false
+  for (const username in bot.players) {
+    const p = bot.players[username]
+    const e = p?.entity
+    if (!e || !e.position) continue
+    if (
+      Math.abs(e.position.x - x) < 1.5 &&
+      Math.abs(e.position.y - y) < 1.5 &&
+      Math.abs(e.position.z - z) < 1.5
+    ) return true
+  }
+  return false
+}
+
 /** Pre-built registry with all minecraft adapter actions registered. */
 export function createDefaultRegistry() {
   const registry = createRegistry()
@@ -54,7 +77,14 @@ export function createDefaultRegistry() {
     }),
     async (args, bot, config) => {
       const timeoutMs = config?.pathfinder_timeout_ms ?? 12000
-      return goTo(bot, args.x, args.y, args.z, args.range, timeoutMs)
+      // Plan 03.1-05 Task 3 (D-H-9): default range:2 when target matches a
+      // known player's position. Only kicks in when the LLM omitted range
+      // (Zod default fired range=1) and the coords align with a player.
+      let range = args.range
+      if (range <= 1 && isCoordsAtKnownPlayer(bot, args.x, args.y, args.z)) {
+        range = 2
+      }
+      return goTo(bot, args.x, args.y, args.z, range, timeoutMs)
     }
   )
 

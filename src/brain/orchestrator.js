@@ -485,6 +485,19 @@ function assertNoMemoryInSystemBlocks(blocks, label) {
   }
 }
 
+/**
+ * Plan 03.1-05 Task 3 (D-H-8): dedup helper for PLAYER INTERRUPT preservation.
+ * Stores the last-preserved signature on the loop and refuses to re-preserve
+ * the same signature. Returns true iff the caller should proceed with
+ * preservation. Pure-ish (mutates loop._lastPreservedSig) so the runtime
+ * path is the source of truth.
+ */
+function shouldPreserveInterrupt(loop, sig) {
+  if (loop._lastPreservedSig === sig) return false
+  loop._lastPreservedSig = sig
+  return true
+}
+
 function maybeWarnByteCap(loop, warned) {
     if (warned.flag) return warned
     if (loop.byteSize() > BYTE_WARN_THRESHOLD) {
@@ -531,8 +544,21 @@ function maybeWarnByteCap(loop, warned) {
     if (currentLoop !== null) {
       if (isOwnerChat) {
         const chatText = (data && (data.text ?? data.message)) ?? JSON.stringify(data ?? {})
-        pendingInterrupt = { chatText: String(chatText) }
-        try { currentLoop.abortController.abort() } catch {}
+        // Plan 03.1-05 Task 3 (D-H-8): PLAYER INTERRUPT dedup. RESEARCH
+        // theorized a race between the in-flight haiku call and the
+        // interrupt-injection (both the chat-receive event and an internal
+        // re-fire path could trigger the preservation path). We dedupe on
+        // a (username:text:500ms-bucket) signature; the second arrival
+        // within the same bucket is dropped. 500ms matches the FSM event
+        // debounce.
+        const who = data?.username ?? data?.who ?? ''
+        const sig = `${who}:${chatText}:${Math.floor((data?.ts ?? Date.now()) / 500)}`
+        if (shouldPreserveInterrupt(currentLoop, sig)) {
+          pendingInterrupt = { chatText: String(chatText) }
+          try { currentLoop.abortController.abort() } catch {}
+        } else {
+          logger.debug?.(`[sei/orch] PLAYER INTERRUPT dedup — skipping duplicate (sig=${sig})`)
+        }
         return
       }
       if (event === 'sei:attacked') {
@@ -578,9 +604,18 @@ function maybeWarnByteCap(loop, warned) {
     // "you are a peer, pick something". Default events are unchanged.
     let eventAddendum = ''
     if (event === 'sei:loop_end') {
-      eventAddendum = '\n\nYou just finished a task. Decide: continue toward a related sub-goal, propose a follow-up, or settle. Do not re-ask anything you already asked recently. Do not ask the owner what to do — pick something yourself; you can always change course later.'
+      // Plan 03.1-05 Task 3 (D-W-1): loop_end is observational. The bot was
+      // auto-starting world-mutating actions on loop_end (D-W-1: opened a chest
+      // and started moving items unprompted) which felt like "agent runaway"
+      // to the owner. Settle, acknowledge, yield — explicitly forbid auto-
+      // starting a new task without an explicit owner_goal or self_goal.
+      eventAddendum = '\n\nYou finished a task. Settle, no need to start a new task without an explicit owner_goal or self_goal that demands it. Acknowledge briefly with say() and yield. Do NOT auto-start any world-mutating action (dig, place, drop, openContainer, attack) on loop_end.'
     } else if (event === 'sei:idle' || event === 'idle') {
-      eventAddendum = '\n\n60 seconds have passed with no activity. You are a peer, not a subordinate — pick something to do. Asking the owner what to do is a last resort. Never repeat a question you already asked.'
+      // Plan 03.1-05 Task 3 (D-E-8): idle is observational, not a task prompt.
+      // Earlier "you are a peer, pick something to do" wording read as a
+      // command to start mutating the world; the bot would dig random sand or
+      // wander off. Reframe as "observe, comment if natural, silence is fine".
+      eventAddendum = '\n\nYou have been quiet for a minute. Observe something around you, or comment if natural — silence is fine, you do not need to call any tool. Do NOT auto-start a world-mutating action (dig, place, drop, openContainer, attack) without an explicit owner_goal that demands it.'
     } else if (event === 'sei:attacked') {
       // 260505-twx: P0 reaction. Name the attacker, demand a verbal-first
       // reaction, and set the player-vs-mob policy so the model doesn't try
