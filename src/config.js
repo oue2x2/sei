@@ -60,6 +60,10 @@ export const ConfigSchema = z.object({
   memory: z.object({
     owner_md_path: z.string().default('./memory/OWNER.md'),
     diary_md_path: z.string().default('./memory/DIARY.md'),
+    // Plan 03.1-04 (D-M-1): append-only affect log written by the noteToSelf
+    // tool and loaded in full into every Loop's seed user turn. Tiny by
+    // construction (one line per emission, kind-tagged), so no budget needed.
+    affect_md_path: z.string().default('./memory/AFFECT.md'),
     iteration_cap: z.number().int().min(1).default(30),
     loop_batch_loop_count_cap: z.number().int().min(1).default(10),
     loop_batch_context_cap_bytes: z.number().int().min(1024).default(32768),

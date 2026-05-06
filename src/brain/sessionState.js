@@ -44,7 +44,7 @@ const MUTATING_ACTIONS = new Set([
  * `goTo` is mutating only when the matching tool_result content begins
  * with `goTo:ok` — `goTo:fail` and aborted variants are non-mutating.
  */
-function loopHasMutation(loopMessages) {
+export function loopHasMutation(loopMessages) {
   if (!Array.isArray(loopMessages)) return false
   // Index tool_results by tool_use_id for O(1) lookup.
   const resultById = new Map()
@@ -68,6 +68,51 @@ function loopHasMutation(loopMessages) {
       if (blk.name === 'goTo') {
         const r = resultById.get(blk.id) ?? ''
         if (typeof r === 'string' && r.startsWith('goTo:ok')) return true
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * Plan 03.1-04 (D-M-1). Walk a Loop's messages and decide whether the
+ * loop carried any AFFECT signal — either an explicit noteToSelf tool_use
+ * from the assistant, or owner-chat text matching an affect keyword
+ * (praise/thanks/name reveal/preference cues). Used as an OR-gate
+ * alongside loopHasMutation: pure-chat loops where praise / name / etc.
+ * happened were previously dropped (mutation-only gate), so AFFECT was
+ * never written to the diary. With this gate, the loop-batch summary
+ * fires whenever EITHER mutation OR affect is present.
+ *
+ * Two-tier persistence (RESEARCH "Open Questions" #1 recommendation):
+ *   - AFFECT.md gets the immediate per-noteToSelf write (orchestrator
+ *     dispatch), every emission, kind-tagged, append-only.
+ *   - DIARY.md gets the loop-batch summary at the next idle terminal,
+ *     preserving D-52 cadence (≥10 loops or ≥32 KB).
+ */
+export function loopHasAffect(loopMessages) {
+  if (!Array.isArray(loopMessages)) return false
+  // Affect keyword regex on owner-chat: keep narrow — false-positives push
+  // diary writes prematurely. We err on the side of recall (better to
+  // summarize a chat-only loop that mentioned "thanks" than to drop praise).
+  const AFFECT_RE = /\b(good job|thanks|thank you|nice work|love|appreciate|sorry|please|name is|call me|i am)\b/i
+  for (const m of loopMessages) {
+    if (!m || !Array.isArray(m.content)) continue
+    if (m.role === 'assistant') {
+      for (const blk of m.content) {
+        if (blk && blk.type === 'tool_use' && blk.name === 'noteToSelf') return true
+      }
+    } else if (m.role === 'user') {
+      for (const blk of m.content) {
+        if (!blk || blk.type !== 'text') continue
+        const t = typeof blk.text === 'string' ? blk.text : ''
+        // Owner-chat is delivered via the seed-turn `event` block on first
+        // turn (e.g. `Event: sei:chat_received\nData: text: thanks`), and
+        // via `PLAYER INTERRUPT: <text>` on subsequent turns. The regex
+        // below catches both shapes — the keywords are rare enough in the
+        // surrounding boilerplate (Event, PLAYER INTERRUPT, snapshot text)
+        // to be safely matched against the full block text.
+        if (AFFECT_RE.test(t)) return true
       }
     }
   }
@@ -110,6 +155,12 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
   // (e.g. the bot answering "hi") would otherwise cause Haiku to confabulate
   // a diary entry from the seed text.
   let batchHasMutation = false
+  // Plan 03.1-04 (D-M-1): sibling flag tracked alongside batchHasMutation.
+  // The cadence-cap gate is now mutation OR affect, so chat-only sessions
+  // where the owner reveals a name / praises / thanks the bot also produce
+  // a diary entry. AFFECT.md still gets the immediate write per-noteToSelf
+  // emission via orchestrator dispatch (two-tier persistence).
+  let batchHasAffect = false
   // Pitfall 6 / Pitfall 7: single-flight gate for async consolidation —
   // prevents two consolidation passes from racing on DIARY.md.
   let consolidationLock = false
@@ -185,12 +236,16 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
     // when the residual batch contains at least one mutating action — a
     // pure-chat-only session leaves no diary entry behind.
     if (compactor && (loopCount > 0 || cumulativeLoopBytes > 0)) {
-      if (!batchHasMutation) {
-        logger.info?.('[sei/session] session-end flush skipped — no mutation observed in residual batch')
+      // Plan 03.1-04: OR-gate (mutation OR affect). A chat-only session
+      // where the owner praised / revealed a name now produces a diary
+      // entry instead of being silently dropped at session end (D-M-1).
+      if (!batchHasMutation && !batchHasAffect) {
+        logger.info?.('[sei/session] session-end flush skipped — no mutation or affect observed in residual batch')
         loopCount = 0
         cumulativeLoopBytes = 0
         loopBatchMessages = []
         batchHasMutation = false
+        batchHasAffect = false
       } else {
         try {
           const result = await compactor.summarizeLoopBatch({
@@ -202,6 +257,7 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
             cumulativeLoopBytes = 0
             loopBatchMessages = []
             batchHasMutation = false
+            batchHasAffect = false
           } else {
             logger.warn?.('[sei/session] session-end flush: summary failed; leaving batch for next session')
           }
@@ -237,6 +293,7 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
     cumulativeLoopBytes = 0
     loopBatchMessages = []
     batchHasMutation = false
+    batchHasAffect = false
   }
 
   function findOwnerInPlayers() {
@@ -283,6 +340,11 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
     // alone never trips the diary trigger; a single mutating loop in the
     // batch makes the entire pending batch eligible to flush.
     if (loopHasMutation(loopMessages)) batchHasMutation = true
+    // Plan 03.1-04 (D-M-1): track AFFECT signal alongside mutation. The
+    // OR-gate below fires the diary write when EITHER mutation OR affect
+    // is observed across the batch — addresses the structural hole that
+    // dropped pure-chat praise/preference/name sessions on the floor.
+    if (loopHasAffect(loopMessages)) batchHasAffect = true
     logger.info?.(`[sei/session] loop terminal loop_count=${loopCount} cumulative_bytes=${cumulativeLoopBytes}`)
 
     // Diary compaction is gated to idle-driven loops only. Compacting in the
@@ -299,16 +361,20 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
       const loopCap  = config.memory?.loop_batch_loop_count_cap  ?? Infinity
       const bytesCap = config.memory?.loop_batch_context_cap_bytes ?? Infinity
       if (loopCount >= loopCap || cumulativeLoopBytes >= bytesCap) {
-        if (!batchHasMutation) {
-          // 260502-h6i: cadence cap fired but the entire batch was non-
-          // mutating chat. Drop the batch and reset counters so non-mutating
-          // history doesn't grow unbounded — and skip the diary write so
-          // Haiku doesn't confabulate an entry from the seed text.
-          logger.info?.('[sei/session] loop-batch cadence hit but no mutation observed — skipping diary write')
+        // Plan 03.1-04: OR-gate (mutation OR affect). The legacy
+        // mutation-only gate dropped pure-chat sessions where praise /
+        // name reveals / preferences happened (D-M-1).
+        if (!batchHasMutation && !batchHasAffect) {
+          // Cadence cap fired but the entire batch was non-mutating
+          // chat with no affect signal either. Drop the batch and reset
+          // counters so non-affect history doesn't grow unbounded — and
+          // skip the diary write so Haiku doesn't confabulate an entry
+          // from the seed text.
+          logger.info?.('[sei/session] loop-batch cadence hit but no mutation or affect observed — skipping diary write')
           loopCount = 0
           cumulativeLoopBytes = 0
           loopBatchMessages = []
-          // batchHasMutation already false; no reset needed.
+          // batchHasMutation / batchHasAffect already false; no reset needed.
         } else {
           try {
             const result = await compactor.summarizeLoopBatch({
@@ -321,6 +387,7 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
               cumulativeLoopBytes = 0
               loopBatchMessages = []
               batchHasMutation = false
+              batchHasAffect = false
             } else {
               // Pitfall: leave the batch intact for retry on next loop-terminal
               // (T-03-17 documented decision — failed summary doesn't lose data).

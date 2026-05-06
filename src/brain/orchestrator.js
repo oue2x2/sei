@@ -20,6 +20,8 @@ import { buildAnthropicTools } from './schemaBridge.js'
 import { createInflightTracker } from './inflight.js'
 import { createConvoMemory } from './convoMemory.js'
 import { logChatOut, logActionResult } from './log.js'
+import { createAffectLog, readAffectFull } from './memory/affectLog.js'
+import { setPreferredName, appendNote } from './memory/owner.js'
 
 // Post-process say() text per D-7 (Plan 03.1-03):
 //   lowercase, strip [.,!?;:—–"`], KEEP apostrophes (contractions),
@@ -77,7 +79,9 @@ const ACTION_DESCRIPTIONS = {
 // Tool names that are personality-only (do not require a follow-up
 // iteration). Anything outside this set is a movement-registry action and
 // keeps the loop running so the model can react to its result.
-const PERSONALITY_NAMES = new Set(['say', 'setGoals'])
+// Plan 03.1-04: noteToSelf is personality-only — its result is always
+// "noted" / "error: …" and never warrants a follow-up iteration on its own.
+const PERSONALITY_NAMES = new Set(['say', 'setGoals', 'noteToSelf'])
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
 /**
@@ -156,6 +160,20 @@ export async function composeSeedBlocks({
     // (recent_*, event, snapshot) stay uncached and re-bill per loop.
     { type: 'text', name: 'seed_diary', text: seedDiaryText, cache_control: { type: 'ephemeral' } },
   ]
+  // Plan 03.1-04 (D-M-1): inject AFFECT.md in FULL after seed_diary, before
+  // recent_loop_history. AFFECT.md is small by construction (one line per
+  // noteToSelf emission) so we don't budget it. A best-effort read — if the
+  // path is unreadable we silently skip rather than break the loop.
+  if (config?.memory?.affect_md_path) {
+    try {
+      const affectLogText = await readAffectFull(config.memory.affect_md_path)
+      if (affectLogText && affectLogText.length > 0) {
+        blocks.push({ type: 'text', name: 'affect_log', text: affectLogText })
+      }
+    } catch {
+      // intentional: missing/unreadable affect log is non-fatal
+    }
+  }
   if (recentLoopHistoryText) {
     blocks.push({ type: 'text', name: 'recent_loop_history', text: recentLoopHistoryText })
   }
@@ -199,6 +217,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
   const goals = createGoalStore()
   const anthropic = createAnthropicClient(config)
+  // Plan 03.1-04 (D-M-1): affectLog is the immediate-write side of the
+  // noteToSelf tool. AFFECT.md is small by construction and loaded in full
+  // into every Loop's seed user turn (composeSeedBlocks below).
+  const affectLog = createAffectLog({ path: config.memory.affect_md_path })
   const personalityBucket = createTokenBucket({
     capacity: config.llm.rate_limit_per_min,
     refillPerMin: config.llm.rate_limit_per_min,
@@ -247,7 +269,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // addendum.
   let pendingAttack = null
 
-  // Personality-only tools: setGoals, say
+  // Personality-only tools: setGoals, say, noteToSelf
   const personalityTools = [
     {
       name: 'say',
@@ -265,6 +287,23 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
           goal: { type: 'string', minLength: 1 },
         },
         required: ['list', 'op', 'goal'],
+      },
+    },
+    // Plan 03.1-04 (D-M-1, D-M-4): noteToSelf is the explicit channel for
+    // Haiku to record moments worth remembering across sessions. Writes go
+    // to AFFECT.md (always) and OWNER.md (kind=name|preference). The
+    // description is the prompt the LLM reads — do not paraphrase.
+    {
+      name: 'noteToSelf',
+      description: 'Privately record a moment worth remembering across sessions: praise from owner, an inside joke, a stated preference, a name they revealed, a milestone reached. Will be written to your diary. Use sparingly — only for things you would want to remember weeks later. When recording a name, set kind="name" and pass the actual name in the `name` field (not embedded in summary).',
+      input_schema: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: ['praise', 'preference', 'name', 'milestone', 'moment'] },
+          summary: { type: 'string' },
+          name: { type: 'string', description: 'When kind="name", the actual name to record (e.g. "Shawn"). Required when kind="name".' },
+        },
+        required: ['kind', 'summary'],
       },
     },
   ]
@@ -704,6 +743,38 @@ function maybeWarnByteCap(loop, warned) {
               lastActionResult = 'setGoals error'
               logger.warn(`[sei/orch] setGoals failed: ${err.message}`)
               results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err.message}`, is_error: true }
+            }
+          } else if (u.name === 'noteToSelf') {
+            // Plan 03.1-04 (D-M-1, D-M-4). Dispatch:
+            //   AFFECT.md  ← always (any kind)
+            //   OWNER.md preferred_name ← when kind='name' and `name` field
+            //                              is a valid Unicode-letter token
+            //   OWNER.md notes section  ← when kind='preference'
+            // Validation: the explicit `name` field is the source of truth
+            // for kind='name' (D-M-4 Warning #4 fix — no extraction from
+            // summary). If the field is missing/invalid we still log to
+            // AFFECT.md (the durable record) but skip the OWNER.md write.
+            try {
+              const kind = u.input?.kind
+              const summary = u.input?.summary
+              await affectLog.append({ kind, summary, when: new Date() })
+              if (kind === 'name') {
+                const raw = String(u.input?.name ?? '').trim()
+                if (raw.length >= 2 && /^[\p{L}][\p{L}\p{M}\p{N}'\-\s]*$/u.test(raw)) {
+                  await setPreferredName(config.memory.owner_md_path, raw)
+                } else {
+                  logger.debug?.(`[sei/orch] noteToSelf kind=name skipped OWNER.md write — name field missing or invalid`)
+                }
+              } else if (kind === 'preference') {
+                await appendNote(config.memory.owner_md_path, summary)
+              }
+              loop._affectMarked = true
+              lastActionResult = 'noted'
+              results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'noted', is_error: false }
+            } catch (err) {
+              lastActionResult = 'noteToSelf error'
+              logger.warn(`[sei/orch] noteToSelf failed: ${err.message}`)
+              results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err?.message ?? 'note failed'}`, is_error: true }
             }
           } else {
             // Combined-path movement action: execute via registry directly.

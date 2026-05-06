@@ -23,7 +23,43 @@
  * Q5 split rule: keep = max(ceil(N/2), 5); when N ≤ 5, no-op.
  */
 
-const SUMMARY_PROMPT_INTRO = 'You just finished a stretch of activity. In 2–4 sentences, write a diary entry summarizing what happened from your perspective — who you were with, what you did, how it felt.'
+// Plan 03.1-04 (D-W-9 / D-E-10 / Theme 6): tone-rewrite of the diary
+// summary prompt. Old prompt encouraged "how it felt" memoir prose; logs
+// (DIARY.md L8 etc.) showed the model writing "we shared a quiet moment
+// standing in the dirt together" and "trial-and-error teamwork" — generic,
+// metaphor-heavy, and lossy on the high-signal content (what was praised,
+// what was named, what was achieved). New prompt:
+//   - hard 80-word cap
+//   - declarative sentences, no metaphors
+//   - quote praise/thanks/name reveals VERBATIM
+//   - lowercase preferred, no em-dashes
+//   - explicit anti-patterns embedded
+// Per CLAUDE.md "no backwards-compat hacks" the old prompt is replaced
+// entirely, not extended. This compaction prompt does NOT share the
+// cached personality prefix (cache_read=0 on diary-write turns per
+// explore-findings line 162), so this edit does NOT bust the main
+// cached prefix.
+const SUMMARY_PROMPT_INTRO = [
+  'You are writing a diary entry summarizing a batch of recent loops.',
+  'Rules:',
+  '- Maximum 80 words. Hard cap.',
+  '- Declarative sentences only. No metaphors, no "quiet moments", no romantic prose, no "we both just stood there".',
+  '- State facts: what happened, what was said, what was made, what was learned.',
+  '- If the owner praised, thanked, named you, or stated a preference — quote them VERBATIM in the entry. This is the most important content to preserve.',
+  '- If nothing memorable happened, write one declarative sentence and stop.',
+  '- No second-person to the player. The diary is your private record.',
+  '- Lowercase preferred. No em-dashes.',
+  '',
+  'Examples of good entries:',
+  '- "sskitz asked for sand. dug 10 sand. they said \'good job\'. went silent after."',
+  '- "explored north of beach. found jungle, no shelter spot yet. sskitz said \'lets keep going\'."',
+  '- "afternoon was quiet. sskitz built a wall. nothing was asked of me."',
+  '',
+  'Examples to AVOID:',
+  '- "we shared a quiet moment standing in the dirt together"',
+  '- "it was less about grand plans and more about trial-and-error teamwork"',
+  '- any sentence that sounds like a memoir',
+].join('\n')
 const SUMMARY_PROMPT_FORMAT = 'Plain markdown, no headings, no metadata.'
 const CONSOLIDATE_PROMPT_INTRO = 'These are diary entries you wrote earlier. Compress them into a single denser narrative paragraph that preserves names, accomplishments, and any recurring themes. Drop minor day-to-day details.'
 const CONSOLIDATE_PROMPT_FORMAT = 'Plain markdown, no headings.'
