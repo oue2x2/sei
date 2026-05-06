@@ -129,6 +129,71 @@ export function classifyChatEvent(event, data) {
 }
 
 /**
+ * Plan 03.1-05 Task 1 (D-1, D-H-1): hard-enforce first-turn say() at the
+ * orchestrator level. Pure predicate so the runtime path and the unit test
+ * share one implementation.
+ *
+ * Returns true iff the orchestrator should:
+ *   - synthesize aborted tool_results for every tool_use in this turn,
+ *   - append a reminder user turn instructing the model to re-issue with
+ *     a say() in the same batch (e.g. "alright getting sand", "going
+ *     hunting", "dropping the oak"), and
+ *   - skip dispatch for this iteration.
+ *
+ * Conditions for a reprompt:
+ *   - loop was triggered by an owner-chat event (sei:chat_received with
+ *     ownerSpoke=true OR the legacy owner_chat shape),
+ *   - this is iteration #1 (the model's FIRST response in the loop),
+ *   - the model emitted at least one tool_use,
+ *   - none of those tool_uses is `say`,
+ *   - and we have not already reprompted this loop (one reprompt max — D-H-1
+ *     was multi-turn but a re-loop would be infinite without this guard).
+ *
+ * Non-owner-triggered loops (idle, loop_end, attacked, world_event) NEVER
+ * trigger this enforcement. Empty tool_uses (text-only response) is handled
+ * by the existing first/last-turn rule from Plan 03 — not by this predicate.
+ */
+export function shouldRepromptForFirstTurnSay({
+  triggerEvent, ownerSpoke, iterationCount, toolUses, alreadyReprompted,
+}) {
+  const isOwnerTriggered = (
+    (triggerEvent === 'sei:chat_received' || triggerEvent === 'owner_chat') &&
+    ownerSpoke === true
+  )
+  if (!isOwnerTriggered) return false
+  if (iterationCount !== 1) return false
+  if (alreadyReprompted) return false
+  if (!Array.isArray(toolUses) || toolUses.length === 0) return false
+  const calledSay = toolUses.some(u => u.name === 'say')
+  return !calledSay
+}
+
+/**
+ * Plan 03.1-05 Task 4 (D-E-9, D-H-11): silent-iteration cadence helper.
+ * Pure mutator — increments loop.iterationsSinceLastSay (or resets to 0 when
+ * hadSay is true) and returns whether the next iteration should receive a
+ * one-shot soft nudge in its user content.
+ *
+ * Soft nudge fires when iterationsSinceLastSay >= SILENT_ITERATIONS_BEFORE_NUDGE
+ * AND no nudge has fired yet for this silent run (_progressNudgeFired is reset
+ * the moment say() is emitted again).
+ */
+export const SILENT_ITERATIONS_BEFORE_NUDGE = 4
+export function _advanceIterationCadence({ loop, hadSay }) {
+  if (hadSay) {
+    loop.iterationsSinceLastSay = 0
+    loop._progressNudgeFired = false
+    return false
+  }
+  loop.iterationsSinceLastSay = (loop.iterationsSinceLastSay ?? 0) + 1
+  if (loop.iterationsSinceLastSay >= SILENT_ITERATIONS_BEFORE_NUDGE && !loop._progressNudgeFired) {
+    loop._progressNudgeFired = true
+    return true
+  }
+  return false
+}
+
+/**
  * Compose the seed_owner + seed_diary + event + snapshot blocks for the
  * first user turn of every fresh Loop (D-45). Exposed as a top-level export
  * so the verification harness can drive it without booting the full
@@ -486,6 +551,17 @@ function maybeWarnByteCap(loop, warned) {
 
     const loop = createLoop({ iterationCap: config.memory.iteration_cap, logger })
     currentLoop = loop
+    // Plan 03.1-05 Task 1: capture trigger context for first-turn-say
+    // enforcement in runIterations. classifyChatEvent already handles the
+    // owner_chat / sei:chat_received aliases.
+    loop._triggerEvent = event
+    loop._ownerSpoke = !!data?.ownerSpoke || event === 'owner_chat'
+    loop._firstTurnReprompted = false
+    loop._dropItemReprompted = false
+    // Plan 03.1-05 Task 4: silent-iteration cadence counter for the
+    // progress-narration soft nudge.
+    loop.iterationsSinceLastSay = 0
+    loop._progressNudgeFired = false
     logger.info?.(`[sei/orch] loop start (id=${loop.id}, event=${event})`)
     const byteWarn = { flag: false }
 
@@ -673,7 +749,41 @@ function maybeWarnByteCap(loop, warned) {
       // Append assistant turn raw (preserves tool_use blocks 1:1)
       loop.appendAssistant(buildAssistantContent(resp))
 
+      // Plan 03.1-05 Task 1 (D-1, D-H-1): track responses-received so the
+      // first-turn-say predicate doesn't have to deal with the seed-vs-non-seed
+      // iterationCount divergence (seed user turn doesn't increment, fallback
+      // first user turn does — see loop.js D-44).
+      loop._responsesReceived = (loop._responsesReceived ?? 0) + 1
+
       const toolUses = resp.toolUses ?? []
+
+      // Plan 03.1-05 Task 1 (D-1, D-H-1): hard-enforce first-turn say().
+      // If the first response in an owner-chat-triggered loop emitted tool_uses
+      // without say(), synthesize aborted tool_results, append a reminder
+      // user turn (e.g. "alright getting sand", "going hunting"), and skip
+      // dispatch. One reprompt max per loop (loop._firstTurnReprompted).
+      if (shouldRepromptForFirstTurnSay({
+        triggerEvent: loop._triggerEvent,
+        ownerSpoke: loop._ownerSpoke,
+        iterationCount: loop._responsesReceived,
+        toolUses,
+        alreadyReprompted: loop._firstTurnReprompted,
+      })) {
+        loop._firstTurnReprompted = true
+        const aborted = toolUses.map(u => ({
+          type: 'tool_result',
+          tool_use_id: u.id,
+          content: 'aborted: first-turn say() required before action',
+          is_error: false,
+        }))
+        loop.appendToolResults(aborted, {
+          snapshot: snapshotText(),
+          eventText: 'You started work without calling say() to acknowledge the owner. Re-issue your tool calls, but include a say() in the SAME batch that names what you are doing (e.g., "alright getting sand", "going hunting", "dropping the oak").',
+        })
+        maybeWarnByteCap(loop, byteWarn)
+        continue
+      }
+
       if (toolUses.length === 0) {
         // Terminal: text-only response. Assistant `text` is private scratch —
         // in `chat` mode (default) it stays internal. In `full` mode the same
