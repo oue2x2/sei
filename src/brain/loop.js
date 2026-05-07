@@ -46,7 +46,12 @@ export function createLoop({ iterationCap, logger = console } = {}) {
   const messages = []
   let iterationCount = 0
   const startedAt = Date.now()
-  const abortController = new AbortController()
+  // Plan 03.1-10 (WR-02): mutable so the orchestrator's
+  // replaceAbortController can swap in a fresh instance via
+  // _setAbortController without resorting to Object.defineProperty
+  // on the returned getter. The loop's abortController getter still
+  // returns the active reference; consumers re-read on each access.
+  let abortController = new AbortController()
   const id = `loop-${_loopId++}-${startedAt.toString(36)}`
 
   function appendUserTurn(blocks, { seed = false } = {}) {
@@ -148,6 +153,15 @@ export function createLoop({ iterationCap, logger = console } = {}) {
     get iterationCount() { return iterationCount },
     get startedAt() { return startedAt },
     get abortController() { return abortController },
+    // Plan 03.1-10 (WR-02): expose a setter so the orchestrator's
+    // replaceAbortController can swap controllers cleanly. Validates the
+    // argument shape — must look like an AbortController.
+    _setAbortController(c) {
+      if (!c || typeof c.abort !== 'function' || !c.signal) {
+        throw new Error('_setAbortController: AbortController-shaped instance required')
+      }
+      abortController = c
+    },
     get id() { return id },
     _internal: { messages },
   }

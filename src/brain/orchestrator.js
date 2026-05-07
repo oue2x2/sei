@@ -614,7 +614,21 @@ function maybeWarnByteCap(loop, warned) {
         // fresh dispatch once the current loop's finally has cleared
         // currentLoop. We stash the dispatch here, abort the loop, and the
         // finally block emits it back into the FSM pipeline.
-        pendingAttack = { event, data }
+        //
+        // Plan 03.1-10 (WR-04): if a pending owner-chat interrupt was set
+        // before this attack arrived, FORWARD the chat text into the next
+        // loop. Without this, the catch arm sees pendingAttack first,
+        // returns early at runIterations, the interrupt is cleared in the
+        // finally block at line 776, and the owner's chat text is silently
+        // lost. We re-enqueue the chat AFTER the attack re-fire (the
+        // priority queue runs P0 before P1, so the attack opens a fresh
+        // loop first; the chat then arrives as a normal P1 dispatch and
+        // either interrupts the attack loop or runs after it).
+        const preservedInterrupt = pendingInterrupt
+          ? { chatText: pendingInterrupt.chatText, who: pendingInterrupt.who ?? data?.who ?? 'owner' }
+          : null
+        pendingAttack = { event, data, preservedInterrupt }
+        pendingInterrupt = null  // explicit: attack-wins-with-preservation
         try { currentLoop.abortController.abort() } catch {}
         return
       }
@@ -646,6 +660,12 @@ function maybeWarnByteCap(loop, warned) {
     // progress-narration soft nudge.
     loop.iterationsSinceLastSay = 0
     loop._progressNudgeFired = false
+    // Plan 03.1-10 (WR-02): capture the FSM-supplied signal so subsequent
+    // replaceAbortController calls can re-bridge it onto the new internal
+    // controller. Without this, only the FIRST external abort routes
+    // through; any second-turn external interrupt is silently dropped.
+    loop._externalSignal = signal ?? null
+    loop._externalAbortListener = null
     logger.info?.(`[sei/orch] loop start (id=${loop.id}, event=${event})`)
     const byteWarn = { flag: false }
 
@@ -714,11 +734,15 @@ function maybeWarnByteCap(loop, warned) {
 
     // Bridge: external signal (FSM) -> loop.abortController so handlers
     // respect both. The fresh Loop's controller is what actions hook into.
-    const onExternalAbort = () => { try { loop.abortController.abort() } catch {} }
-    if (signal) {
-      if (signal.aborted) onExternalAbort()
-      else signal.addEventListener('abort', onExternalAbort, { once: true })
-    }
+    //
+    // Plan 03.1-10 (WR-02): bridgeExternalAbort installs the listener and
+    // is called both at loop creation AND from replaceAbortController on
+    // every internal-controller swap. The previous { once: true } listener
+    // would be consumed by the first external abort, leaving second-turn
+    // external aborts undelivered to the new controller. The helper
+    // re-installs a fresh { once: true } listener pointing at the current
+    // abortController so subsequent external aborts route correctly.
+    bridgeExternalAbort(loop)
 
     try {
       await runIterations(loop, byteWarn)
@@ -746,7 +770,15 @@ function maybeWarnByteCap(loop, warned) {
     } catch (err) {
       logger.error?.(`[sei/orch] loop error (id=${loop.id}): ${err && err.message}`)
     } finally {
-      if (signal) try { signal.removeEventListener?.('abort', onExternalAbort) } catch {}
+      // Plan 03.1-10 (WR-02): drop any live external-signal listener via
+      // the loop-stored handle (the closure-local `onExternalAbort` no
+      // longer exists). If the listener was already consumed by an abort
+      // this is a no-op. bridgeExternalAbort updates loop._externalAbortListener
+      // every time it installs a fresh listener.
+      if (loop._externalSignal && loop._externalAbortListener) {
+        try { loop._externalSignal.removeEventListener?.('abort', loop._externalAbortListener) } catch {}
+        loop._externalAbortListener = null
+      }
       // Push completed-loop summary BEFORE clearing currentLoop so that any
       // observers (none today, but defensive) see consistent state.
       try {
@@ -787,6 +819,26 @@ function maybeWarnByteCap(loop, warned) {
         pendingAttack = null
         try { reenqueue('sei:attacked', pa.data, 0 /* Priority.P0_SAFETY */) } catch (err) {
           logger.warn?.(`[sei/orch] sei:attacked re-enqueue failed: ${err.message}`)
+        }
+        // Plan 03.1-10 (WR-04): if a pending owner-chat interrupt was
+        // preempted by this attack, re-enqueue the chat AFTER the attack.
+        // The priority queue runs P0 before P1, so the attack opens its
+        // loop first; the chat then arrives as a normal P1 dispatch and
+        // either preempts the attack loop (if still running) or runs as
+        // a fresh dispatch when the attack loop ends. Without this the
+        // owner's text is silently dropped.
+        if (pa.preservedInterrupt) {
+          try {
+            reenqueue('sei:chat_received', {
+              username: pa.preservedInterrupt.who,
+              text: pa.preservedInterrupt.chatText,
+              message: pa.preservedInterrupt.chatText,
+              ownerSpoke: true,
+            }, 1 /* Priority.P1_CHAT */)
+            logger.info?.(`[sei/orch] WR-04 preserved interrupt re-enqueued: ${pa.preservedInterrupt.chatText.slice(0, 64)}`)
+          } catch (err) {
+            logger.warn?.(`[sei/orch] WR-04 preserved interrupt re-enqueue failed: ${err.message}`)
+          }
         }
       }
       try { await adapter.closeAnySessions() } catch {}
@@ -1195,14 +1247,48 @@ function maybeWarnByteCap(loop, warned) {
     }
   }
 
+  // Plan 03.1-10 (WR-02): bridge external signal -> loop's CURRENT
+  // abortController. Called once at loop creation AND again from
+  // replaceAbortController whenever the internal controller is swapped.
+  // The closure captures `loop` so the listener always reads the latest
+  // loop.abortController via the getter.
+  function bridgeExternalAbort(loop) {
+    const ext = loop._externalSignal
+    if (!ext) return
+    if (ext.aborted) {
+      try { loop.abortController.abort() } catch {}
+      return
+    }
+    const onExternalAbort = () => {
+      try { loop.abortController.abort() } catch {}
+    }
+    ext.addEventListener('abort', onExternalAbort, { once: true })
+    // Save the listener on the loop so we can remove it on cleanup or
+    // before installing a fresh one in replaceAbortController.
+    loop._externalAbortListener = onExternalAbort
+  }
+
   // Replace loop.abortController with a fresh one. Required after an abort
   // so subsequent iterations don't immediately see signal.aborted.
+  //
+  // Plan 03.1-10 (WR-02): use loop._setAbortController instead of
+  // Object.defineProperty so the loop's abortController getter cleanly
+  // returns the new instance. Then re-bridge the external signal so a
+  // SECOND external abort that arrives later in the loop's lifetime is
+  // delivered to the new controller (the previous { once: true } listener
+  // was consumed by the first abort).
   function replaceAbortController(loop) {
     const fresh = new AbortController()
-    Object.defineProperty(loop, 'abortController', {
-      configurable: true,
-      get() { return fresh },
-    })
+    loop._setAbortController(fresh)
+    // Drop the previous external-signal listener (already consumed if a
+    // first external abort fired; still live if not). Either way the
+    // listener targeted the OLD controller, so we re-bridge below to
+    // point at `fresh`.
+    if (loop._externalSignal && loop._externalAbortListener) {
+      try { loop._externalSignal.removeEventListener?.('abort', loop._externalAbortListener) } catch {}
+      loop._externalAbortListener = null
+    }
+    bridgeExternalAbort(loop)
   }
 
   function makeAbortError() {
