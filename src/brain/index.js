@@ -135,6 +135,34 @@ export async function start({ config, adapter, logger = console }) {
   })
   sessionState.setCompactor(compactor)
 
+  // ── Plan 03.1-08 (D-W-9): startup recompact for legacy purple entries ──
+  // Pre-Plan-04 diary entries were written under the old memoir-prose
+  // prompt and bias every subsequent loop's seed_diary toward purple
+  // language. The 80-word cap only applies to NEW writes, so legacy
+  // oversize entries persist until a consolidate pass folds them into a
+  // single denser `## Earlier (...)` block under the new declarative
+  // prompt. Run ONE consolidateOlderHalf pass when there are >5 total
+  // entries AND ≥1 entry exceeds the 80-word cap. Fire-and-forget — the
+  // bot can come up before the rewrite finishes; subsequent loops will
+  // pick up the new block once the Anthropic call returns.
+  // Single-flight is preserved by replaceOlderHalf's internal write lock
+  // (diary.js writeLock) — no separate guard needed here.
+  try {
+    const oversize = await diary.countOversizeEntries(80)
+    const all = await diary.readAll()
+    if (oversize > 0 && all.length > 5) {
+      logger.info?.(`[sei/brain] D-W-9 startup recompact: ${oversize} legacy oversize entries detected (total=${all.length})`)
+      compactor.consolidateOlderHalf({})
+        .then(success => logger.info?.(`[sei/brain] D-W-9 startup recompact ${success ? 'completed' : 'skipped (no-op)'}`))
+        .catch(err => logger.warn?.(`[sei/brain] D-W-9 startup recompact failed: ${err.message}`))
+      // intentionally NOT awaited — bot can come up while rewrite runs.
+    } else {
+      logger.debug?.(`[sei/brain] D-W-9 startup check: oversize=${oversize}, total=${all.length} — no recompact needed`)
+    }
+  } catch (err) {
+    logger.warn?.(`[sei/brain] D-W-9 startup recompact preflight failed: ${err.message}`)
+  }
+
   // ── Build the priority queue with the orchestrator's handleDispatch ─
   queue = createPriorityQueue({
     onDispatch: (event, data, signal) => orchestrator.handleDispatch(event, data, signal),

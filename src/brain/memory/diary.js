@@ -240,12 +240,33 @@ export function createDiary({ path, seedDiaryBudgetBytes, logger = console } = {
     }
   }
 
+  /**
+   * Plan 03.1-08 (D-W-9): count entries whose body exceeds `maxWords`
+   * whitespace-separated words. Used by the startup recompact hook to
+   * decide whether legacy purple entries — written before Plan 04's
+   * 80-word cap landed — warrant a one-shot consolidate pass. Already-
+   * consolidated `## Earlier (...)` blocks are EXCLUDED from the count;
+   * they are the OUTPUT of consolidate, not legacy input, and counting
+   * them would create a rewrite loop.
+   */
+  async function countOversizeEntries(maxWords = 80) {
+    const entries = await readAll()
+    let count = 0
+    for (const e of entries) {
+      if (e.isConsolidated) continue
+      const words = String(e.body ?? '').trim().split(/\s+/).filter(Boolean).length
+      if (words > maxWords) count += 1
+    }
+    return count
+  }
+
   return {
     readAll,
     appendEntry,
     seedSlice,
     replaceOlderHalf,
     getFileSizeBytes,
+    countOversizeEntries,
     _internal: { get cached() { return cached } },
   }
 }

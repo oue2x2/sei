@@ -144,7 +144,25 @@ assert.equal(
   'T8 WR-05: lock released after sync throw, second consolidate ran',
 )
 
-// (T9 covering diary.countOversizeEntries lives below — added by Task 3.)
+// T9 (D-W-9): countOversizeEntries returns N for non-consolidated entries
+// whose body exceeds 80 whitespace-separated words. Consolidated `## Earlier`
+// blocks are excluded so the startup recompact does not rewrite its own output.
+{
+  const tmp2 = await mkdtemp(join(tmpdir(), 'sei-oversize-'))
+  const dpath = join(tmp2, 'DIARY.md')
+  const longBody = 'word '.repeat(85).trim()  // 85 words > 80
+  const shortBody = 'word '.repeat(10).trim() // 10 words ≤ 80
+  const fileText =
+    `## 2026-05-06 12:00 — long\n${longBody}\n\n` +
+    `## 2026-05-05 12:00 — short\n${shortBody}\n\n` +
+    `## Earlier (consolidated through 2026-05-04)\n${longBody}\n\n`
+  await writeFile(dpath, fileText)
+  const { createDiary } = await import('../src/brain/memory/diary.js')
+  const d = createDiary({ path: dpath, seedDiaryBudgetBytes: 4096 })
+  const c = await d.countOversizeEntries(80)
+  assert.equal(c, 1, `T9 expected 1 oversize (long, consolidated excluded), got ${c}`)
+  await rm(tmp2, { recursive: true, force: true })
+}
 
 await rm(tmp, { recursive: true, force: true })
 console.log('diaryFlushBytes: all cases passed')
