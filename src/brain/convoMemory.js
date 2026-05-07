@@ -158,6 +158,10 @@ export function createConvoMemory() {
       pushSelf,
       formatOwnerBlock,
       formatSelfBlock,
+      // Plan 03.1-07 Task 2: expose the most recent self-buffered line for
+      // dedupeSay (shouldSuppressLoopEndSay) gating. Returns
+      // { at, who, text } or null. Read-only — does not mutate.
+      lastSelf: () => selfLines.length > 0 ? selfLines[selfLines.length - 1] : null,
       get ownerSize() { return ownerLines.length },
       get selfSize() { return selfLines.length },
       _internal: { ownerLines, selfLines },

@@ -51,6 +51,36 @@ export function postProcessSay(s) {
     .slice(0, 256)
 }
 
+/**
+ * Suppress duplicate-consecutive say() within sei:loop_end loops.
+ * Closes D-NEW-DM-1/2/3 (and partially WR-03 — the loop_end re-emit chain).
+ *
+ * Predicate is byte-equality after normalize: lowercase + strip non-alphanumeric +
+ * collapse whitespace. Window: 2000ms. Only fires for triggerEvent === 'sei:loop_end'
+ * to keep chat-triggered duplication audible (different intent, same words is fine
+ * if owner asked twice).
+ *
+ * Threshold rationale (D-7 / log evidence): 2000ms covers the 13ms gap between
+ * memory-postfix.txt L21+L27 and the ~3s gap between hunt+sand-postfix L183/189/197
+ * cross-loop. Exact-after-normalize (rather than fuzzy ≥0.9) avoids false positives
+ * where the model intentionally rephrases.
+ *
+ * @param {Object} args
+ * @param {string} args.triggerEvent  — loop._triggerEvent
+ * @param {string} args.candidateLine — postProcessSay output
+ * @param {{at:number,text:string}|null} args.lastSelf — convoMemory.recentChat.lastSelf()
+ * @param {number} [args.now=Date.now()]
+ * @param {number} [args.windowMs=2000]
+ * @returns {boolean} true = suppress, false = allow
+ */
+export function shouldSuppressLoopEndSay({ triggerEvent, candidateLine, lastSelf, now = Date.now(), windowMs = 2000 }) {
+  if (triggerEvent !== 'sei:loop_end') return false
+  if (!lastSelf || !lastSelf.text) return false
+  if ((now - lastSelf.at) >= windowMs) return false
+  const norm = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return norm(candidateLine) === norm(lastSelf.text)
+}
+
 // Single combined system prompt — one Haiku call per iteration handles both
 // reasoning and dispatch. Prod chat rules are folded in: `say` is the only
 // player-visible channel; assistant `text` stays internal scratch.
@@ -964,13 +994,30 @@ function maybeWarnByteCap(loop, warned) {
             // the convoMemory self-buffer entirely so the bot never sees itself
             // restating inventory / a blank message in your_recent_messages.
             if (line && line.trim().length > 0) {
-              logChatOut(line)
-              try { adapter.chat(line) } catch {}
-              convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
+              // Plan 03.1-07 Task 2 (D-NEW-DM-1/2/3): suppress byte-equal
+              // duplicates emitted within sei:loop_end loops in a 2s window.
+              // Honest tool_result tells the LLM its line was repetitive so
+              // it can adjust the next turn — but we do NOT push to chat
+              // and do NOT push to convoMemory.recentChat.pushSelf (so the
+              // model does not see itself "saying" that twice).
+              const suppressed = shouldSuppressLoopEndSay({
+                triggerEvent: loop._triggerEvent,
+                candidateLine: line,
+                lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
+              })
+              if (suppressed) {
+                logger.info?.(`[sei/orch] dedupeSay suppressed loop_end duplicate (loop=${loop.id}): ${line.slice(0, 80)}`)
+                results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said (suppressed: byte-equal duplicate within 2s)', is_error: false }
+              } else {
+                logChatOut(line)
+                try { adapter.chat(line) } catch {}
+                convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
+                results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said', is_error: false }
+              }
             } else {
               logger.debug?.(`[sei/orch] empty say() output skipped from chat + self-buffer (D-W-4)`)
+              results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said', is_error: false }
             }
-            results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said', is_error: false }
           } else if (u.name === 'setGoals') {
             try {
               const r = await runWithInflight('setGoals', u.input, { ...config, _goalStore: goals })
