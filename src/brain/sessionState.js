@@ -276,11 +276,20 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
       !consolidationLock
     ) {
       consolidationLock = true
-      compactor.consolidateOlderHalf({})
-        .then(success => { if (success) sessionsSinceConsolidation = 0 })
-        .catch(err => logger.warn?.(`[sei/session] consolidation rejected: ${err.message}`))
-        .finally(() => { consolidationLock = false })
-      // intentionally NOT awaited — fire-and-forget per D-53
+      try {
+        compactor.consolidateOlderHalf({})
+          .then(success => { if (success) sessionsSinceConsolidation = 0 })
+          .catch(err => logger.warn?.(`[sei/session] consolidation rejected: ${err.message}`))
+          .finally(() => { consolidationLock = false })
+        // intentionally NOT awaited — fire-and-forget per D-53
+      } catch (err) {
+        // Plan 03.1-08 (WR-05): synchronous throw out of consolidateOlderHalf
+        // would skip the .finally chain and leak the lock for the lifetime
+        // of the process, blocking all future consolidations. Release here
+        // so the next kick can run.
+        consolidationLock = false
+        logger.warn?.(`[sei/session] consolidation sync throw: ${err.message}`)
+      }
     }
 
     const now = new Date().toISOString()
@@ -347,20 +356,25 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
     if (loopHasAffect(loopMessages)) batchHasAffect = true
     logger.info?.(`[sei/session] loop terminal loop_count=${loopCount} cumulative_bytes=${cumulativeLoopBytes}`)
 
-    // Diary compaction is gated to idle-driven loops only. Compacting in the
-    // middle of a chat exchange (or right after a join greeting) leaks the
-    // freshly-summarized memory back into the next reply and biases the LLM
-    // away from what the player just said. Counters and batched messages
-    // still accumulate above; we just defer the actual write until the bot
-    // returns to idle.
+    // Plan 03.1-08 (D-NEW-MEM-3): byte-cap flush fires on ANY loop_terminal,
+    // not just idle. The previous idle-only gate caused 70KB+ of pending
+    // batch in continuous-chat sessions (memory-postfix evidence:
+    // cumulative_bytes=70349 with bytesCap=32768 and never an idle event).
+    // Loop-count cap remains idle-gated to avoid mid-conversation diary
+    // writes biasing the next seed turn; consolidation (an O(seconds)
+    // Anthropic call) also remains idle-gated.
     const isIdleEvent = event === 'sei:idle' || event === 'idle'
 
-    if (compactor && isIdleEvent) {
+    if (compactor) {
       // D-51: per-loop-batch summary trigger. Fires when EITHER the loop
-      // count cap is hit OR the accumulated bytes cap is hit.
+      // count cap (idle-only) is hit OR the accumulated bytes cap is hit
+      // (any terminal — byte pressure is real cost, idleness is convenience
+      // timing only).
       const loopCap  = config.memory?.loop_batch_loop_count_cap  ?? Infinity
       const bytesCap = config.memory?.loop_batch_context_cap_bytes ?? Infinity
-      if (loopCount >= loopCap || cumulativeLoopBytes >= bytesCap) {
+      const bytesCapHit = cumulativeLoopBytes >= bytesCap
+      const loopCapHit  = isIdleEvent && loopCount >= loopCap
+      if (bytesCapHit || loopCapHit) {
         // Plan 03.1-04: OR-gate (mutation OR affect). The legacy
         // mutation-only gate dropped pure-chat sessions where praise /
         // name reveals / preferences happened (D-M-1).
@@ -388,6 +402,7 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
               loopBatchMessages = []
               batchHasMutation = false
               batchHasAffect = false
+              logger.info?.(`[sei/session] diary flushed (trigger=${bytesCapHit ? 'bytes' : 'loops'}, idle=${isIdleEvent})`)
             } else {
               // Pitfall: leave the batch intact for retry on next loop-terminal
               // (T-03-17 documented decision — failed summary doesn't lose data).
@@ -400,17 +415,28 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
       }
 
       // D-53 size-pressure consolidation trigger (independent of session
-      // count). Async fire-and-forget — single-flight via consolidationLock.
-      if (!consolidationLock) {
+      // count). Stays idle-gated: it's an O(seconds) Anthropic call, fire
+      // only when the bot is quiescent. Async fire-and-forget — single-flight
+      // via consolidationLock.
+      if (isIdleEvent && !consolidationLock) {
         let diarySize = 0
         try { diarySize = await diary.getFileSizeBytes() } catch {}
         const sizeCap = config.memory?.diary_size_cap_bytes ?? Infinity
         if (diarySize > sizeCap) {
           consolidationLock = true
-          compactor.consolidateOlderHalf({})
-            .catch(err => logger.warn?.(`[sei/session] consolidation rejected: ${err.message}`))
-            .finally(() => { consolidationLock = false })
-          // intentionally NOT awaited — fire-and-forget per D-53
+          try {
+            compactor.consolidateOlderHalf({})
+              .catch(err => logger.warn?.(`[sei/session] consolidation rejected: ${err.message}`))
+              .finally(() => { consolidationLock = false })
+            // intentionally NOT awaited — fire-and-forget per D-53
+          } catch (err) {
+            // Plan 03.1-08 (WR-05): synchronous throw out of
+            // consolidateOlderHalf would skip the .finally chain and leak
+            // the lock for the lifetime of the process. Release here so
+            // the next size-pressure kick can run.
+            consolidationLock = false
+            logger.warn?.(`[sei/session] consolidation sync throw: ${err.message}`)
+          }
         }
       }
     }

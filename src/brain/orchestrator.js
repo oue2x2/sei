@@ -206,7 +206,17 @@ export function shouldRepromptForFirstTurnSay({
   if (alreadyReprompted) return false
   if (!Array.isArray(toolUses) || toolUses.length === 0) return false
   const calledSay = toolUses.some(u => u.name === 'say')
-  return !calledSay
+  if (calledSay) return false
+  // Plan 03.1-08 (D-NEW-MEM-2): noteToSelf-only first turns are exempt.
+  // The user is reacting to memory persistence (acknowledging a stored
+  // fact); requiring a paired say() costs an extra LLM iteration without
+  // adding signal — verification observed 2 of 3 meaningful memory turns
+  // paying a doubled iteration because the model emitted noteToSelf as the
+  // only call. Mixed action+noteToSelf (e.g., dig + noteToSelf) is NOT
+  // exempt — the dig is the action requiring an acknowledgement say().
+  const onlyNoteToSelf = toolUses.every(u => u.name === 'noteToSelf')
+  if (onlyNoteToSelf) return false
+  return true
 }
 
 /**
