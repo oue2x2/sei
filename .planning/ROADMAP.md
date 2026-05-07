@@ -93,7 +93,7 @@ Plans:
 **Goal:** Achieve more natural in-game behavior via small modifications and codebase refactoring: (1) fix ~37 cataloged defects from 4 in-game logs (logs/explore.txt, hunt+sand.txt, memory.txt, wood.txt); (2) establish a brain/ (game-agnostic) vs adapter/minecraft/ (game-specific) seam so the bot brain could later drive a different game library; (3) reduce Haiku token usage where free wins exist (cache-respecting); (4) make memory recall feel like a long-time friend (fix the structural diary write-side bug where pure-chat sessions never produce diary entries).
 **Requirements**: None — this phase is quality/polish work, not new requirements coverage. Bounded by D-1 through D-8 in 03.1-CONTEXT.md plus the 37 defects in log-analysis/.
 **Depends on:** Phase 3
-**Plans:** 7/10 plans executed
+**Plans:** 8/10 plans executed
 
 Plans:
 - [x] 03.1-01-PLAN.md — brain/ vs adapter/minecraft/ file moves + Adapter JSDoc contract (Wave 1)
@@ -103,7 +103,7 @@ Plans:
 - [x] 03.1-05-PLAN.md — first-turn-say hard enforcement + parallel-dig cap=1 + follow/attackEntity no-op + pathfind hints + idle/loop_end split + dropItem-paired-say + interrupt dedup (Wave 3)
 - [x] 03.1-06-PLAN.md — VALIDATION.md (37 defects + refactor invariants) + STATE.md/ROADMAP.md status updates (Wave 4, has checkpoint for live replay)
 - [x] 03.1-07-PLAN.md — Tone & say polish gap-closure: postProcessSay regex refined (D-NEW-TONE-1), shouldSuppressLoopEndSay predicate + dedupe wiring (D-NEW-DM-1/2/3), model-authored cap-close (D-W-8 / D-NEW-TONE-2)
-- [ ] 03.1-08-PLAN.md — Bucket A continuation (gap-closure)
+- [x] 03.1-08-PLAN.md — Bucket A continuation (gap-closure)
 - [ ] 03.1-09-PLAN.md — Bucket A continuation (gap-closure)
 - [ ] 03.1-10-PLAN.md — Bucket A continuation (gap-closure)
 

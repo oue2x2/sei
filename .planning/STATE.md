@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-05-07T06:19:29.309Z"
+last_updated: "2026-05-07T06:30:30.968Z"
 progress:
   total_phases: 12
   completed_phases: 4
   total_plans: 22
-  completed_plans: 19
-  percent: 86
+  completed_plans: 20
+  percent: 91
 ---
 
 # State: Sei
@@ -28,7 +28,7 @@ Next: Phase 3 — Memory & Persistence
 - **Phase:** 3 — Memory & Persistence
 - **Plan:** Phase 2.1 complete (2.1-01, 2.1-02, 2.1-03 all done)
 - **Status:** Executing Phase 03.1
-- **Progress:** Phases 3/4 complete (incl. 2.1)
+- **Progress:** [█████████░] 91%
 - **Next action:** /gsd-plan-phase 3.1 — analysis-driven behavior polish + AI/game decoupling
 
 ```
@@ -100,11 +100,11 @@ Next: Phase 3 — Memory & Persistence
 
 ## Session Continuity
 
-- **Last action:** Plan 03.1-07 complete (Bucket A gap-closure, Wave 2). Three tasks landed: (1) `postProcessSay` regex narrowed to keep `,` `!` `?` `'` `;` `:` and strip only `.` `—` `–` `"` `` ` `` per D-NEW-TONE-1; (2) new `shouldSuppressLoopEndSay` predicate + `convoMemory.recentChat.lastSelf()` accessor wired into the say() handler with 2s window for byte-equal-after-normalize duplicates on `sei:loop_end` loops (D-NEW-DM-1/2/3); (3) `gracefulCapClose` now strengthens the seed prompt, runs the model output through `postProcessSay`, bumps timeout to ≥8000ms, and logs distinct info/warn lines so post-replay tells us which path fired (D-W-8 / D-NEW-TONE-2). Commits: 607607f, 35cfb48, f1386e2, 7cfd7f3.
-- **Next action:** Continue Phase 03.1 gap-closure — plans 03.1-08 / 03.1-09 / 03.1-10 remain in Bucket A.
+- **Last action:** Plan 03.1-08 complete (Bucket A gap-closure, Wave 3). Three tasks landed: (1) new `src/brain/storage/fileLock.js` exporting `withFileLock(filePath, fn)` per-file in-process mutex + wrap of `appendAffect` / `saveOwner` / `setPreferredName` / `appendNote` so concurrent OWNER.md / AFFECT.md writes serialize losslessly (WR-06); (2) `shouldRepromptForFirstTurnSay` carves out noteToSelf-only first turns (D-NEW-MEM-2), `onLoopTerminal` byte-cap flush fires on ANY terminal not only idle (D-NEW-MEM-3), and both consolidationLock kick sites wrap `consolidateOlderHalf` in try/catch so a sync throw releases the lock (WR-05); (3) `diary.countOversizeEntries(80)` + boot-time recompact hook in `brain/index.js` that fire-and-forgets `consolidateOlderHalf` when there are >5 entries AND ≥1 oversize legacy entry (D-W-9). Commits: 97219df, 9d9a8c5, b5e6b96, 9fce3ce.
+- **Next action:** Continue Phase 03.1 gap-closure — plans 03.1-09 / 03.1-10 remain in Bucket A.
 
 ---
-*Last updated: 2026-05-07 — plan 03.1-07 completed (gap-closure: D-NEW-TONE-1, D-NEW-DM-1/2/3, D-W-8/D-NEW-TONE-2).*
+*Last updated: 2026-05-07 — plan 03.1-08 completed (gap-closure: D-NEW-MEM-2, D-NEW-MEM-3, D-W-9, WR-05, WR-06).*
 | 2026-05-03 | fast | attack pursues + zod entity schema cleanup | done |
 | 2026-05-05 | fast | docs cleanup: remove two-layer/ollama from README+ARCHITECTURE | done |
 | 2026-05-05 | fast | drop port from persisted config; LAN discovery is the only path | done |
