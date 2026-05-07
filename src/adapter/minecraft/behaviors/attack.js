@@ -19,6 +19,22 @@ export async function attackEntityAction(args, bot, config) {
   // Refuse Players — REQUIREMENTS Out-of-Scope: Auto-PvP.
   if (entity.type === 'player' || entity.username) return 'cannot attack player'
 
+  // Plan 03.1-09 (D-H-15): refuse item-class entities. Dropped items, xp
+  // orbs, and global entities (lightning) cannot die — the dispatch wastes
+  // iterations chasing them and the model never learns they are non-targets
+  // unless we surface a clear refusal here. The `entity.name === 'item'`
+  // check covers mineflayer versions where dropped items report differently.
+  if (entity.type === 'object' || entity.name === 'item') {
+    const label = entity.name === 'item' ? 'item' : (entity.name ?? 'object')
+    return `cannot attack ${label} (dropped item entity)`
+  }
+  if (entity.type === 'orb') {
+    return 'cannot attack xp orb'
+  }
+  if (entity.type === 'global') {
+    return 'cannot attack global entity'
+  }
+
   const name = entity.name ?? entity.displayName ?? 'entity'
   const times = clampTimes(args.times)
   const timeoutMs = args.timeout_ms ?? config?.attack_timeout_ms ?? DEFAULT_TIMEOUT_MS
