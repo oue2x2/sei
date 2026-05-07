@@ -17,16 +17,15 @@
  * Kinds (mirror noteToSelf tool enum):
  *   praise | preference | name | milestone | moment
  *
- * Concurrency: this module does NOT take a write-lock. Entries are short
- * single lines; the orchestrator's noteToSelf dispatch is itself
- * single-flight inside a Loop. atomicWrite handles the partial-write
- * concern. If two writers ever race we may lose at most one append; this
- * is acceptable for v1 per RESEARCH (file is regenerable from session
- * memory if it is ever lost).
+ * Concurrency: writes serialize via withFileLock from ../storage/fileLock.js
+ * (Plan 03.1-08 WR-06). The atomic-write primitive still guards partial-write
+ * at the OS layer; the in-process mutex prevents two concurrent
+ * read-modify-write sequences from clobbering each other's appends.
  */
 
 import { readFile } from 'node:fs/promises'
 import { atomicWrite } from '../storage/atomicWrite.js'
+import { withFileLock } from '../storage/fileLock.js'
 
 const HEADER =
   '# Affect Log\n' +
@@ -77,22 +76,24 @@ export async function appendAffect(filePath, { kind, summary, when } = {}) {
   const safeSummary = String(summary ?? '').replace(/\s*\n+\s*/g, ' ').trim()
   const line = `- [${t}] (${safeKind}) ${safeSummary}\n`
 
-  let existing = ''
-  try {
-    existing = await readFile(filePath, 'utf8')
-  } catch (err) {
-    if (err && err.code === 'ENOENT') {
-      existing = HEADER
-    } else {
-      throw err
+  return withFileLock(filePath, async () => {
+    let existing = ''
+    try {
+      existing = await readFile(filePath, 'utf8')
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        existing = HEADER
+      } else {
+        throw err
+      }
     }
-  }
-  if (!existing.startsWith('# Affect Log')) {
-    // Defensive: if a hand-edited file lost the header, prepend it so the
-    // seed-turn block stays well-formed.
-    existing = HEADER + existing
-  }
-  await atomicWrite(filePath, existing + line)
+    if (!existing.startsWith('# Affect Log')) {
+      // Defensive: if a hand-edited file lost the header, prepend it so the
+      // seed-turn block stays well-formed.
+      existing = HEADER + existing
+    }
+    await atomicWrite(filePath, existing + line)
+  })
 }
 
 /**

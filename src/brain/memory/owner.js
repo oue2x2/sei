@@ -20,6 +20,7 @@
 
 import { readFile } from 'node:fs/promises'
 import { atomicWrite } from '../storage/atomicWrite.js'
+import { withFileLock } from '../storage/fileLock.js'
 
 const FRONT_DELIM = '---'
 const KNOWN_KEYS = [
@@ -122,11 +123,16 @@ function parseOwner(raw) {
 }
 
 /**
- * Atomically write OWNER.md at `path` from `data`.
- * @param {string} path
- * @param {OwnerData} data
+ * Plan 03.1-08 (WR-06): inner serialize+atomic-write helper. Does NOT take
+ * the file lock. Used by saveOwner (which acquires the lock once) and by
+ * setPreferredName / appendNote (which acquire the lock around the entire
+ * load→mutate→write sequence so concurrent callers serialize losslessly).
+ * Same-path lock nesting would self-deadlock, so the public saveOwner does
+ * NOT call into this helper while another lock-holder is active on the
+ * same path — callers either invoke saveOwner directly (top-level) OR they
+ * inline the helper inside their own withFileLock block.
  */
-export async function saveOwner(path, data) {
+async function _writeOwnerSerialized(path, data) {
   const lines = [FRONT_DELIM]
   for (const key of KNOWN_KEYS) {
     let v = data[key]
@@ -143,6 +149,20 @@ export async function saveOwner(path, data) {
   lines.push(data.notes ?? '')
   lines.push('') // trailing newline
   await atomicWrite(path, lines.join('\n'))
+}
+
+/**
+ * Atomically write OWNER.md at `path` from `data`.
+ *
+ * Plan 03.1-08 (WR-06): wrapped in withFileLock so concurrent saveOwner
+ * calls do not interleave with appendNote / setPreferredName mutations on
+ * the same file.
+ *
+ * @param {string} path
+ * @param {OwnerData} data
+ */
+export async function saveOwner(path, data) {
+  return withFileLock(path, () => _writeOwnerSerialized(path, data))
 }
 
 /**
@@ -167,31 +187,50 @@ export async function saveOwner(path, data) {
 const PREFERRED_NAME_MAX = 64
 const NOTE_MAX = 256
 
-/** Atomically set OWNER.md's `preferred_name:` frontmatter field. */
+/**
+ * Atomically set OWNER.md's `preferred_name:` frontmatter field.
+ *
+ * Plan 03.1-08 (WR-06): the entire load→mutate→write sequence runs inside
+ * withFileLock so a concurrent appendNote / saveOwner cannot read the same
+ * baseline and overwrite our update. We call _writeOwnerSerialized
+ * directly (NOT saveOwner) to avoid same-path lock re-entry, which would
+ * self-deadlock.
+ */
 export async function setPreferredName(filePath, name) {
   const safe = String(name ?? '').trim().slice(0, PREFERRED_NAME_MAX)
-  const owner = await loadOwner(filePath)
-  // Cold OWNER.md (file missing) — saveOwner will create it from the
-  // freshOwnerData baseline plus our preferred_name override.
-  const next = {
-    ...owner,
-    exists: true,
-    preferred_name: safe,
-  }
-  await saveOwner(filePath, next)
+  return withFileLock(filePath, async () => {
+    const owner = await loadOwner(filePath)
+    // Cold OWNER.md (file missing) — _writeOwnerSerialized will create it from
+    // the freshOwnerData baseline plus our preferred_name override.
+    const next = {
+      ...owner,
+      exists: true,
+      preferred_name: safe,
+    }
+    await _writeOwnerSerialized(filePath, next)
+  })
 }
 
-/** Atomically append `- [ISO timestamp] note` under the `## Notes` heading. */
+/**
+ * Atomically append `- [ISO timestamp] note` under the `## Notes` heading.
+ *
+ * Plan 03.1-08 (WR-06): wrapped in withFileLock so two concurrent
+ * appendNote calls cannot both read the same baseline notes body and
+ * overwrite each other. _writeOwnerSerialized called directly to avoid
+ * same-path lock re-entry.
+ */
 export async function appendNote(filePath, note) {
   const safe = String(note ?? '').replace(/\s*\n+\s*/g, ' ').trim().slice(0, NOTE_MAX)
   if (!safe) return
   const t = new Date().toISOString()
   const line = `- [${t}] ${safe}`
-  const owner = await loadOwner(filePath)
-  const existingNotes = owner.notes ?? ''
-  const nextNotes = existingNotes ? `${existingNotes}\n${line}` : line
-  const next = { ...owner, exists: true, notes: nextNotes }
-  await saveOwner(filePath, next)
+  return withFileLock(filePath, async () => {
+    const owner = await loadOwner(filePath)
+    const existingNotes = owner.notes ?? ''
+    const nextNotes = existingNotes ? `${existingNotes}\n${line}` : line
+    const next = { ...owner, exists: true, notes: nextNotes }
+    await _writeOwnerSerialized(filePath, next)
+  })
 }
 
 /**
