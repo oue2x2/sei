@@ -75,9 +75,16 @@ function botEntryPath(): string {
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'app.asar.unpacked', 'src/bot/index.js');
   }
-  // In dev: __dirname is dist/main; bot lives at src/bot/index.js relative
-  // to repo root. electron-vite's main bundle preserves this layout.
-  return path.join(__dirname, '../bot/index.js');
+  // In dev: __dirname for the bundled main is `<repo>/dist/main`. The bot
+  // lives at `<repo>/src/bot/index.js` and is NOT bundled into dist by
+  // electron-vite (electron.vite.config.ts only builds main, preload, and
+  // renderer). The previous resolution `path.join(__dirname, '../bot/...')`
+  // pointed at `dist/bot/index.js`, which never exists, so utilityProcess
+  // forked an entry that immediately failed to load and exited with
+  // code=1 — the regression captured in 260508-mun. Resolve up two
+  // levels and into src/bot/index.js so dev launches against the real
+  // source file.
+  return path.join(__dirname, '../../src/bot/index.js');
 }
 
 export interface BotSupervisorOptions {
@@ -264,10 +271,25 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     };
     active = session;
 
-    // stdout/stderr line-split → router
+    // stdout/stderr line-split → router. We also keep the last ~4KB of
+    // stderr/stdout so the exit-before-ready handler can attach the actual
+    // crash trace to the BotStatus.message field (260508-mun: previously
+    // the renderer only saw "Bot exited before summon-ready (code=1)" with
+    // no signal about which require()/throw blew up).
     const buffers = { stdout: '', stderr: '' };
+    const tails = { stdout: '', stderr: '' };
+    const TAIL_MAX = 4096;
     const sink = (chunk: Buffer, key: 'stdout' | 'stderr') => {
-      const text = buffers[key] + chunk.toString('utf-8');
+      const chunkText = chunk.toString('utf-8');
+      // Mirror to the Electron-main terminal so a developer running
+      // `npm run dev` sees bot startup errors immediately, even before
+      // the LogsBar is opened in the renderer.
+      // eslint-disable-next-line no-console
+      (key === 'stderr' ? console.error : console.log)(`[bot-${key}] ${chunkText.replace(/\n$/, '')}`);
+      // Maintain rolling tail buffer for exit diagnostics.
+      tails[key] = (tails[key] + chunkText).slice(-TAIL_MAX);
+      // Original line-split → router behavior.
+      const text = buffers[key] + chunkText;
       const lines = text.split('\n');
       buffers[key] = lines.pop() ?? '';
       for (const line of lines) if (line) router.append(line);
@@ -349,10 +371,19 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       if (!summonResolved) {
         summonResolved = true;
         clearTimeout(summonTimer);
-        // GUI-05: classify so CharacterPage shows ERROR_COPY[BOT_CRASH] (or
-        // a more specific class if a future regex covers spawn-fail signals)
-        // rather than the raw "code=null" string.
-        const message = `Bot exited before summon-ready (code=${code ?? 'null'})`;
+        // GUI-05 + 260508-mun hardening: include the last ~1KB of stderr
+        // (or stdout if stderr is empty) in the message so the renderer's
+        // Banner / model row error label shows actionable text rather than
+        // the bare exit code. Classification still runs against the
+        // combined tail so signals like "Cannot find module" can promote
+        // BOT_CRASH to a more specific ErrorClass over time.
+        const stderrTail = tails.stderr.slice(-1024).trim();
+        const stdoutTail = tails.stdout.slice(-1024).trim();
+        const tail = stderrTail || stdoutTail;
+        const baseMessage = `Bot exited before summon-ready (code=${code ?? 'null'})`;
+        const message = tail ? `${baseMessage}\n${tail}` : baseMessage;
+        // eslint-disable-next-line no-console
+        console.error(`[sei] ${baseMessage}\n--- bot stderr tail ---\n${stderrTail || '(empty)'}\n--- bot stdout tail ---\n${stdoutTail || '(empty)'}`);
         const ec = classifyChildError(message);
         opts.sendStatus({ kind: 'error', error: ec, message, characterId });
         summonReject(new Error(message));
