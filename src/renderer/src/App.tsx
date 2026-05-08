@@ -12,12 +12,15 @@
  *       - has key → home
  *  5. Hold the loading screen for ≥ LOADING_FLOOR_MS (1.6s) so the boot pulse
  *     animation reads (UI-SPEC §Animation Tokens).
+ *  6. Render modal layer (LanModal) and toast layer (SummonToast on summon
+ *     transitions) above the main view.
  *
- * Plans 07/08 fill the screen placeholders below with real screens. This plan
- * (06) ships the skeleton only; the placeholders prove the routing graph.
+ * Plan 08 fills the final two screen placeholders (CharacterPage + Settings),
+ * adds the modal/toast layers, and removes the placeholder defs from this file.
  *
  * Source: 04-CONTEXT.md D-15/D-17/D-33/D-35, 04-UI-SPEC.md §Animation Tokens
- *         (LoadingScreen 1.6s floor) + §Interaction Contracts → Theme toggle.
+ *         (LoadingScreen 1.6s floor) + §Interaction Contracts → Theme toggle +
+ *         §Summon flow (toast on summon).
  */
 
 import React, { useEffect, useState } from 'react';
@@ -32,6 +35,10 @@ import { OnboardingScreen } from './screens/OnboardingScreen';
 import { HomeScreen } from './screens/HomeScreen';
 import { AddCharacterScreen } from './screens/AddCharacterScreen';
 import { ComingSoonScreen } from './screens/ComingSoonScreen';
+import { CharacterPage } from './screens/CharacterPage';
+import { SettingsScreen } from './screens/SettingsScreen';
+import { LanModal } from './components/LanModal';
+import { SummonToast } from './components/SummonToast';
 
 const LOADING_FLOOR_MS = 1600;
 
@@ -40,7 +47,12 @@ export function App(): React.ReactElement {
   const themeMode = useUiStore((s) => s.themeMode);
   const setThemeMode = useUiStore((s) => s.setThemeMode);
   const navigate = useUiStore((s) => s.navigate);
+  const modal = useUiStore((s) => s.modal);
+  const summon = useDataStore((s) => s.summon);
+  const characters = useDataStore((s) => s.characters);
   const [bootStartedAt] = useState(() => Date.now());
+  const [toast, setToast] = useState<{ id: string; name: string } | null>(null);
+  const [lastToastedSummonId, setLastToastedSummonId] = useState<string | null>(null);
 
   // ── Theme apply + system listener ─────────────────────────────────────
   useEffect(() => {
@@ -98,20 +110,55 @@ export function App(): React.ReactElement {
     };
   }, [bootStartedAt, navigate, setThemeMode]);
 
+  // ── Toast on summon transition (UI-SPEC §Summon flow) ─────────────────
+  // Fire SummonToast when a new summon enters 'connecting' (request acked) or
+  // 'online'. We track the last toasted character id so a single summon only
+  // emits one toast as it walks through connecting → online.
+  useEffect(() => {
+    if (summon.kind === 'connecting') {
+      // We don't yet know the target character id at the connecting stage
+      // (BotStatus.connecting has no characterId). Skip — the toast fires on
+      // 'online' transition with the resolved character id.
+      return;
+    }
+    if (summon.kind === 'online') {
+      if (summon.characterId === lastToastedSummonId) return;
+      const c = characters.find((x) => x.id === summon.characterId);
+      if (!c) return;
+      setToast({ id: c.id, name: c.name });
+      setLastToastedSummonId(summon.characterId);
+      return;
+    }
+    // Reset on idle/error so the next summon fires a fresh toast.
+    if (summon.kind === 'idle' || summon.kind === 'error') {
+      if (lastToastedSummonId !== null) setLastToastedSummonId(null);
+    }
+  }, [summon, characters, lastToastedSummonId]);
+
   if (view.kind === 'loading') return <LoadingScreen />;
 
   return (
-    <MacosWindow subtitle={subtitleForView(view)}>
-      <IconRail />
-      <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
-        {view.kind === 'onboarding' && <OnboardingScreen isReonboard={view.isReonboard} />}
-        {view.kind === 'home' && <HomeScreen />}
-        {view.kind === 'add-character' && <AddCharacterScreen />}
-        {view.kind === 'character' && <CharacterPagePlaceholder id={view.id} />}
-        {view.kind === 'settings' && <SettingsPlaceholder />}
-        {view.kind === 'coming-soon' && <ComingSoonScreen />}
-      </main>
-    </MacosWindow>
+    <>
+      <MacosWindow subtitle={subtitleForView(view)}>
+        <IconRail />
+        <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
+          {view.kind === 'onboarding' && <OnboardingScreen isReonboard={view.isReonboard} />}
+          {view.kind === 'home' && <HomeScreen />}
+          {view.kind === 'add-character' && <AddCharacterScreen />}
+          {view.kind === 'character' && <CharacterPage id={view.id} />}
+          {view.kind === 'settings' && <SettingsScreen />}
+          {view.kind === 'coming-soon' && <ComingSoonScreen />}
+        </main>
+      </MacosWindow>
+      {modal?.kind === 'lan' ? <LanModal mode={modal.mode} /> : null}
+      {toast ? (
+        <SummonToast
+          characterId={toast.id}
+          characterName={toast.name}
+          onDone={() => setToast(null)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -133,14 +180,3 @@ function subtitleForView(view: View): string {
       return '';
   }
 }
-
-// ── Remaining plan-08 placeholders (CharacterPage + Settings). ────────────
-// Plan 07 replaced Onboarding / Home / AddCharacter / ComingSoon above.
-
-const Placeholder: React.FC<{ label: string }> = ({ label }) => (
-  <div style={{ padding: 40 }}>{label} — implemented in plan 08</div>
-);
-const CharacterPagePlaceholder: React.FC<{ id: string }> = ({ id }) => (
-  <Placeholder label={`Character ${id}`} />
-);
-const SettingsPlaceholder: React.FC = () => <Placeholder label="Settings" />;
