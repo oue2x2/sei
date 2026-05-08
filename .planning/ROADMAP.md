@@ -120,8 +120,20 @@ Plans:
   3. Every user-facing error includes a plain-English explanation and an action hint ("Check your server address", "Start Ollama", etc.).
   4. `electron-builder` produces a signed .dmg (macOS) and .exe installer (Windows) with better-sqlite3 rebuilt for the bundled Electron ABI via `@electron/rebuild`.
   5. Packaged builds are validated on clean VMs with no dev environment before release.
-**Plans**: TBD
-**UI hint**: yes
+**Plans**: 11 plans
+
+Plans:
+- [ ] 04-01-build-scaffold-PLAN.md — electron-vite + electron-builder + relocate src/{brain,adapter,cli,registry,config,index} → src/bot/, logo assets relocate, stub electron-builder.yml
+- [ ] 04-02-shared-types-PLAN.md — src/shared/{ipc.ts, characterSchema.ts, errorClasses.ts} (RendererApi + Zod schemas + ErrorClass union)
+- [ ] 04-03-stores-and-secrets-PLAN.md — main/{paths, configStore, characterStore, apiKeyStore (safeStorage), migration} with atomicWrite reuse
+- [ ] 04-04-bot-supervisor-PLAN.md — main/{lanWatcher, botSupervisor, logRouter} + augment src/bot/index.js for parentPort handshake
+- [ ] 04-05-main-entry-and-ipc-PLAN.md — main/{windowChrome, ipc, index} composer + preload contextBridge
+- [ ] 04-06-renderer-shell-PLAN.md — Vite/React entry, tokens/global/animations/fonts CSS, Zustand stores, primitive components, LoadingScreen
+- [ ] 04-07-onboarding-and-home-PLAN.md — OnboardingScreen + HomeScreen + AddCharacterScreen + ComingSoonScreen + grid components
+- [ ] 04-08-character-page-and-modals-PLAN.md — CharacterPage + SettingsScreen + LanModal + SummonToast + DeleteConfirmModal + LogsPanel
+- [ ] 04-09-error-mapping-PLAN.md — lib/errors.ts ERROR_COPY map + Banner + classifyChildError in botSupervisor
+- [ ] 04-10-packaging-PLAN.md — electron-builder.yml flesh-out + entitlements.mac.plist + npm run build smoke + [BLOCKING] lock-identifiers task
+- [ ] 04-11-clean-vm-validation-PLAN.md — clean-VM smoke on macOS/Windows/Linux + RELEASE-NOTES.md
 
 ### Phase 5: Debug log human readability (event-per-line) (PROMOTED from 999.2)
 
