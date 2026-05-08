@@ -38,6 +38,7 @@ import { ComingSoonScreen } from './screens/ComingSoonScreen';
 import { CharacterPage } from './screens/CharacterPage';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { LanModal } from './components/LanModal';
+import { LogsBar } from './components/LogsBar';
 import { SummonToast } from './components/SummonToast';
 import { Banner } from './components/Banner';
 import { ERROR_COPY } from './lib/errors';
@@ -183,6 +184,13 @@ export function App(): React.ReactElement {
               {view.kind === 'coming-soon' && <ComingSoonScreen />}
             </main>
           </div>
+          {/*
+            Bottom collapsible LogsBar — quick task 260508-mun item 5. Hidden
+            during onboarding (so the wizard owns the full window) and during
+            the loading floor (LoadingScreen short-circuits the entire render
+            anyway, but defensive).
+          */}
+          {view.kind !== 'onboarding' && view.kind !== 'loading' ? <LogsBar /> : null}
         </div>
       </MacosWindow>
       {modal?.kind === 'lan' ? <LanModal mode={modal.mode} /> : null}
