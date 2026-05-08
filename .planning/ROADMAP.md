@@ -133,7 +133,7 @@ Plans:
 - [x] 04-08-character-page-and-modals-PLAN.md — CharacterPage + SettingsScreen + LanModal + SummonToast + DeleteConfirmModal + LogsPanel
 - [x] 04-09-error-mapping-PLAN.md — lib/errors.ts ERROR_COPY map + Banner + classifyChildError in botSupervisor
 - [x] 04-10-packaging-PLAN.md — electron-builder.yml flesh-out + entitlements.mac.plist + npm run build smoke + [BLOCKING] lock-identifiers task
-- [ ] 04-11-clean-vm-validation-PLAN.md — clean-VM smoke on macOS/Windows/Linux + RELEASE-NOTES.md
+- [x] 04-11-clean-vm-validation-PLAN.md — clean-VM smoke on macOS/Windows/Linux + RELEASE-NOTES.md
 
 ### Phase 5: Debug log human readability (event-per-line) (PROMOTED from 999.2)
 
