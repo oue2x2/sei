@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
+status: ready_to_plan
 last_updated: "2026-05-08T09:34:27.860Z"
 progress:
   total_phases: 15
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 33
   completed_plans: 22
-  percent: 67
+  percent: 40
 ---
 
 # State: Sei
@@ -25,9 +25,9 @@ Phase: 03.1 — COMPLETE (verification deferred until Phases 5/6/7 land; user no
 Plan: 10 of 10 complete on 03.1
 Next: `/gsd-discuss-phase 5` (or `/gsd-plan-phase 5` if scope is clear) — Debug log readability
 
-- **Phase:** 5 — Debug log human readability (event-per-line)
-- **Plan:** Not started — directory scaffolded at `.planning/phases/05-debug-log-human-readability-event-per-line-emission-with-exp/`
-- **Status:** Ready to execute
+- **Phase:** 05
+- **Plan:** Not started
+- **Status:** Ready to plan
 - **Progress:** [████████__] 62% (5/8 phases complete)
 - **Next action:** `/gsd-discuss-phase 5` — lock canonical event-record schema before refactoring the logger
 
