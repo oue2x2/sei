@@ -17,20 +17,25 @@ Items discovered during execution that are out of scope for the current plan.
     `package.json` script entries `verify:phase2` and `verify:phase3` were
     preserved per the plan's Task 2 acceptance criteria.
 
-## From plan 04-03 (stores and secrets)
+## From plans 04-03 and 04-04 (stores+secrets, bot supervisor — wave 2)
 
-- The repository's installed `node_modules/typescript` is **3.9.10**, not the
-  `^5.4.0` declared in `package.json` devDependencies (added by plan 04-01).
-  Parent repo never had `npm install` run after the plan-01 dependency bump.
-  Likewise, `electron@42.0.0` (declared by plan 01) is not installed —
-  `node_modules/electron` is absent, so `import { app, safeStorage } from 'electron'`
-  cannot be type-checked locally.
-  - Impact: the per-task `npx tsc --noEmit -p tsconfig.node.json` verify
-    command in plans 04-02, 04-03 (and probably 04-04+) cannot run cleanly
-    in this worktree. Files are written to spec; full type-check must wait
-    until Wave-2 merge runs `npm install`.
-  - Scope: pre-existing environmental issue, NOT caused by plan 04-03's
-    changes. Logged here per executor scope-boundary rule.
-  - Recommendation: the wave-merge / pre-build step must run `npm install`
-    on the merged tree before plan 04-04 begins. Plan 04-11 (clean-VM smoke)
-    already exercises a fresh install.
+- The repo's installed `node_modules/typescript` is pinned to **3.9.10**
+  despite `package.json` declaring `typescript: ^5.4.0` as a devDependency
+  (added by plan 04-01). The parent repo never ran `npm install` after the
+  plan-01 dependency bump, so a hoisted/cached typescript@3 remained.
+  Likewise, `electron@42.0.0` is not installed — `node_modules/electron`
+  is absent, so `import { app, safeStorage } from 'electron'` cannot be
+  type-checked locally. TypeScript 3.x also cannot parse modern
+  `@types/node` declarations (template literal types, etc.), so
+  `npx tsc --noEmit -p tsconfig.node.json` fails with hundreds of
+  TS1005 / TS1110 errors against `node_modules/@types/node/*`.
+  - Impact: per-task `tsc --noEmit` verify gates in wave-2 plans cannot
+    run cleanly. Wave-2 executors substituted lexical grep gates and
+    `node --check` for the `.js` augmentations.
+  - Scope: pre-existing environmental issue, NOT caused by wave-2 plans.
+    All new `.ts` files were written to PATTERNS/RESEARCH spec and are
+    expected to type-check cleanly once typescript and electron are
+    reinstalled.
+  - Recommendation: `rm -rf node_modules && npm install` before plan
+    04-05 starts. Plan 04-11 (clean-VM smoke) already exercises a fresh
+    install on production VMs.
