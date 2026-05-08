@@ -131,7 +131,7 @@ Plans:
 - [x] 04-06-renderer-shell-PLAN.md — Vite/React entry, tokens/global/animations/fonts CSS, Zustand stores, primitive components, LoadingScreen
 - [x] 04-07-onboarding-and-home-PLAN.md — OnboardingScreen + HomeScreen + AddCharacterScreen + ComingSoonScreen + grid components
 - [x] 04-08-character-page-and-modals-PLAN.md — CharacterPage + SettingsScreen + LanModal + SummonToast + DeleteConfirmModal + LogsPanel
-- [ ] 04-09-error-mapping-PLAN.md — lib/errors.ts ERROR_COPY map + Banner + classifyChildError in botSupervisor
+- [x] 04-09-error-mapping-PLAN.md — lib/errors.ts ERROR_COPY map + Banner + classifyChildError in botSupervisor
 - [ ] 04-10-packaging-PLAN.md — electron-builder.yml flesh-out + entitlements.mac.plist + npm run build smoke + [BLOCKING] lock-identifiers task
 - [ ] 04-11-clean-vm-validation-PLAN.md — clean-VM smoke on macOS/Windows/Linux + RELEASE-NOTES.md
 
