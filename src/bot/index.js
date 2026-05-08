@@ -215,20 +215,55 @@ async function gracefulShutdown() {
 }
 
 if (process.parentPort) {
-  // Electron forked path
+  // Electron forked path. The supervisor only reports useful diagnostics if
+  // (a) errors reach stderr (mirrored to the parent's terminal as of
+  // 260508-mun) and (b) the lifecycle 'error' message reaches port1 BEFORE
+  // we exit. Catch synchronous throws inside the message handler and grace
+  // the process exit so the parent's stderr sink + lifecycle message both
+  // flush. Also install last-resort unhandled-rejection / uncaught-exception
+  // hooks for the same reason — surface the trace, then exit cleanly.
+  const surfaceCrash = (label, err) => {
+    const stack = (err && err.stack) || String(err)
+    // Write to BOTH stderr (so the supervisor's tail buffer captures it)
+    // and the lifecycle channel (so the renderer's Banner shows ErrorClass
+    // copy instead of the raw "exited before summon-ready" string).
+    console.error(`[sei-bot ${label}] ${stack}`)
+    try {
+      emitLifecycle({
+        type: 'error',
+        error: 'BOT_CRASH',
+        message: `${label}: ${stack.split('\n')[0]}`,
+      })
+    } catch {}
+    // 50ms grace so the lifecycle postMessage and stderr buffers can flush
+    // before the utilityProcess tears down.
+    setTimeout(() => process.exit(1), 50)
+  }
+
+  process.on('uncaughtException', (err) => surfaceCrash('uncaughtException', err))
+  process.on('unhandledRejection', (err) => surfaceCrash('unhandledRejection', err))
+
   process.parentPort.once('message', (msg) => {
-    const ports = msg.ports || []
-    if (!ports.length) return
-    initPort = ports[0]
-    initPort.start()
-    initPort.on('message', (e) => {
-      const data = (e && e.data !== undefined) ? e.data : e
-      if (data && data.type === 'init') {
-        bootstrapWithInit(data)
-      } else if (data && data.type === 'stop') {
-        gracefulShutdown()
-      }
-    })
+    try {
+      const ports = msg.ports || []
+      if (!ports.length) return
+      initPort = ports[0]
+      initPort.start()
+      initPort.on('message', (e) => {
+        try {
+          const data = (e && e.data !== undefined) ? e.data : e
+          if (data && data.type === 'init') {
+            bootstrapWithInit(data).catch((err) => surfaceCrash('bootstrapWithInit', err))
+          } else if (data && data.type === 'stop') {
+            gracefulShutdown()
+          }
+        } catch (err) {
+          surfaceCrash('initPort.message', err)
+        }
+      })
+    } catch (err) {
+      surfaceCrash('parentPort.message', err)
+    }
   })
 }
 
