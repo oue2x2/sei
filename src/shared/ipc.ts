@@ -16,6 +16,7 @@
 
 import type { Character, UserConfig } from './characterSchema';
 import type { ErrorClass } from './errorClasses';
+export type { ErrorClass } from './errorClasses';
 
 /* -------------------------------------------------------------------------- */
 /*  Lifecycle / status / log domain types                                     */

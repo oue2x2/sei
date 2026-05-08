@@ -290,14 +290,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       }
       session.resolveExited();
     });
-    child.on('error', (err: Error) => {
-      logger.error(`bot child error: ${err.message}`);
-      if (!summonResolved) {
-        summonResolved = true;
-        clearTimeout(summonTimer);
-        summonReject(err);
-      }
-    });
+    // utilityProcess only emits 'spawn' and 'exit' — process-level errors
+    // (e.g. failure-to-spawn, signal kills) surface via the 'exit' code path.
 
     // Wait for summon-ready or fail
     try {
