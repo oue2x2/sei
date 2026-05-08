@@ -10,3 +10,10 @@ logs/
 memory/OWNER.md
 memory/DIARY.md
 memory/AFFECT.md
+
+# Electron build outputs
+dist/
+release/
+out/
+*.log
+.DS_Store
