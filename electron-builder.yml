@@ -1,0 +1,45 @@
+# electron-builder.yml — Phase 4 STUB. Plan 10 fleshes signing + notarize.
+# Source: .planning/phases/04-electron-gui-packaging/04-RESEARCH.md §"Code Examples §3"
+
+# TODO(lock-before-signing) — chosen by user before first signed dist:mac
+# Plan 10 contains a [BLOCKING] task to lock this. Once shipped, changing this
+# strands all existing safeStorage Keychain entries.
+appId: app.sei.placeholder
+productName: Sei
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+  - "!**/node_modules/*/{test,tests,__tests__,*.md}"
+asar: true
+asarUnpack:
+  - "src/bot/**/*"
+
+mac:
+  category: public.app-category.games
+  target:
+    - target: dmg
+      arch: [universal]
+  # hardenedRuntime, identity, notarize, entitlements added in plan 10
+
+dmg:
+  sign: false
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  # NO signtoolOptions / azureSignOptions — Windows ships UNSIGNED v1 per RESEARCH Q2.
+  # SmartScreen "unknown publisher" warning is accepted UX for v1; documented in release notes.
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  target:
+    - AppImage
+  category: Game
