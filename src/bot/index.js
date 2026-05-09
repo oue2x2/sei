@@ -309,6 +309,61 @@ async function bootstrapWithInit(initData) {
 
   emitLifecycle({ type: 'init-ack' })
 
+  // 260508-nkk follow-up: log the LAN port main handed over for debug
+  // visibility. User couldn't tell whether the cached port was correct.
+  logger.info(`LAN port handed over by main: ${lanPort} for character "${character.name}"`)
+
+  // 260508-nkk follow-up (per user directive): re-discover LAN port from
+  // the utilityProcess instead of trusting main's cached value. The CLI
+  // path (`sei start`) does this and connects reliably; main's cached
+  // value sometimes leads to ECONNREFUSED ("socketClosed" / "Could not
+  // reach server") even when main's UI shows LAN as connected. Treat
+  // main's lanPort as a fallback only — the multicast is broadcast every
+  // ~1.5s by Minecraft so a 6s window is plenty.
+  //
+  // This intentionally overrides Pitfall 6 from Phase 4's CONTEXT D-25
+  // ("bot must NOT call discoverLanPort during summon"). The original
+  // rationale was to centralize LAN state in main; in practice the
+  // hand-over has been unreliable. Main's watcher is now just for the
+  // GUI's connectivity indicator; the bot owns its own port discovery.
+  let effectivePort = lanPort
+  let effectiveMotd = ''
+  try {
+    const discovered = await discoverLanPort({ timeoutMs: 6000 })
+    effectivePort = discovered.port
+    effectiveMotd = discovered.motd
+    logger.info(`LAN re-discovered by bot: port=${discovered.port} motd="${discovered.motd}"`)
+    if (lanPort && lanPort !== discovered.port) {
+      logger.warn(
+        `Main's cached LAN port (${lanPort}) disagrees with bot's freshly discovered port ` +
+        `(${discovered.port}); using the freshly discovered port. ` +
+        `(This usually means the LAN was reopened since main last saw a broadcast.)`,
+      )
+    }
+  } catch (err) {
+    if (lanPort != null) {
+      logger.warn(
+        `[sei] Bot's LAN re-discovery timed out (${(err && err.message) || err}); ` +
+        `falling back to main's cached port ${lanPort}.`,
+      )
+    } else {
+      emitLifecycle({
+        type: 'error',
+        error: 'LAN_NOT_OPEN',
+        message:
+          'No LAN broadcast detected. Make sure your Minecraft world is open to LAN ' +
+          '(ESC → Open to LAN → Start LAN World) and click Summon again.',
+      })
+      return
+    }
+  }
+  config.adapter.minecraft.port = effectivePort
+  logger.info(
+    `LAN connected at port ${effectivePort}` +
+    (effectiveMotd ? ` (${effectiveMotd})` : '') +
+    `, starting "${character.name}"`,
+  )
+
   // 260508-nkk root cause #2: previously `summon-ready` fired immediately
   // after `await start(config)` resolved, but start() resolves once
   // bringUp+startBrain have wired up — BEFORE mineflayer's TCP handshake
