@@ -6,8 +6,12 @@
 // brain stays game-agnostic.
 
 import { z } from 'zod'
+import mcDataLib from 'minecraft-data'
 import { createRegistry } from '../../registry.js'
 import { goTo } from './behaviors/pathfind.js'
+import { resolveTerm } from './loose-terms.js'
+import { mineVeinAction } from './behaviors/mineVein.js'
+import { getHealedPos } from './observers/posHealer.js'
 import { setFollowTarget, getFollowTargetLabel } from './behaviors/follow.js'
 import { resolveEntity } from './observers/targeting.js'
 import { digAction } from './behaviors/dig.js'
@@ -104,6 +108,67 @@ export function createDefaultRegistry() {
   )
 
   registry.register('dig', TargetShape, digAction)
+
+  // Phase 6 (D-NEW-SCAV-2): `find` resolves a loose term or exact MC ID to the
+  // nearest loaded-chunk hit. Does NOT move the bot — returns
+  // `{found,id,pos,distance}` or `{found:false,reason}`. NaN-safe origin via
+  // getHealedPos.
+  registry.register('find',
+    z.object({
+      name: z.string().min(1),
+      maxDistance: z.number().min(1).max(128).default(64),
+    }),
+    async (args, bot) => {
+      const ids = resolveTerm(args.name)
+      if (!ids.length) return { found: false, reason: `no known IDs for ${args.name}` }
+      let mcData
+      try { mcData = mcDataLib(bot.version) } catch { mcData = null }
+      let matching
+      if (mcData?.blocksByName) {
+        const idNums = ids.map(n => mcData.blocksByName[n]?.id).filter(v => v != null)
+        if (idNums.length === 0) {
+          return { found: false, reason: `no known IDs for ${args.name}` }
+        }
+        matching = idNums
+      } else {
+        matching = (b) => ids.includes(b?.name)
+      }
+      const healed = getHealedPos(bot) ?? bot.entity?.position
+      const point = healed && Number.isFinite(healed.x) ? healed : undefined
+      const hits = bot.findBlocks({ matching, maxDistance: args.maxDistance, count: 1, point })
+      if (!hits || !hits.length) {
+        return { found: false, reason: `no ${args.name} in loaded chunks within ${args.maxDistance}m` }
+      }
+      const h = hits[0]
+      const blk = bot.blockAt(h)
+      const d = point && typeof h.distanceTo === 'function'
+        ? Number(h.distanceTo(point).toFixed(1))
+        : 0
+      return {
+        found: true,
+        id: blk?.name ?? 'unknown',
+        pos: { x: h.x, y: h.y, z: h.z },
+        distance: d,
+      }
+    }
+  )
+
+  // Phase 6 (D-NEW-SCAV-3): mine an entire connected vein in one call.
+  // Schema accepts either `name` (loose term / exact ID) OR `(x,y,z)` anchor.
+  registry.register('mine_vein',
+    z.object({
+      name: z.string().optional(),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      z: z.number().optional(),
+      maxDistance: z.number().min(1).max(64).default(32),
+    }).refine(
+      (a) => (typeof a.name === 'string' && a.name.length > 0)
+          || (typeof a.x === 'number' && typeof a.y === 'number' && typeof a.z === 'number'),
+      { message: 'must specify name or x,y,z' }
+    ),
+    mineVeinAction
+  )
 
   registry.register(
     'placeBlock',

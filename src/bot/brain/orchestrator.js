@@ -22,6 +22,7 @@ import { createConvoMemory } from './convoMemory.js'
 import { logChatOut, logActionResult } from './log.js'
 import { createAffectLog, readAffectFull } from './memory/affectLog.js'
 import { setPreferredName, appendNote } from './memory/owner.js'
+import { MINE_VEIN_DESCRIPTION } from '../adapter/minecraft/behaviors/mineVein.js'
 
 // Post-process say() text per D-7 (Plan 03.1-03), refined per D-NEW-TONE-1
 // (Plan 03.1-07) to match the user's verbatim spec from memory-postfix.txt
@@ -115,6 +116,11 @@ const ACTION_DESCRIPTIONS = {
   // as DIG_DESCRIPTION; this string is kept in sync so the LLM-facing copy
   // and the adapter contract docstring don't drift.
   dig: 'Break a block. Prefer `{ block: "<name>" }` to dig the NEAREST EXPOSED block of that name within maxDistance (default 32, max 64) — `maxDistance` is a SEARCH RADIUS for finding the named block, not a reach radius. Actual swing reach is fixed at 4.5m and the bot pathfinds into reach automatically. For repeated digs of the same block type, prefer `{block:"<name>"}` which auto-finds nearest each call. `#N` references (e.g. {target:"#3"}) rotate every snapshot — only valid in the SAME turn the snapshot listed them; switch to `{block:"<name>"}` if you see "stale target". Use `{ x, y, z }` only when you must dig a precise coordinate.',
+  // Phase 6 (D-NEW-SCAV-3): canonical text lives next to mineVein.js as
+  // MINE_VEIN_DESCRIPTION; imported here so byte-equality is mechanical.
+  mine_vein: MINE_VEIN_DESCRIPTION,
+  // Phase 6 (D-NEW-SCAV-2): pure locator — does NOT move the bot.
+  find: 'Locate the nearest loaded-chunk block matching a name. Pass `{name:"<term>"}` where the term is either a loose category (`wood`, `ore`, `stone`, `dirt`, `sand`, `log`, `planks`, `leaves` — expands server-side to all variant MC block IDs) or an exact MC block ID (`oak_log`, `diamond_ore`). Returns `{found:true, id, pos:{x,y,z}, distance}` on a hit (distance in blocks, 1dp) or `{found:false, reason}` when nothing is in loaded chunks. Does NOT move the bot — use the returned pos with goTo / mine_vein / dig. For a strict literal match pass the exact ID; loose terms always expand to multiple variants and may return a different variant than you expected.',
 }
 
 // Tool names that are personality-only (do not require a follow-up
