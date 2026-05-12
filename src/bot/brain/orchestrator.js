@@ -1386,6 +1386,7 @@ function maybeWarnByteCap(loop, warned) {
         systemBlocks: cachedSystemBlocks,
         tools: [],
         messages: loop.buildAnthropicPayload(),
+        namedUserBlocks: loop._internal.messages,
         signal: loop.abortController.signal,
         // Plan 03.1-07 Task 3: cap-close is a single blocking call with no
         // retry. Bump to at least 8s so a slightly slow API response does
@@ -1433,6 +1434,7 @@ function maybeWarnByteCap(loop, warned) {
       systemBlocks: cachedSystemBlocks,
       tools: combinedToolsFor(),
       messages: loop.buildAnthropicPayload(),
+      namedUserBlocks: loop._internal.messages,
       signal,
       timeoutMs: config.anthropic.timeout_ms,
     })
