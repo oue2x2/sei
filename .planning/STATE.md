@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: phase-complete
-last_updated: "2026-05-11T00:00:00.000Z"
+status: executing
+last_updated: "2026-05-12T06:57:20.649Z"
 progress:
   total_phases: 15
   completed_phases: 7
-  total_plans: 37
-  completed_plans: 37
-  percent: 100
+  total_plans: 41
+  completed_plans: 38
+  percent: 93
 ---
 
 # State: Sei
@@ -17,18 +17,18 @@ progress:
 ## Project Reference
 
 - **Core Value:** A Minecraft companion that feels like a real character — it remembers you, reacts to the world, and acts with personality, not like a scripted bot.
-- **Current Focus:** Phase 05 COMPLETE — debug-log-human-readability-event-per-line-emission-with-exp
+- **Current Focus:** Phase 06 — scavenging-redesign
 
 ## Current Position
 
-Phase: 05 — COMPLETE (verifier PASS 9/9, manual checkpoint approved 2026-05-11)
-Plan: 4 of 4 complete
+Phase: 06 (scavenging-redesign) — EXECUTING
+Plan: 1 of 4
 Next: `/gsd-discuss-phase 6` (Scavenging redesign, promoted from 999.1)
 
 - **Phase:** 05
 - **Plan:** 4/4 complete
-- **Status:** Phase 05 complete
-- **Progress:** [█████████_] 75% (6/8 phases complete)
+- **Status:** Executing Phase 06
+- **Progress:** [█████████░] 93%
 - **Next action:** `/gsd-discuss-phase 6` — Scavenging redesign (veined tallying + smart_find + find())
 
 ```
@@ -118,6 +118,7 @@ Next: `/gsd-discuss-phase 6` (Scavenging redesign, promoted from 999.1)
 | 260505-twx | Sei behavior fixes: chat/full mode toggle (relay [think] in chat when full), snapshot tier-aware ranking (interesting-before-terrain) + 16-entry cap, dig-by-name tool description, P0 attack reaction (abort+restart with verbal-first seed), clearer dig error strings (no held-item suffix), iteration_cap 20→30, say() cadence rule (mandatory first/last turn, optional middle) | 2026-05-05 | ea9b342 | [260505-twx-sei-behavior-fixes-chat-full-mode-toggle](./quick/260505-twx-sei-behavior-fixes-chat-full-mode-toggle/) |
 | 260508-mun | Electron GUI fixes: hide sidebar during onboarding, drop Persona-Prompt+Log tabs, EditCharacterModal (name/desc/prompt) gated for default Sui, dedupe card name, collapsible bottom LogsBar, inline edit in Settings (no re-run onboarding), left-align Back, subtle wave-gradient bg, fix bot:summon utilityProcess regression (bot fork path now resolves to src/ in dev) + stderr-tail diagnostics on exit-before-ready | 2026-05-08 | 17f3e48 | [260508-mun-make-ui-and-debug-fixes-to-electron-gui-](./quick/260508-mun-make-ui-and-debug-fixes-to-electron-gui-/) |
 | 260508-nkk | Two GUI regressions: (1) CharacterPage pixel-art now full-bleed wallpaper with tabs floating over it; (2) summon hang root-caused — `bootstrapWithInit` skipped `ConfigSchema.parse` so Zod defaults (seedDiaryBudgetBytes, iteration_cap, anthropic.timeout_ms) were undefined → `createDiary` threw inside `startBrain`. Compounding bug: `summon-ready` was emitted after `start()` resolved (before mineflayer's spawn event). Fix: route config through ConfigSchema.parse, move summon-ready emit into mineflayer spawn callback, add 20s wall-clock connect timeout (per CLAUDE.md "every external call has a timeout"), supervisor treats lifecycle error as terminal for summon promise so specific errors aren't masked by the 30s outer timer. Diagnosis by static analysis only — no display server / Minecraft instance available to executor; user verifies live | 2026-05-08 | 3fdf460 | [260508-nkk-fix-two-gui-regressions-1-generated-pixe](./quick/260508-nkk-fix-two-gui-regressions-1-generated-pixe/) |
+| Phase 06 P01 | 118 | 2 tasks | 2 files |
 
 ## Session Continuity
 

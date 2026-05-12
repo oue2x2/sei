@@ -157,11 +157,14 @@ Plans:
 **User quote (verbatim):** *"combine veined tallying for within chunk and smart_find for navigating to other chunks, i think we finally can make scavenging resources work."*
 **Scope warning:** Snapshot composer rewrite + new tool registration + closed-world NL→item resolver — three coupled subsystems. Recommend `/gsd-discuss-phase 6` first to scope each before planning.
 **Depends on:** Phase 5 (readable logs needed for verification)
-**Requirements:** TBD
-**Plans:** 0 plans
+**Requirements:** D-NEW-SCAV-1, D-NEW-SCAV-2, D-NEW-SCAV-3 (scope collapsed during /gsd-discuss-phase 6 — original smart_find merged into find(); mine_vein added)
+**Plans:** 4 plans
 
 Plans:
-- [ ] TBD (run `/gsd-discuss-phase 6` first, then `/gsd-plan-phase 6`)
+- [x] 06-01-veins-observer-PLAN.md — nearbyVeins flood-fill scanner (observers/veins.js) + unit test
+- [ ] 06-02-loose-terms-PLAN.md — hand-curated NL→ID table + resolveTerm helper (loose-terms.js) + unit test
+- [ ] 06-03-mine-vein-behavior-PLAN.md — mineVeinAction + MINE_VEIN_DESCRIPTION (behaviors/mineVein.js) + unit test
+- [ ] 06-04-integrate-and-verify-PLAN.md — snapshot integration + register find/mine_vein + ACTION_DESCRIPTIONS update + verify-phase6.mjs + live-bot checkpoint
 
 ### Phase 7: Pillar-up / scaffolding behavior (PROMOTED from 999.3)
 
