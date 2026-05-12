@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-last_updated: "2026-05-12T01:14:24.487Z"
+status: phase-complete
+last_updated: "2026-05-11T00:00:00.000Z"
 progress:
   total_phases: 15
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 37
-  completed_plans: 33
-  percent: 89
+  completed_plans: 37
+  percent: 100
 ---
 
 # State: Sei
@@ -17,19 +17,19 @@ progress:
 ## Project Reference
 
 - **Core Value:** A Minecraft companion that feels like a real character — it remembers you, reacts to the world, and acts with personality, not like a scripted bot.
-- **Current Focus:** Phase 5 — Debug log human readability (promoted from backlog 999.2)
+- **Current Focus:** Phase 05 COMPLETE — debug-log-human-readability-event-per-line-emission-with-exp
 
 ## Current Position
 
-Phase: 03.1 — COMPLETE (verification deferred until Phases 5/6/7 land; user notes tests won't pass until backlog changes are in)
-Plan: 10 of 10 complete on 03.1
-Next: `/gsd-discuss-phase 5` (or `/gsd-plan-phase 5` if scope is clear) — Debug log readability
+Phase: 05 — COMPLETE (verifier PASS 9/9, manual checkpoint approved 2026-05-11)
+Plan: 4 of 4 complete
+Next: `/gsd-discuss-phase 6` (Scavenging redesign, promoted from 999.1)
 
 - **Phase:** 05
-- **Plan:** Not started
-- **Status:** Ready to execute
-- **Progress:** [████████__] 62% (5/8 phases complete)
-- **Next action:** `/gsd-discuss-phase 5` — lock canonical event-record schema before refactoring the logger
+- **Plan:** 4/4 complete
+- **Status:** Phase 05 complete
+- **Progress:** [█████████_] 75% (6/8 phases complete)
+- **Next action:** `/gsd-discuss-phase 6` — Scavenging redesign (veined tallying + smart_find + find())
 
 ```
 [DONE] Phase 1    Bot Substrate
@@ -38,8 +38,8 @@ Next: `/gsd-discuss-phase 5` (or `/gsd-plan-phase 5` if scope is clear) — Debu
 [DONE] Phase 3    Memory & Persistence
 [DONE] Phase 03.1 Behavior Polish & AI/Game Decoupling
 [____] Phase 4    Electron GUI & Packaging
-[____] Phase 5    Debug log readability (← next, from 999.2)
-[____] Phase 6    Scavenging redesign (from 999.1)
+[DONE] Phase 5    Debug log readability (from 999.2)
+[____] Phase 6    Scavenging redesign (← next, from 999.1)
 [____] Phase 7    Pillar-up / scaffolding (from 999.3)
 ```
 
@@ -121,11 +121,11 @@ Next: `/gsd-discuss-phase 5` (or `/gsd-plan-phase 5` if scope is clear) — Debu
 
 ## Session Continuity
 
-- **Last action:** Phase 5 context gathered (`/gsd-discuss-phase 5`) — `.planning/phases/05-.../05-CONTEXT.md` + `05-DISCUSSION-LOG.md` committed (1995c51). Locked: (1) plain-text multi-line event blocks with `[ts] [tag] begin` / `end` sentinels + 2-space continuation indent; logRouter moves to a multi-line state machine. (2) Per-cached-block elision (persona / capability / diary, 3 hashes mapped 1:1 to Anthropic cache_control breakpoints), session-scoped in-memory dictionary, no persistence across bot restarts. (3) `MAX_INLINE=2000` truncation dropped entirely — elision is the only size control; logRouter `HARD_BUFFER_CAP=1000` stays as event-count protection. Renderer-side LogsPanel changes deferred (Claude's discretion, output-only by default).
-- **Next action:** `/clear` then `/gsd-plan-phase 5` — break Phase 5 into plans. Resume file: `.planning/phases/05-debug-log-human-readability-event-per-line-emission-with-exp/05-CONTEXT.md`.
+- **Last action:** Phase 5 executed end-to-end (`/gsd-execute-phase 5`). 4 plans across 3 waves all complete; verifier PASS 9/9 (D-1..D-9), automated harness `scripts/verify-phase5.mjs` green (47 assertions, idempotent), manual live-bot checkpoint approved by developer 2026-05-11. Logger now emits multi-line event blocks with `[ts] [tag] begin/end` sentinels, session-scoped hash dictionary elides persona/capability/diary on second+ appearance, MAX_INLINE truncation dropped, logRouter coalesces multi-line events with `  [truncated]` recovery on dropped-end.
+- **Next action:** `/gsd-discuss-phase 6` — Scavenging redesign (promoted from 999.1, three coupled subsystems).
 
 ---
-*Last updated: 2026-05-11 — Phase 5 context gathered.*
+*Last updated: 2026-05-11 — Phase 5 complete.*
 | 2026-05-03 | fast | attack pursues + zod entity schema cleanup | done |
 | 2026-05-05 | fast | docs cleanup: remove two-layer/ollama from README+ARCHITECTURE | done |
 | 2026-05-05 | fast | drop port from persisted config; LAN discovery is the only path | done |
