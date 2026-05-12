@@ -56,6 +56,8 @@ Output: A logger that writes multi-line begin/end blocks, per-event-kind human-p
 @/Users/ouen/slop/sei/CLAUDE.md
 @/Users/ouen/slop/sei/src/bot/brain/log.js
 @/Users/ouen/slop/sei/src/bot/brain/anthropicClient.js
+@/Users/ouen/slop/sei/src/bot/brain/orchestrator.js
+@/Users/ouen/slop/sei/src/bot/brain/compaction.js
 
 <interfaces>
 <!-- These are the contracts the executor MUST honor. Do not invent new shapes. -->
@@ -163,12 +165,12 @@ Rewrite `src/bot/brain/log.js` end-to-end:
 Do NOT introduce any other behavioral changes. Do NOT modify logRouter — Plan 05-02 owns that.
   </action>
   <verify>
-    <automated>cd /Users/ouen/slop/sei &amp;&amp; node -e "import('./src/bot/brain/log.js').then(m =&gt; { const orig = console.log; const lines = []; console.log = (s) =&gt; lines.push(s); m.logChatOut('hello world'); m.logHeal({pos:'1,2,3',vel:'0,0,0',yaw:0,pitch:0}); m.logActionResult('dig',{ok:true,block:'oak_log'}); console.log = orig; const out = lines.join('\n'); const begins = (out.match(/\\] begin$/gm)||[]).length; const ends = (out.match(/\\] end$/gm)||[]).length; const sameTs = lines.every(blk =&gt; { const ts = blk.match(/^\\[(\\d\\d:\\d\\d:\\d\\d\\.\\d\\d\\d)\\]/); if (!ts) return false; const all = [...blk.matchAll(/\\[(\\d\\d:\\d\\d:\\d\\d\\.\\d\\d\\d)\\]/g)].map(m=&gt;m[1]); return all.every(t =&gt; t === ts[1]); }); const indent = /^  \\w/m.test(out); if (begins !== 3 || ends !== 3 || !sameTs || !indent) { console.error('FAIL', {begins, ends, sameTs, indent, out}); process.exit(1); } console.log('OK'); })"</automated>
+    <automated>cd /Users/ouen/slop/sei &amp;&amp; node -e "import('./src/bot/brain/log.js').then(m =&gt; { const orig = console.log; const lines = []; console.log = (s) =&gt; lines.push(s); m.logChatOut('hello world'); m.logHeal({pos:'1,2,3',vel:'0,0,0',yaw:0,pitch:0}); m.logActionResult('dig',{ok:true,block:'oak_log'}); console.log = orig; const out = lines.join('\n'); const begins = (out.match(/\\] begin$/gm)||[]).length; const ends = (out.match(/\\] end$/gm)||[]).length; /* Filter to multi-line blocks only — excludes the future single-line dictionary-init header (Task 2) so the sameTs check stays meaningful. */ const multiline = lines.filter(blk =&gt; blk.includes('\n')); const sameTs = multiline.length &gt; 0 &amp;&amp; multiline.every(blk =&gt; { const ts = blk.match(/^\\[(\\d\\d:\\d\\d:\\d\\d\\.\\d\\d\\d)\\]/); if (!ts) return false; const all = [...blk.matchAll(/\\[(\\d\\d:\\d\\d:\\d\\d\\.\\d\\d\\d)\\]/g)].map(m=&gt;m[1]); return all.length &gt;= 2 &amp;&amp; all.every(t =&gt; t === ts[1]); }); const indent = /^  \\w/m.test(out); if (begins !== 3 || ends !== 3 || !sameTs || !indent) { console.error('FAIL', {begins, ends, sameTs, indent, multilineCount: multiline.length, out}); process.exit(1); } console.log('OK'); })"</automated>
   </verify>
   <acceptance_criteria>
     - Running the verify command above prints `OK`.
     - `grep -n "MAX_INLINE\|function trunc" src/bot/brain/log.js` returns NO matches.
-    - `grep -c "begin\b\|end\b" src/bot/brain/log.js | grep -v '^#'` ≥ 2 (begin and end sentinel literals appear).
+    - `grep -v '^//' src/bot/brain/log.js | grep -c "begin\b\|end\b"` ≥ 2 (begin and end sentinel literals appear in non-comment lines).
     - Existing callers in src/bot/brain/anthropicClient.js, src/bot/brain/orchestrator.js, src/bot/adapter/minecraft/behaviors/chat.js, src/bot/adapter/minecraft/observers/posHealer.js still resolve their imports — `node --check src/bot/brain/log.js` exits 0.
   </acceptance_criteria>
   <done>log.js writes multi-line begin/end blocks; MAX_INLINE is gone; same timestamp on begin and end; 2-space continuation indent; existing public function signatures remain callable with their old args.</done>
@@ -180,6 +182,8 @@ Do NOT introduce any other behavioral changes. Do NOT modify logRouter — Plan 
   <read_first>
     - /Users/ouen/slop/sei/src/bot/brain/log.js (post-Task-1 state)
     - /Users/ouen/slop/sei/src/bot/brain/anthropicClient.js (the `call()` function and `buildCachedSystem` for block layout)
+    - /Users/ouen/slop/sei/src/bot/brain/orchestrator.js (find every text block emitted into the user-content array — grep for `name:` inside content arrays — to enumerate the ACTUAL name strings produced; do NOT rely on the illustrative list in CONTEXT.md)
+    - /Users/ouen/slop/sei/src/bot/brain/compaction.js (same — any text blocks produced here as part of compaction output also flow through namedUserBlocks)
     - /Users/ouen/slop/sei/.planning/phases/05-debug-log-human-readability-event-per-line-emission-with-exp/05-CONTEXT.md sections D-4..D-8
     - /Users/ouen/slop/sei/src/bot/brain/loop.js lines 1-30, 95-105 (to understand that `name` is preserved in `_internal.messages` but stripped in `buildAnthropicPayload`)
   </read_first>
@@ -206,7 +210,7 @@ Do NOT introduce any other behavioral changes. Do NOT modify logRouter — Plan 
    ```
    [HH:MM:SS.mmm] [log] cache-prefix dictionary initialized (sha256-8, session-scoped)
    ```
-   The `[log]` tag is new; logRouter's TAG_RE already matches any `\[...\]` so it will classify cleanly. This header is a SINGLE physical line (no begin/end sentinels — it is metadata, not an event). Call `maybeWriteDictHeader()` at the top of every emitter helper (cheap; flag-guarded).
+   The `[log]` tag is new; logRouter's TAG_RE already matches any `\[...\]` so it will classify cleanly. This header is a SINGLE physical line (no begin/end sentinels — it is metadata, not an event). Call `maybeWriteDictHeader()` at the top of every emitter helper (cheap; flag-guarded). Because it is flag-guarded by `_headerWritten`, it fires EXACTLY ONCE — on the first emission of the process lifetime.
 
 4. Add a private `elideOrFull(name, body)` helper that:
    - Computes `h = shortHash(body)`.
@@ -221,7 +225,11 @@ Do NOT introduce any other behavioral changes. Do NOT modify logRouter — Plan 
 
    c. **Diary** — locate the diary text. Scan `namedUserBlocks` (if provided) for the LAST entry where role === 'user', then within that entry's content array find the first block where `name === 'seed_diary'` and `type === 'text'`. If found and `text` is non-empty: append `elideOrFull('diary', diaryBlock.text)`. Else skip.
 
-   d. **Dynamic sections** (D-8 — NEVER hashed, always inline in full). From the same last user turn in `namedUserBlocks`, iterate ALL `name`d text blocks and emit one labeled section per recognized name, in this fixed display order: `seed_owner`, `affect_log`, `recent_loop_history`, `recent_owner_chat`, `your_recent_messages`, `event`, `snapshot`. Format each as `<name>: <text>` with multi-line bodies indented per Task 1 rules. Skip any name not present.
+   d. **Dynamic sections** (D-8 — NEVER hashed, always inline in full). Per D-4, ONLY persona/capability/diary are hashed. By complement, every OTHER named user block is printed inline in full — D-8's examples (snapshot / recent_events / owner-chat) are an illustrative subset of this rule, not an exhaustive whitelist.
+
+      Implementation: from the same last user turn in `namedUserBlocks`, iterate ALL `name`d text blocks whose `name` is NOT in `{'persona', 'capability', 'diary', 'seed_diary'}` (those four are handled in 5a/5b/5c — `seed_diary` is the diary slot and is hashed there). For each remaining block, emit one labeled section using the block's `name` field verbatim as the label: `<name>: <text>`. Multi-line bodies indented per Task 1 rules.
+
+      Iteration order: preserve the order in which blocks appear in the content array (the orchestrator's emission order is the developer-facing display order). Do NOT impose a fixed display list — the actual set of names is whatever orchestrator.js + compaction.js produce, which the executor must enumerate from the read_first files.
 
    e. **Fallback** — if `namedUserBlocks` is absent or empty, fall back to printing `safeStringify(messages?.[messages.length-1]?.content)` as a single `raw:` line so the call site that hasn't been wired yet still produces SOMETHING readable.
 
@@ -250,13 +258,13 @@ Do NOT introduce any other behavioral changes. Do NOT modify logRouter — Plan 
   </verify>
   <acceptance_criteria>
     - Running the verify command prints `OK`.
-    - `grep -c "createHash('sha256')\|sha256" src/bot/brain/log.js | grep -v '^#'` ≥ 1.
+    - `grep -v '^//' src/bot/brain/log.js | grep -c "createHash('sha256')\|sha256"` ≥ 1.
     - `grep -n "cache-prefix dictionary initialized" src/bot/brain/log.js` returns exactly one match (the header literal).
     - `grep -n "namedUserBlocks" src/bot/brain/anthropicClient.js` returns at least two matches (one in the destructure, one in the forward to logHaikuQuery).
     - `node --check src/bot/brain/anthropicClient.js` exits 0.
     - The Anthropic SDK call `sdk.messages.create({ model, max_tokens, system, tools, messages })` is unchanged — `git diff src/bot/brain/anthropicClient.js` shows NO modification to the object passed to `sdk.messages.create`.
   </acceptance_criteria>
-  <done>Persona / capability / diary print in full on first appearance and as short hash refs on later appearances within the same session; snapshot/event/recent_* always print inline; header line written once at session start; anthropicClient forwards systemBlocks + namedUserBlocks to logHaikuQuery without altering the API call body.</done>
+  <done>Persona / capability / diary print in full on first appearance and as short hash refs on later appearances within the same session; all other named user blocks always print inline; header line written once at session start; anthropicClient forwards systemBlocks + namedUserBlocks to logHaikuQuery without altering the API call body.</done>
 </task>
 
 </tasks>
@@ -280,5 +288,6 @@ After completion, create `.planning/phases/05-debug-log-human-readability-event-
 - Final `logHaikuQuery` arg shape and the persona/capability/diary index assumptions.
 - Confirmation that `MAX_INLINE` is gone.
 - The exact header line written at session start.
-- The list of named blocks recognized in the `user:` section and their display order.
+- The complete set of named blocks the executor found in orchestrator.js + compaction.js, and confirmation that ALL non-{persona,capability,diary,seed_diary} names are emitted inline.
+</output>
 </output>

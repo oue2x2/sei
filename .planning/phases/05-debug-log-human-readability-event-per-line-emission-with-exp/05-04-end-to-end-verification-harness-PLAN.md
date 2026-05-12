@@ -86,7 +86,7 @@ Create `scripts/verify-phase5.mjs`. The script:
 - Monkey-patch `console.log` to push into an array `captured`.
 - Call `logChatOut('hello there')`, `logHeal({pos:'1,2,3',vel:'0,0,0',yaw:0,pitch:0})`, `logActionResult('dig',{ok:true,block:'oak_log'})`.
 - Restore `console.log`.
-- Assert `captured.length` equals 4 (one dictionary-init header + three event blocks). Adjust to 3 + 1 if the header is emitted on the FIRST call only — confirm by inspecting `captured[0]` for the literal substring `cache-prefix dictionary initialized`.
+- Assert `captured.length` MUST equal 4. `captured[0]` is the single-line dictionary-init header (contains literal `cache-prefix dictionary initialized`); `captured[1..3]` are the three event blocks (one per emitter call). Per Plan 05-01 Task 2 step 3, `maybeWriteDictHeader()` is called at the top of every emitter and is flag-guarded by `_headerWritten`, so it fires exactly once on the first emission of the process lifetime — deterministic.
 - For each non-header block:
   - Count `begin` and `end` sentinels via regex `/^\[\d{2}:\d{2}:\d{2}\.\d{3}\] \[[^\]]+\] (begin|end)$/m` — must be exactly 1 begin and 1 end.
   - Extract both timestamps; assert they are equal.
@@ -224,6 +224,7 @@ const entries2 = simulateRouter(truncatedLines);
 <verification>
 - `node scripts/verify-phase5.mjs` exits 0.
 - The developer signs off on the live log inspection.
+- **Block D scope clarification:** Block D verifies the multi-line state-machine CONTRACT as documented in Plan 05-03 — it does NOT execute the real `src/main/logRouter.ts`. The in-script `simulateRouter()` is a JS port of the contract, not a test of the production code. Detection of divergence between the documented contract and the actual TypeScript implementation is the explicit responsibility of Task 2's live-bot checkpoint (the developer inspects renderer log output for begin/end framing and `[truncated]` recovery). Block C's source-text fingerprint check is the only static guard against contract drift; treat it as necessary but not sufficient. verify-phase MUST NOT treat Block D as authoritative evidence that the TS router is correct.
 </verification>
 
 <success_criteria>

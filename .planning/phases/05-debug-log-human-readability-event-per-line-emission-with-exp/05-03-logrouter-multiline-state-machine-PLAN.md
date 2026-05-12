@@ -162,7 +162,7 @@ append(line: string) {
       openTag = tag;
       openLines = [cleaned];
       openTimestamp = new Date().toISOString();
-      openLevel = classify(cleaned).level;
+      openLevel = 'info';  // begin-line classify is meaningless (sentinel has no level signal); continuation lines escalate via the contLevel block below.
       return;
     }
     // suffix === 'end'
