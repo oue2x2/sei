@@ -21,7 +21,7 @@ The phase delivers a single cuboid abstraction: `build({from, to, block, hollow?
 1. **`build` cuboid action**: A new closed-registry action that places blocks across a two-point absolute cuboid.
    - Current: No `build` action exists. `placeBlock` is single-cell and not exposed to the LLM.
    - Target: `build({from:{x,y,z}, to:{x,y,z}, block:string, hollow?:boolean})` registered in the action registry with Zod schema; iterates cells in the cuboid and places `block` at each. With `hollow:true`, only the 4 vertical wall faces are placed (no floor, no ceiling — caller composes floor/ceiling via a separate flat `build` call).
-   - Acceptance: A test invokes `build({from:{x:0,y:64,z:0}, to:{x:3,y:64,z:3}, block:'dirt'})` against a stub bot and verifies 16 dirt cells placed; a second test with `hollow:true` and from/to spanning a 4×3×4 region verifies only the 24 wall-face cells are placed (no floor/ceiling cells).
+   - Acceptance: A test invokes `build({from:{x:0,y:64,z:0}, to:{x:3,y:64,z:3}, block:'dirt'})` against a stub bot and verifies 16 dirt cells placed; a second test with `hollow:true` and from/to spanning a 4×3×4 region verifies only the 36 wall-face cells are placed (4×4 footprint perimeter = 12 cells per Y × 3 Y layers, corners included) (no floor/ceiling cells).
 
 2. **`dig` cuboid action**: A new closed-registry action that breaks blocks across a two-point absolute cuboid.
    - Current: `dig` exists but only for a single block (by name with auto-find or by single `{x,y,z}`).

@@ -520,24 +520,24 @@ This is Option A (no extra LLM iteration during the action). For Option B (true 
 | A5 | Option A (snapshot enrichment) satisfies D-10 spirit | Pitfall 6 + Code Examples | D-10 wording ("LLM may choose to abort, continue waiting, or take other action") suggests Option B; Option A doesn't fully deliver "may take other action" unless there's a mid-action abort tool. **Planner should clarify or escalate to /gsd-discuss-phase before committing.** |
 | A6 | `ACTION_DESCRIPTIONS` map in `orchestrator.js:108` is the one the LLM actually sees (the `index.js:22` map is fallback only) | Pattern 3 | If both feed in via different paths, updates must hit both to avoid drift. **Planner should verify by tracing how `getActionDescription()` flows into `buildAnthropicTools`.** |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Mid-action abort mechanism (D-10 ambiguity).**
+1. **Mid-action abort mechanism (D-10 ambiguity). RESOLVED:** Option A (snapshot enrichment) — Plan 07-06 ships periodic progress lines via snapshot; no `abortCurrentAction` tool. LLM-driven mid-action abort deferred to backlog per CONTEXT "Generalized async-action LLM tick framework" deferred item.
    - What we know: D-10 says "LLM may choose to abort, continue waiting, or take other action". Today, the LLM has no direct abort tool — owner chat is the only abort path.
    - What's unclear: Does Phase 7 add an `abortCurrentAction` tool, OR does the progress-tick deliver an LLM iteration where the LLM can implicitly abort by emitting a new action (which would conflict with the in_flight rule)?
    - Recommendation: Default to Option A (snapshot enrichment, no extra LLM iterations during the action). Document the limitation in `BUILD_DESCRIPTION` so the LLM knows builds run to completion unless owner chat preempts. Promote "LLM-initiated abort" to a deferred follow-up if user pushes back.
 
-2. **Reference-face picking for the first cell of a build.**
+2. **Reference-face picking for the first cell of a build. RESOLVED:** Plan 07-02 iterates 6 neighbors in priority order (down, N, S, E, W, up); first non-air wins; all-air → per-cell skip with "no support — cell floats" note.
    - What we know: SPEC R3 acceptance: "with the bot standing on flat ground at y=64 and inventory containing dirt, build({from:{x:0,y:65,z:0}, to:{x:0,y:69,z:0}, block:'dirt'}) produces a 5-block pillar". This implies the first placement at y=65 uses the ground at y=64 as reference, with `faceVector=(0,1,0)`.
    - What's unclear: For a non-pillar cuboid where the first cell to place has no neighbors yet (e.g., a floating platform far from the bot), what's the reference?
    - Recommendation: For each cell, iterate 6 neighbors in priority order (down, north, south, east, west, up); pick the first that is non-air. If all 6 are air, return a per-cell skip with note "no support — cell floats". For the typical pillar/wall case this falls out naturally because the ground / already-placed cells provide support.
 
-3. **Which `ACTION_DESCRIPTIONS` map is canonical?**
+3. **Which `ACTION_DESCRIPTIONS` map is canonical? RESOLVED:** Update BOTH maps in Phase 7 (Plan 07-04). Consolidation flagged as follow-up backlog item.
    - What we know: There are two maps (`adapter/minecraft/index.js:22` and `brain/orchestrator.js:108`). Both currently contain `dig`. The orchestrator one is what `buildAnthropicTools` reads. The adapter one is a fallback at `index.js:56`.
    - What's unclear: Why the duplication? Is the long-term plan to consolidate?
    - Recommendation: Update both for Phase 7. Plan a refactor task (out of scope for this phase) to consolidate. Or flag for /gsd-discuss-phase decision.
 
-4. **Should the cuboid `dig` mode call `goTo` per cell, or only when out of reach?**
+4. **Should the cuboid `dig` mode call `goTo` per cell, or only when out of reach? RESOLVED:** Plan 07-03 checks `bot.entity.position.distanceTo(cellPos) <= DIG_REACH` first; only calls `goTo` when out of reach.
    - What we know: `mineVeinAction:152` pre-pathfinds to each cell at range:3.
    - What's unclear: For a tightly-packed cuboid where adjacent cells are all within reach, repeated `goTo` calls add overhead.
    - Recommendation: Check distance first (`bot.entity.position.distanceTo(cellPos) <= DIG_REACH`); only call `goTo` when needed. Mirrors what `dig.js:50-53` already does internally.
