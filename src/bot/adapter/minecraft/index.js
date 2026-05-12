@@ -14,6 +14,8 @@ import { worldPrimer, MINECRAFT_PRIMER } from './primer.js'
 import { setInflightProvider } from './behaviors/follow.js'
 import { closeContainerSession } from './behaviors/container.js'
 import { wireBotEvents } from './fsmWires.js'
+import { DIG_DESCRIPTION } from './behaviors/dig.js'
+import { BUILD_DESCRIPTION } from './behaviors/build.js'
 
 // Free-text tool descriptions surfaced through getActionDescription. These
 // were inlined in the orchestrator before; they are inherently
@@ -26,9 +28,11 @@ const ACTION_DESCRIPTIONS = {
   follow: 'Continuously trail an entity at follow_range. Pass `player` (username), or `entity` / `entity_id` / `target` for a mob. Does NOT attack — pair with attackEntity if you want hits. The body trails the target on a 1s tick; an attackEntity call can land a swing as soon as the target is within reach. Default-on at spawn for the owner; the snapshot shows `follow_target` so you know who you are trailing.',
   unfollow: 'Stop trailing the current follow target. The body holds position until you issue another movement.',
   attackEntity: 'Swing at an entity. `times` (1–10, default 1) hits the target up to N times in one call with ~600ms between swings; stops early if the target dies, moves out of reach, or you are interrupted. Use a higher `times` when hunting to amortize LLM round-trips — e.g. `times: 5` for sheep/pig, `times: 8` for tougher mobs.',
-  // Plan 03.1-05 Task 2 (D-W-3, D-W-6): canonical text lives next to dig.js
-  // as DIG_DESCRIPTION; the orchestrator keeps an LLM-facing copy in sync.
-  dig: 'Break a block. Prefer `{ block: "<name>" }` to dig the NEAREST EXPOSED block of that name within maxDistance (default 32, max 64) — `maxDistance` is a SEARCH RADIUS for finding the named block, not a reach radius. Actual swing reach is fixed at 4.5m and the bot pathfinds into reach automatically. For repeated digs of the same block type, prefer `{block:"<name>"}` which auto-finds nearest each call. `#N` references (e.g. {target:"#3"}) rotate every snapshot — only valid in the SAME turn the snapshot listed them; switch to `{block:"<name>"}` if you see "stale target". Use `{ x, y, z }` only when you must dig a precise coordinate.',
+  // Plan 07-04 Task 1: canonical descriptions live with their behavior modules.
+  dig: DIG_DESCRIPTION,
+  placeBlock: 'Place ONE block against a reference face. Args: `{block:"<name>", against:{x,y,z}|{block:"<name>"}, faceVector?:{x,y,z}}`. Prefer `build` for multi-cell shapes — placeBlock is the primitive `build` composes on top of. Returns `placed <block> on <ref>` or `no <block> in inventory` / `no reference block` / `cannot place ...`.',
+  equip: 'Equip an item from inventory to a slot. Args: `{item:"<name>", destination:"hand"|"off-hand"|"head"|"torso"|"legs"|"feet"}`. Returns `equipped <item> to <slot>` or `no <item> in inventory`. Many actions (placeBlock, build, dig) auto-equip; call equip directly when you want a specific tool ready (e.g. axe before chopping, sword before fighting).',
+  build: BUILD_DESCRIPTION,
 }
 
 /**
