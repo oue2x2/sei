@@ -3,12 +3,12 @@
 import { vitals } from './vitals.js'
 import { world } from './world.js'
 import { inventory, heldItem } from './inventory.js'
-import { nearbyBlocks, aroundFeet, INTERESTING_BLOCK_NAMES } from './blocks.js'
+import { aroundFeet } from './blocks.js'
+import { nearbyVeins } from './veins.js'
 import { nearbyEntities } from './entities.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 import { getFollowTargetLabel } from '../behaviors/follow.js'
 
-const MAX_BLOCKS = 16
 const MAX_ENTITIES = 6
 
 // Compact inline rendering of inflight args (avoid pulling describeArgs from
@@ -40,7 +40,7 @@ export function composeSnapshot(bot, opts = {}) {
   const w = world(bot)
   const held = heldItem(bot)
   const inv = inventory(bot)
-  const blocks = nearbyBlocks(bot, { radius: 16, count: MAX_BLOCKS, interesting: INTERESTING_BLOCK_NAMES })
+  const veins = nearbyVeins(bot, { radius: 16, maxVeins: 8, veinCap: 64 })
   const ents = nearbyEntities(bot, { radius: 24, count: MAX_ENTITIES })
 
   const lines = []
@@ -94,17 +94,20 @@ export function composeSnapshot(bot, opts = {}) {
   const expiresAt = Date.now() + HANDLE_TTL_MS
   let n = 1
 
-  // Nearby blocks
-  lines.push('nearby blocks:')
-  if (blocks.positions.length === 0) {
+  // Nearby veins (Phase 6 — D-NEW-SCAV-1). One line per vein with #N handle
+  // anchored at the closest member; counts collapsed; `x64+` flags vein-cap.
+  lines.push('nearby veins:')
+  if (veins.veins.length === 0) {
     lines.push('  (none)')
   } else {
-    for (const p of blocks.positions) {
+    for (const v of veins.veins) {
       const tag = `#${n++}`
-      lines.push(`  ${tag} ${p.name} @${p.x},${p.y},${p.z}`)
-      handles.push([tag, { kind: 'block', pos: { x: p.x, y: p.y, z: p.z }, expiresAt }])
+      const countStr = v.count >= 64 ? 'x64+' : `x${v.count}`
+      const dist = v.distance.toFixed(1)
+      lines.push(`  ${tag} ${v.name} ${countStr} @${v.anchor.x},${v.anchor.y},${v.anchor.z} d=${dist}`)
+      handles.push([tag, { kind: 'block', pos: { x: v.anchor.x, y: v.anchor.y, z: v.anchor.z }, expiresAt }])
     }
-    if (blocks.more > 0) lines.push(`  +${blocks.more} more`)
+    if (veins.more > 0) lines.push(`  +${veins.more} more`)
   }
 
   // Nearby entities
