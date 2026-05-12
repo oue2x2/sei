@@ -567,8 +567,16 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // what the bot is doing right now AND follow yields for its full lifecycle.
   async function runWithInflight(name, args, execOpts) {
     const handle = inflight.start({ name, args })
+    // Phase 7 D-10 (Option A): cuboid actions get a progress callback that
+    // updates the inflight handle so the next snapshot's `in_flight:` line
+    // shows progress. No new LLM iteration is scheduled mid-action; the
+    // existing FSM AbortController path remains the sole preempt surface.
+    const isCuboid = name === 'build' || (name === 'dig' && args && args.to)
+    const opts = isCuboid
+      ? { ...execOpts, onProgress: (p) => inflight.updateProgress(handle, p) }
+      : execOpts
     try {
-      return await registry.execute(name, args, null /* adapter owns bot */, execOpts)
+      return await registry.execute(name, args, null /* adapter owns bot */, opts)
     } finally {
       inflight.end(handle)
     }

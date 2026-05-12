@@ -65,7 +65,20 @@ export function composeSnapshot(bot, opts = {}) {
   if (inFlight && typeof inFlight.name === 'string') {
     const elapsed = Math.max(0, (Date.now() - (inFlight.startedAt ?? Date.now())) / 1000).toFixed(1)
     const blurb = describeInflightArgs(inFlight.args)
-    lines.push(`in_flight: ${inFlight.name}${blurb ? ' ' + blurb : ''} (${elapsed}s)`)
+    // Phase 7 D-10 (Option A): if the action has pushed a progress tick,
+    // append `— <completed>/<total>[, y=<currentY>]`. Shape per Plans 07-02
+    // (build: placed/total) and 07-03 (digCuboid: dug/total).
+    const progressSuffix = (() => {
+      const p = inFlight.progress
+      if (!p) return ''
+      const completed = (typeof p.placed === 'number') ? p.placed
+                      : (typeof p.dug === 'number') ? p.dug
+                      : null
+      if (completed == null || typeof p.total !== 'number') return ''
+      const yPart = (typeof p.currentY === 'number') ? `, y=${p.currentY}` : ''
+      return ` — ${completed}/${p.total}${yPart}`
+    })()
+    lines.push(`in_flight: ${inFlight.name}${blurb ? ' ' + blurb : ''} (${elapsed}s)${progressSuffix}`)
   }
 
   // Inventory
