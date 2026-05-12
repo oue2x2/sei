@@ -86,19 +86,47 @@ export function nearbyVeins(bot, opts = {}) {
     const veinName = seedBlk.name
     const stack = [seed]
     const veinPositions = []
+    // Per-vein "tried" set tracks positions we've already popped during THIS
+    // flood-fill (prevents stack thrash). Differs from the outer `visited`
+    // set which only records same-name vein members so wrong-name neighbors
+    // remain available as seeds for their own veins.
+    const tried = new Set()
 
     while (stack.length && veinPositions.length < veinCap) {
       const p = stack.pop()
       const pk = key(p.x, p.y, p.z)
-      if (visited.has(pk)) continue
+      if (tried.has(pk)) continue
+      tried.add(pk)
       const blk = bot.blockAt(p)
-      if (!blk || blk.name !== veinName) { visited.add(pk); continue }
+      if (!blk || blk.name !== veinName) continue
       visited.add(pk)
       veinPositions.push(p)
       for (const [dx, dy, dz] of NEIGHBOR_OFFSETS) {
         const nx = p.x + dx, ny = p.y + dy, nz = p.z + dz
-        if (!visited.has(key(nx, ny, nz))) {
+        if (!tried.has(key(nx, ny, nz))) {
           stack.push(new Vec3(nx, ny, nz))
+        }
+      }
+    }
+
+    // If we hit the veinCap, drain the rest of the stack into `visited` so
+    // unreached members of THIS connected component don't restart as a new
+    // truncated vein on the next seed iteration. (Same-name only — we
+    // confirm the neighbor matches before marking.)
+    if (veinPositions.length >= veinCap) {
+      while (stack.length) {
+        const p = stack.pop()
+        const pk = key(p.x, p.y, p.z)
+        if (tried.has(pk) || visited.has(pk)) continue
+        const blk = bot.blockAt(p)
+        if (!blk || blk.name !== veinName) continue
+        visited.add(pk)
+        tried.add(pk)
+        for (const [dx, dy, dz] of NEIGHBOR_OFFSETS) {
+          const nx = p.x + dx, ny = p.y + dy, nz = p.z + dz
+          if (!tried.has(key(nx, ny, nz))) {
+            stack.push(new Vec3(nx, ny, nz))
+          }
         }
       }
     }
