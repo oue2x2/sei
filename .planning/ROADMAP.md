@@ -10,7 +10,7 @@
 - [x] **Phase 2: Two-Layer LLM Loop** - Personality LLM (Haiku 3) + movement LLM (Ollama Qwen) wired into the FSM with guardrails
 - [x] **Phase 2.1: Expand Actions & Game State (INSERTED)** - Broaden Zod action registry beyond goTo/setGoals and surface inventory/surroundings/position to the personality LLM as text so Sei can actually play
 - [x] **Phase 3: Memory & Persistence** - Active-loop architecture (Loop owns canonical messages, single-flight gating, abort-and-resume, 20-iter cap), markdown OWNER.md + DIARY.md memory layer with seed-loader, and LLM-directed compaction (per-Loop summary + async session-end consolidation, both reusing cached system blocks). MEM-05 SQLite deferred to V2.
-- [ ] **Phase 4: Electron GUI & Packaging** - Setup form, Start/Stop, live log viewer, and bundled .dmg/.exe distribution
+- [x] **Phase 4: Electron GUI & Packaging** - Setup form, Start/Stop, live log viewer, and bundled .dmg/.exe distribution
 - [x] **Phase 5: Debug log readability (PROMOTED from 999.2)** - Event-per-line emission with explicit \n between [haiku?] / [haiku!] / [chat->] sections; cache-prefix elision via hash reference
 - [ ] **Phase 6: Scavenging redesign (PROMOTED from 999.1)** - Veined tallying within chunk, smart_find for cross-chunk navigation, find() for NL-to-item resolution
 - [ ] **Phase 7: Pillar-up / scaffolding behavior (PROMOTED from 999.3)** - placeBlock/equip wiring + pillarUp orchestrator so bot can reach elevated targets
