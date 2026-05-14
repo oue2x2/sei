@@ -96,7 +96,16 @@ export const useDataStore = create<DataState>((set) => ({
  */
 export function subscribeIpc(): () => void {
   const offLan = sei.onLan((state) => useDataStore.getState().setLan(state));
-  const offStatus = sei.onStatus((status) => useDataStore.getState().setStatus(status));
+  // Clear the console when a fresh session starts (idle/error/online → connecting).
+  // Stale lines from a prior summon should not leak into the new one.
+  let prevStatusKind: BotStatus['kind'] | null = null;
+  const offStatus = sei.onStatus((status) => {
+    if (status.kind === 'connecting' && prevStatusKind !== 'connecting') {
+      useDataStore.getState().clearLogs();
+    }
+    prevStatusKind = status.kind;
+    useDataStore.getState().setStatus(status);
+  });
   const offLog = sei.onLog((batch) => useDataStore.getState().appendLogBatch(batch));
   return () => {
     offLan();

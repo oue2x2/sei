@@ -37,9 +37,9 @@ export function LogsBar(): React.ReactElement {
         className={styles.header}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        aria-label={open ? 'Collapse logs' : 'Expand logs'}
+        aria-label={open ? 'Collapse console' : 'Expand console'}
       >
-        <span className={styles.label}>LOGS</span>
+        <span className={styles.label}>CONSOLE</span>
         {!open ? (
           <span className={styles.preview} title={preview}>
             {preview || '—'}
