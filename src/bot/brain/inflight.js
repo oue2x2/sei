@@ -2,20 +2,13 @@
  * In-flight action tracker.
  *
  * Snapshot of "what is the bot doing right now" — populated when an action
- * starts, cleared when it ends. Used by:
- *   - composeSnapshot (renders an `in_flight:` line so the LLM knows
- *     not to fire duplicate or competing actions)
- *   - follow.js (yields its 1s tick while a *movement* action is in flight)
+ * starts, cleared when it ends. composeSnapshot renders an `in_flight:` line
+ * so the LLM knows not to fire duplicate or competing actions.
  *
  * Single-flight is enforced inside individual action handlers (e.g. dig's
  * `bot.targetDigBlock` guard). This tracker only captures the most recent
- * non-personality action so the snapshot reflects ground truth.
+ * action so the snapshot reflects ground truth.
  */
-
-// Personality actions don't physically pause follow; the LLM still wants
-// follow to keep working while it manipulates goals.
-// 260502-h6i: 'look' removed from the toolset — drop it here too.
-const PERSONALITY_ACTIONS = new Set(['setGoals', 'say'])
 
 let _nextId = 1
 
@@ -37,14 +30,6 @@ export function createInflightTracker() {
     return entry
   }
 
-  // Same as current() but returns null for personality-only actions, so
-  // callers (follow tick) can distinguish "blocking the body" from "thinking".
-  function currentBlocking() {
-    if (!entry) return null
-    if (PERSONALITY_ACTIONS.has(entry.name)) return null
-    return entry
-  }
-
   // Phase 7 D-10 (Option A): cuboid actions push progress ticks via this
   // setter so the next snapshot's `in_flight:` line includes a `placed/total`
   // (or `dug/total`) suffix. Stale handles (different id) are ignored to
@@ -55,7 +40,7 @@ export function createInflightTracker() {
     }
   }
 
-  return { start, end, current, currentBlocking, updateProgress }
+  return { start, end, current, updateProgress }
 }
 
 /**

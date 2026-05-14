@@ -70,7 +70,6 @@
  * Effects the brain commands but cannot synthesize:
  * @property {(text: string) => void}                                      chat
  *   The post-processed say() text reaches the player via this method.
- * @property {(fn: () => any) => void}                                     setInflightProvider
  * @property {() => Promise<void>}                                         closeAnySessions
  *   Container session lifecycle, etc. No-op default acceptable.
  *

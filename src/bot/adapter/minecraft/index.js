@@ -11,7 +11,6 @@ import { ADAPTER_INTERFACE_VERSION } from '../../brain/types.js'
 import { createDefaultRegistry } from './registry.js'
 import { createSnapshotComposer } from './observers/snapshot.js'
 import { worldPrimer, MINECRAFT_PRIMER } from './primer.js'
-import { setInflightProvider } from './behaviors/follow.js'
 import { closeContainerSession } from './behaviors/container.js'
 import { wireBotEvents } from './fsmWires.js'
 import { DIG_DESCRIPTION } from './behaviors/dig.js'
@@ -101,7 +100,6 @@ export function createMinecraftAdapter({ bot, config }) {
 
     // ─── Effects ─────────────────────────────────────────────────────
     chat: (text) => { try { bot.chat(text) } catch {} },
-    setInflightProvider,
     closeAnySessions: async () => {
       try { await closeContainerSession() } catch {}
     },

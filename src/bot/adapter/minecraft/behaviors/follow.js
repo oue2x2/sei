@@ -1,31 +1,14 @@
-import { goTo } from './pathfind.js'
 import pkg from 'mineflayer-pathfinder'
-const { pathfinder } = pkg
+const { pathfinder, Movements, goals } = pkg
 
-let _followInterval = null
-let _paused = false
-let _inflightProvider = null
+let _bot = null
+let _config = null
+let _interval = null
 
 // Active follow target. Either { kind: 'player', username } or
 // { kind: 'entity', entityId, label }. null = not following.
 let _target = null
 
-/** Pause/resume follow ticks. Hard override — used by combat.js when an
- *  attack starts. The inflight provider is the soft default. */
-export function pauseFollow(p) { _paused = !!p }
-
-/** Inject a function that returns truthy iff a movement action is currently
- *  running. The follow tick will yield while this returns truthy. */
-export function setInflightProvider(fn) {
-  _inflightProvider = (typeof fn === 'function') ? fn : null
-}
-
-/**
- * Set the follow target. Accepts:
- *   - { kind: 'player', username }
- *   - { kind: 'entity', entityId, label? }
- *   - null to clear
- */
 export function setFollowTarget(t) {
   if (t == null) { _target = null; return }
   if (t.kind === 'player' && typeof t.username === 'string') {
@@ -35,56 +18,53 @@ export function setFollowTarget(t) {
   }
 }
 
-/** Get a short human label for the current follow target (or null). */
 export function getFollowTargetLabel() {
   if (!_target) return null
   return _target.kind === 'player' ? _target.username : _target.label
 }
 
-/** Returns the underlying mineflayer entity for the active target, or null. */
-function resolveTargetEntity(bot) {
-  if (!_target) return null
-  if (_target.kind === 'player') {
-    const p = bot.players?.[_target.username]
-    return p?.entity ?? null
-  }
-  return bot.entities?.[_target.entityId] ?? null
+function resolveTargetEntity() {
+  if (!_target || !_bot) return null
+  if (_target.kind === 'player') return _bot.players?.[_target.username]?.entity ?? null
+  return _bot.entities?.[_target.entityId] ?? null
 }
 
 export function startFollow(bot, config) {
+  _bot = bot
+  // Resolve the minecraft adapter slice — the caller passes the top-level
+  // config, but follow_range lives at config.adapter.minecraft.follow_range.
+  // Without this resolution we silently pass `undefined` to GoalFollow and
+  // get mineflayer-pathfinder's built-in default (1), so the configured
+  // range never takes effect.
+  const mc = config?.adapter?.minecraft ?? config ?? {}
+  const range = Number.isFinite(mc.follow_range) ? mc.follow_range : 3
+  _config = { follow_range: range }
+  const ownerUsername = config?.owner_username ?? mc.owner_username
+
   if (!bot.hasPlugin(pathfinder)) bot.loadPlugin(pathfinder)
+  bot.pathfinder.setMovements(new Movements(bot))
 
-  // Default target: the configured owner (player). LLM can change this via
-  // the follow action; the snapshot exposes follow_target so the model is
-  // aware of who/what it's following rather than relying on hardcoded behavior.
-  if (!_target) setFollowTarget({ kind: 'player', username: config.owner_username })
+  // Default target: configured owner. LLM can change this via the follow action.
+  if (!_target && ownerUsername) setFollowTarget({ kind: 'player', username: ownerUsername })
 
-  _followInterval = setInterval(async () => {
-    if (_paused) return
-    if (_inflightProvider && _inflightProvider()) return
-    if (bot.pathfinder?.isMoving?.()) return
-
-    const ent = resolveTargetEntity(bot)
-    if (!ent) return  // target not in render distance / despawned
-
-    const ownerPos = ent.position
-    const botPos = bot.entity.position
-    const dist = botPos.distanceTo(ownerPos)
-
-    if (dist > config.follow_range) {
-      await goTo(bot, ownerPos.x, ownerPos.y, ownerPos.z, config.follow_range, config.pathfinder_timeout_ms)
-    }
+  // GoalFollow with dynamic=true tracks the entity itself, so we don't need
+  // to recompute paths each tick. We only re-install when the pathfinder is
+  // idle and our goal isn't currently set — this yields naturally to any
+  // LLM-issued movement action (goTo, dig, etc.) without an explicit pause.
+  clearInterval(_interval)
+  _interval = setInterval(() => {
+    if (!_target) return
+    if (bot.pathfinder.isMoving()) return
+    const ent = resolveTargetEntity()
+    if (!ent) return
+    bot.pathfinder.setGoal(new goals.GoalFollow(ent, _config.follow_range), true)
   }, 1000)
 }
 
 export function stopFollow() {
-  clearInterval(_followInterval)
-  _followInterval = null
-  // Plan 03.1-09 (D-H-16): defense-in-depth — also clear the active target so
-  // the snapshot's follow_target field reads `(none)` if anyone calls
-  // stopFollow directly (e.g. on disconnect/reconnect, or a future explicit-
-  // clear pathway). The unfollow registry action already calls
-  // setFollowTarget(null); this guarantees the field is always cleared when
-  // the follow loop is torn down.
+  clearInterval(_interval)
+  _interval = null
   _target = null
+  _bot = null
+  _config = null
 }

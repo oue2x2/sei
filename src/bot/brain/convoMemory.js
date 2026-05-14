@@ -91,10 +91,13 @@ export function createConvoMemory() {
     for (const msg of loopMessages || []) {
       if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
       for (const blk of msg.content) {
-        if (!blk || blk.type !== 'tool_use') continue
-        if (blk.name === 'say') {
-          if (!firstSay) firstSay = String(blk.input?.text ?? '').trim()
-        } else if (blk.name !== 'setGoals') {
+        if (!blk) continue
+        if (blk.type === 'text') {
+          if (!firstSay) {
+            const t = String(blk.text ?? '').trim()
+            if (t) firstSay = t
+          }
+        } else if (blk.type === 'tool_use' && blk.name !== 'setGoals' && blk.name !== 'noteToSelf') {
           toolFreq.set(blk.name, (toolFreq.get(blk.name) || 0) + 1)
         }
       }

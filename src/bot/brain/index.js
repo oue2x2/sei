@@ -23,7 +23,7 @@ const REQUIRED_ADAPTER_MEMBERS = [
   'listActions', 'getActionSchema', 'getActionDescription', 'executeAction',
   'createSnapshotComposer', 'worldPrimer',
   'attach',
-  'chat', 'setInflightProvider', 'closeAnySessions',
+  'chat', 'closeAnySessions',
   // capabilities (booleans / accessors) — checked existence only
   'supportsAutoEat', 'supportsFollow',
   // identity
@@ -109,13 +109,13 @@ export async function start({ config, adapter, logger = console }) {
         default:                   p = Priority.P2_MOVEMENT; break
       }
     }
-    // sei:loop_terminal is an internal signal — translate into a sei:loop_end
-    // tick (unless the just-finished loop was itself triggered by loop_end,
-    // matching the old fsm.js suppression rule).
+    // sei:loop_terminal is an internal signal — reset the idle timer and stop.
+    // The previous loop_end auto-tick was removed: it doubled brain calls on
+    // every input and produced redundant acknowledgement messages. Idle ticks
+    // (sei:idle, P3) are now the only non-input wake-up path; the model
+    // controls within-loop iteration via tool_use chains.
     if (event === 'sei:loop_terminal') {
       queue.resetIdleTimer()
-      if (data?.originatingEvent === 'sei:loop_end') return
-      queue.enqueue(Priority.P2_5_LOOP_END, 'sei:loop_end', { originatingEvent: data?.originatingEvent ?? null })
       return
     }
     queue.enqueue(p, event, data)

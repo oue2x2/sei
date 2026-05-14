@@ -3,7 +3,6 @@
 // every game-shaped capability through it:
 //   - adapter.createSnapshotComposer()  (was: ../observers/snapshot)
 //   - adapter.closeAnySessions()        (was: ../behaviors/container)
-//   - adapter.setInflightProvider(fn)   (was: ../behaviors/follow)
 //   - adapter.worldPrimer()             (was: ./persona.js minecraftPrimer)
 //   - adapter.executeAction(...)        (registry calls, including chat tx)
 // The orchestrator never imports from src/adapter/ — verify with
@@ -85,32 +84,29 @@ export function shouldSuppressLoopEndSay({ triggerEvent, candidateLine, lastSelf
 }
 
 // Single combined system prompt — one Haiku call per iteration handles both
-// reasoning and dispatch. Prod chat rules are folded in: `say` is the only
-// player-visible channel; assistant `text` stays internal scratch.
+// reasoning and dispatch. The assistant's `text` blocks ARE the owner-visible
+// chat channel (like Claude Code / OpenCode): the agent loop emits any mix of
+// text + tool_use per turn; text goes straight to in-game chat, tools execute.
 const SYSTEM_INSTRUCTIONS = [
   'You are a Minecraft companion bot — a peer to the owner, not a servant. Pick what is interesting, propose plans, react to chat and world events. Waiting passively is not the job.',
-  'say() is the only owner-visible channel. Your assistant `text` is private scratch reasoning; never write chat-style sentences there. Don\'t address the owner in text — that goes nowhere. Keep reasoning under 3 sentences.',
-  'say() lines are short — one line, max 15 words, lowercase, like player chat. say() output has punctuation stripped automatically (no periods, commas, em-dashes); don\'t bother adding them, they\'ll be removed. Apostrophes are kept.',
-  'Frame things as "we" / "us" / "the owner" — never "you", "me", or "the user". We are partners along for the ride, not handed tasks.',
-  'say() cadence: REQUIRED on the FIRST turn of any new owner-triggered loop. The first say() must ACKNOWLEDGE what we are undertaking — name the action ("alright getting sand", "going hunting", "dropping the oak"). A `text` block about the task does NOT count. If starting an action, say() goes in the SAME tool batch as the action call.',
-  'say() cadence: REQUIRED on the LAST turn too — when the loop ends (task complete, blocked, or aborted), the final turn must include a say().',
-  'During long tasks, narrate progress every few iterations in say() — not "i have 3 logs" (numbers stay quiet) but "this oak is stubborn" or "almost there". Silence past 4 iterations feels broken to the owner.',
-  'When entities or biome features are nearby in the snapshot — animals, terrain change, structures — casually acknowledge them in say() instead of narrating generically. "passed a pod of salmon" beats "nice river".',
+  'Whatever you write as your message is sent verbatim into in-game chat. One short line of player chat — your persona section below dictates tone, voice, and any formatting quirks. Periods, em-dashes, and quotes are stripped; commas, apostrophes, ! and ? are kept.',
+  'Speak on every meaningful beat: acknowledging an owner request, starting an action, a quick reaction to something nearby, a brief progress note when something changes, reporting failure, asking a real question, or wrapping up. Skip the turn silently when there\'s genuinely nothing to add. If you\'re stuck after 2-3 attempts at something, ask the owner for help instead of trying a 4th variation.',
+  'When entities or biome features are nearby in the snapshot — animals, terrain change, structures — casually acknowledge them instead of narrating generically. "passed a pod of salmon" beats "nice river".',
   'Don\'t restate inventory the snapshot already shows. Mention numbers only when they just changed ("got the last 2 logs"), not every turn.',
+  'Frame things as "we" / "us" / "the owner" — never "you", "me", or "the user". We are partners along for the ride, not handed tasks.',
   'Closed action registry: only call tools from the registry. Never invent tool names, generate code, or emit raw coordinates in prose — just call the tools.',
-  'Movement rule: at most ONE TYPE of movement action per response (ten dig calls is fine; dig + goTo together is not). If the snapshot shows an `in_flight:` line, the body is already doing that — do NOT call any movement this turn. You may say() while busy.',
+  'Movement rule: at most ONE TYPE of movement action per response (ten dig calls is fine; dig + goTo together is not). If the snapshot shows an `in_flight:` line, the body is already doing that — do NOT call any movement this turn. You may still emit text while busy.',
   'Hunting rule: to kill a moving mob, call follow on the target then attackEntity with `times` set high (e.g. 5 for sheep, 8 for tougher mobs). One attackEntity swings up to N times, stopping early if the mob dies or moves out of reach. If "moved out of reach" comes back, just call attackEntity again. Don\'t chase with goTo. Call unfollow when dead.',
   'dig accepts {block:\'oak_log\'} to dig the nearest matching block — prefer this over coords for parallel batches.',
-  'Pathfinder rule: if goTo returns cant_reach twice for the same destination, ask for help in say() instead of trying again.',
+  'Pathfinder rule: if goTo returns cant_reach twice for the same destination, ask the owner for help instead of trying again.',
   'Owner messages preempt the body and abort the in-flight action. After answering, decide explicitly: resume, drop, or switch. The aborted task is in tool_use history — resume by re-issuing if it still makes sense.',
-  'The loop has a 30-iteration cap; if you hit it, the orchestrator aborts. Decide task completion yourself — don\'t pad. End the loop by emitting only say() (or no tool calls).',
+  'The loop has a 30-iteration cap; if you hit it, the orchestrator aborts. Decide task completion yourself — don\'t pad. End the loop by emitting no tool calls (text alone, or nothing).',
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
 ].join('\n')
 
 const ACTION_DESCRIPTIONS = {
   goTo: 'Move the bot to the given (x, y, z) coordinates within `range` blocks.',
   setGoals: 'Add or remove a goal from owner_goals or self_goals.',
-  say: 'Speak the given text in in-game chat.',
   follow: 'Continuously trail an entity at follow_range. Pass `player` (username), or `entity` / `entity_id` / `target` for a mob. Does NOT attack — pair with attackEntity if you want hits. The body trails the target on a 1s tick; an attackEntity call can land a swing as soon as the target is within reach. Default-on at spawn for the owner; the snapshot shows `follow_target` so you know who you are trailing.',
   unfollow: 'Stop trailing the current follow target. The body holds position until you issue another movement.',
   attackEntity: 'Swing at an entity. `times` (1–10, default 1) hits the target up to N times in one call with ~600ms between swings; stops early if the target dies, moves out of reach, or you are interrupted. Use a higher `times` when hunting to amortize LLM round-trips — e.g. `times: 5` for sheep/pig, `times: 8` for tougher mobs.',
@@ -131,7 +127,11 @@ const ACTION_DESCRIPTIONS = {
 // keeps the loop running so the model can react to its result.
 // Plan 03.1-04: noteToSelf is personality-only — its result is always
 // "noted" / "error: …" and never warrants a follow-up iteration on its own.
-const PERSONALITY_NAMES = new Set(['say', 'setGoals', 'noteToSelf'])
+// follow/unfollow only mutate the follow target; the actual trailing happens on
+// a 1s background tick (behaviors/follow.js). Treating them as movement keeps
+// the iteration loop alive and the LLM hot-spams follow() each turn, starving
+// the tick. Classify them as personality so a follow-only turn is terminal.
+const PERSONALITY_NAMES = new Set(['setGoals', 'noteToSelf', 'follow', 'unfollow'])
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
 /**
@@ -207,56 +207,6 @@ export function classifyChatEvent(event, data) {
                    || event === 'owner_chat' || event === 'sei:chat_received'
   const isOwnerChat = isChatEvent && (data?.ownerSpoke === true || event === 'owner_chat')
   return { isChatEvent, isOwnerChat }
-}
-
-/**
- * Plan 03.1-05 Task 1 (D-1, D-H-1): hard-enforce first-turn say() at the
- * orchestrator level. Pure predicate so the runtime path and the unit test
- * share one implementation.
- *
- * Returns true iff the orchestrator should:
- *   - synthesize aborted tool_results for every tool_use in this turn,
- *   - append a reminder user turn instructing the model to re-issue with
- *     a say() in the same batch (e.g. "alright getting sand", "going
- *     hunting", "dropping the oak"), and
- *   - skip dispatch for this iteration.
- *
- * Conditions for a reprompt:
- *   - loop was triggered by an owner-chat event (sei:chat_received with
- *     ownerSpoke=true OR the legacy owner_chat shape),
- *   - this is iteration #1 (the model's FIRST response in the loop),
- *   - the model emitted at least one tool_use,
- *   - none of those tool_uses is `say`,
- *   - and we have not already reprompted this loop (one reprompt max — D-H-1
- *     was multi-turn but a re-loop would be infinite without this guard).
- *
- * Non-owner-triggered loops (idle, loop_end, attacked, world_event) NEVER
- * trigger this enforcement. Empty tool_uses (text-only response) is handled
- * by the existing first/last-turn rule from Plan 03 — not by this predicate.
- */
-export function shouldRepromptForFirstTurnSay({
-  triggerEvent, ownerSpoke, iterationCount, toolUses, alreadyReprompted,
-}) {
-  const isOwnerTriggered = (
-    (triggerEvent === 'sei:chat_received' || triggerEvent === 'owner_chat') &&
-    ownerSpoke === true
-  )
-  if (!isOwnerTriggered) return false
-  if (iterationCount !== 1) return false
-  if (alreadyReprompted) return false
-  if (!Array.isArray(toolUses) || toolUses.length === 0) return false
-  const calledSay = toolUses.some(u => u.name === 'say')
-  if (calledSay) return false
-  // Plan 03.1-08 (D-NEW-MEM-2): noteToSelf-only first turns are exempt.
-  // The user is reacting to memory persistence (acknowledging a stored
-  // fact); requiring a paired say() costs an extra LLM iteration without
-  // adding signal — verification observed 2 of 3 meaningful memory turns
-  // paying a doubled iteration because the model emitted noteToSelf as the
-  // only call. Mixed action+noteToSelf (e.g., dig + noteToSelf) is NOT
-  // exempt — the dig is the action requiring an acknowledgement say().
-  const onlyNoteToSelf = toolUses.every(u => u.name === 'noteToSelf')
-  if (onlyNoteToSelf) return false
-  return true
 }
 
 /**
@@ -414,11 +364,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // "do it" need owner context; loopHistory keeps the bot from re-asking
   // questions or rediscovering tasks across cold-composed loops).
   const convoMemory = createConvoMemory()
-  // Wire follow's lifecycle gate — follow yields while a *movement* action
-  // is in flight. Personality-only entries (setGoals/say) don't pause
-  // follow; see currentBlocking() in inflight.js.
-  adapter.setInflightProvider(() => inflight.currentBlocking() != null)
-  // Phase 3 D-59: chains is a no-op shim (kept to preserve any stragglers
+// Phase 3 D-59: chains is a no-op shim (kept to preserve any stragglers
   // referencing it from prior phases).
   const chains = createChainTracker({ maxHops: config.llm.max_hops })
 
@@ -440,13 +386,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // addendum.
   let pendingAttack = null
 
-  // Personality-only tools: setGoals, say, noteToSelf
+  // Personality-only tools: setGoals, noteToSelf. Owner-visible speech is the
+  // assistant's `text` output (handled by the orchestrator's chat-emit path);
+  // there is no `say` tool — text blocks ARE the chat channel.
   const personalityTools = [
-    {
-      name: 'say',
-      description: ACTION_DESCRIPTIONS.say,
-      input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-    },
     {
       name: 'setGoals',
       description: ACTION_DESCRIPTIONS.setGoals,
@@ -542,7 +485,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       for (let j = m.content.length - 1; j >= 0; j--) {
         const blk = m.content[j]
         if (!blk || blk.type !== 'tool_use') continue
-        if (blk.name === 'say' || blk.name === 'setGoals') continue
+        if (blk.name === 'setGoals' || blk.name === 'noteToSelf') continue
         // Combined-mode movement action.
         const a = blk.input ?? {}
         const parts = []
@@ -724,13 +667,11 @@ function maybeWarnByteCap(loop, warned) {
 
     const loop = createLoop({ iterationCap: config.memory.iteration_cap, logger })
     currentLoop = loop
-    // Plan 03.1-05 Task 1: capture trigger context for first-turn-say
-    // enforcement in runIterations. classifyChatEvent already handles the
-    // owner_chat / sei:chat_received aliases.
+    // Capture trigger context for downstream gating (e.g. loop_end dedup of
+    // text emissions). classifyChatEvent handles owner_chat / sei:chat_received
+    // aliases.
     loop._triggerEvent = event
     loop._ownerSpoke = !!data?.ownerSpoke || event === 'owner_chat'
-    loop._firstTurnReprompted = false
-    loop._dropItemReprompted = false
     // Plan 03.1-09 (D-W-7): track goTo cant_reach destinations seen this loop.
     // Key: `${x}|${y}|${z}|${range}`. Value: count. On count >= 2 we inject a
     // one-shot nudge referencing the SYSTEM_INSTRUCTIONS Pathfinder rule
@@ -766,7 +707,7 @@ function maybeWarnByteCap(loop, warned) {
       // and started moving items unprompted) which felt like "agent runaway"
       // to the owner. Settle, acknowledge, yield — explicitly forbid auto-
       // starting a new task without an explicit owner_goal or self_goal.
-      eventAddendum = '\n\nYou finished a task. Settle, no need to start a new task without an explicit owner_goal or self_goal that demands it. Acknowledge briefly with say() and yield. Do NOT auto-start any world-mutating action (dig, place, drop, openContainer, attack) on loop_end.'
+      eventAddendum = '\n\nYou finished a task. Settle, no need to start a new task without an explicit owner_goal or self_goal that demands it. Acknowledge briefly in text and yield. Do NOT auto-start any world-mutating action (dig, place, drop, openContainer, attack) on loop_end.'
     } else if (event === 'sei:idle' || event === 'idle') {
       // Plan 03.1-05 Task 3 (D-E-8): idle is observational, not a task prompt.
       // Earlier "you are a peer, pick something to do" wording read as a
@@ -985,98 +926,37 @@ function maybeWarnByteCap(loop, warned) {
 
       const toolUses = resp.toolUses ?? []
 
-      // Plan 03.1-05 Task 1 (D-1, D-H-1): hard-enforce first-turn say().
-      // If the first response in an owner-chat-triggered loop emitted tool_uses
-      // without say(), synthesize aborted tool_results, append a reminder
-      // user turn (e.g. "alright getting sand", "going hunting"), and skip
-      // dispatch. One reprompt max per loop (loop._firstTurnReprompted).
-      if (shouldRepromptForFirstTurnSay({
-        triggerEvent: loop._triggerEvent,
-        ownerSpoke: loop._ownerSpoke,
-        iterationCount: loop._responsesReceived,
-        toolUses,
-        alreadyReprompted: loop._firstTurnReprompted,
-      })) {
-        loop._firstTurnReprompted = true
-        const aborted = toolUses.map(u => ({
-          type: 'tool_result',
-          tool_use_id: u.id,
-          content: 'aborted: first-turn say() required before action',
-          is_error: false,
-        }))
-        loop.appendToolResults(aborted, {
-          snapshot: snapshotText(),
-          eventText: 'You started work without calling say() to acknowledge the owner. Re-issue your tool calls, but include a say() in the SAME batch that names what you are doing (e.g., "alright getting sand", "going hunting", "dropping the oak").',
-        })
-        maybeWarnByteCap(loop, byteWarn)
-        continue
+      // Text-as-chat: the assistant's text output IS the owner-visible chat
+      // line. Same emission path whether the response is terminal (no tools)
+      // or mid-loop (text + tool_use). Empty text is fine — the model is free
+      // to make tool calls without saying anything, like Claude Code.
+      const respText = (resp.text ?? '').trim()
+      if (respText) {
+        const line = postProcessSay(respText)
+        if (line) {
+          const suppressed = shouldSuppressLoopEndSay({
+            triggerEvent: loop._triggerEvent,
+            candidateLine: line,
+            lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
+          })
+          if (suppressed) {
+            logger.info?.(`[sei/orch] dedupeSay suppressed loop_end duplicate (loop=${loop.id}): ${line.slice(0, 80)}`)
+          } else {
+            logChatOut(line)
+            try { adapter.chat(line) } catch {}
+            convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
+          }
+        }
       }
 
       if (toolUses.length === 0) {
-        // Terminal: text-only response. Assistant `text` is private scratch —
-        // in `chat` mode (default) it stays internal. In `full` mode the same
-        // text is relayed to chat with a `[think] ` prefix so the owner can
-        // watch the bot's reasoning. The model is otherwise expected to call
-        // `say` for player-facing speech.
-        const text = (resp.text ?? '').trim()
-        if (text) {
-          if (config.chat_mode === 'full') {
-            const line = ('[think] ' + text).slice(0, 256)
-            logChatOut(line)
-            try { adapter.chat(line) } catch {}
-            convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
-          } else {
-            logger.debug?.(`[sei/orch] terminal text (private, not relayed): ${text}`)
-          }
-        }
+        // Terminal turn — model chose to stop (with or without text). Done.
         return
-      }
-
-      // Mid-task narration: when the model emits text alongside tool_uses
-      // (and didn't call `say`). In `chat` mode (default) this stays at
-      // debug only. In `full` mode it is relayed to chat with `[think] `
-      // prefix (260505-iqo say/think separation preserved by the prefix).
-      const midText = (resp.text ?? '').trim()
-      if (midText) {
-        const calledSay = toolUses.some(u => u.name === 'say')
-        if (!calledSay) {
-          if (config.chat_mode === 'full') {
-            const line = ('[think] ' + midText).slice(0, 256)
-            logChatOut(line)
-            try { adapter.chat(line) } catch {}
-            convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
-          } else {
-            logger.debug?.(`[sei/orch] mid-loop text (private, not relayed): ${midText}`)
-          }
-        }
       }
 
       // Process tool_uses. Single-layer: every movement tool fires from the
       // same combined response — no separate movement layer.
       const movementCalls = toolUses.filter(u => !PERSONALITY_NAMES.has(u.name))
-
-      // Plan 03.1-05 Task 2 (D-W-10): dropItem of ≥4 items requires a paired
-      // say() in the SAME turn. If missing, synthesize aborts for every
-      // tool_use and append a reminder. One reprompt max via
-      // _dropItemReprompted.
-      const bigDrop = toolUses.find(u => u.name === 'dropItem' && Number(u.input?.count ?? 1) >= 4)
-      if (bigDrop && !toolUses.some(t => t.name === 'say') && !loop._dropItemReprompted) {
-        loop._dropItemReprompted = true
-        const aborted = toolUses.map(u => ({
-          type: 'tool_result',
-          tool_use_id: u.id,
-          content: 'aborted: dropping 4+ items requires a say() in the same turn explaining why',
-          is_error: false,
-        }))
-        const cnt = Number(bigDrop.input?.count ?? 1)
-        const itm = bigDrop.input?.item ?? 'items'
-        loop.appendToolResults(aborted, {
-          snapshot: snapshotText(),
-          eventText: `You tried to drop ${cnt} ${itm} without saying anything to the owner. Re-issue with a say() in the same batch (e.g., "dropping the sand, we need wood now").`,
-        })
-        maybeWarnByteCap(loop, byteWarn)
-        continue
-      }
 
       // Plan 03.1-05 Task 2 (D-W-2, D-W-3, D-H-5): cap parallel dig calls at
       // 1 per turn. The first dig executes; subsequent digs synthesize an
@@ -1137,40 +1017,7 @@ function maybeWarnByteCap(loop, warned) {
             }
             continue
           }
-          if (u.name === 'say') {
-            // D-7 (Plan 03.1-03): strip punctuation/lowercase/cap before
-            // transmit AND before pushing to convoMemory.recentChat.pushSelf
-            // so the bot's "memory" of what it said matches what the owner saw.
-            const line = postProcessSay(u.input?.text)
-            // Plan 03.1-05 Task 2 (D-W-4): empty-text turns are excluded from
-            // the convoMemory self-buffer entirely so the bot never sees itself
-            // restating inventory / a blank message in your_recent_messages.
-            if (line && line.trim().length > 0) {
-              // Plan 03.1-07 Task 2 (D-NEW-DM-1/2/3): suppress byte-equal
-              // duplicates emitted within sei:loop_end loops in a 2s window.
-              // Honest tool_result tells the LLM its line was repetitive so
-              // it can adjust the next turn — but we do NOT push to chat
-              // and do NOT push to convoMemory.recentChat.pushSelf (so the
-              // model does not see itself "saying" that twice).
-              const suppressed = shouldSuppressLoopEndSay({
-                triggerEvent: loop._triggerEvent,
-                candidateLine: line,
-                lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
-              })
-              if (suppressed) {
-                logger.info?.(`[sei/orch] dedupeSay suppressed loop_end duplicate (loop=${loop.id}): ${line.slice(0, 80)}`)
-                results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said (suppressed: byte-equal duplicate within 2s)', is_error: false }
-              } else {
-                logChatOut(line)
-                try { adapter.chat(line) } catch {}
-                convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
-                results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said', is_error: false }
-              }
-            } else {
-              logger.debug?.(`[sei/orch] empty say() output skipped from chat + self-buffer (D-W-4)`)
-              results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'said', is_error: false }
-            }
-          } else if (u.name === 'setGoals') {
+          if (u.name === 'setGoals') {
             try {
               const r = await runWithInflight('setGoals', u.input, { ...config, _goalStore: goals })
               const s = typeof r === 'string' ? r : (r && typeof r.ok !== 'undefined' ? `setGoals:${r.ok ? 'ok' : 'fail'}` : 'setGoals:done')
@@ -1300,7 +1147,7 @@ function maybeWarnByteCap(loop, warned) {
         loop._cantReachMap.set(key, next)
         if (next >= 2 && !loop._cantReachNudgedKeys.has(key)) {
           loop._cantReachNudgedKeys.add(key)
-          cantReachNudge = `[cant_reach 2× to (${x},${y},${z}) range=${range} — per the Pathfinder rule, do NOT retry the same goTo. Either ask the owner for help in say() (e.g. "stuck on the path, can you come closer or break the way through?") or pick a different approach (different y, dig through, give up and say so).]`
+          cantReachNudge = `[cant_reach 2× to (${x},${y},${z}) range=${range} — per the Pathfinder rule, do NOT retry the same goTo. Either ask the owner for help (e.g. "stuck on the path, can you come closer or break the way through?") or pick a different approach (different y, dig through, give up and say so).]`
           break
         }
       }
@@ -1310,10 +1157,10 @@ function maybeWarnByteCap(loop, warned) {
       // nudge into the next user turn asking it to narrate progress briefly.
       // Reset on every say(). Bracketed format mirrors how PLAYER INTERRUPT
       // and other system-tagged prepends are styled in convo history.
-      const hadSayThisTurn = toolUses.some(u => u.name === 'say')
-      const shouldNudge = _advanceIterationCadence({ loop, hadSay: hadSayThisTurn })
+      const hadTextThisTurn = respText.length > 0
+      const shouldNudge = _advanceIterationCadence({ loop, hadSay: hadTextThisTurn })
       const silenceNudgeText = shouldNudge
-        ? '[silence past 4 iterations — narrate progress briefly using say(), still optional if nothing changed. avoid restating numbers (we already saw the inventory). a single short observation is enough.]'
+        ? '[silence past 4 iterations — narrate progress briefly in your next text. avoid restating numbers (we already saw the inventory). a single short observation is enough.]'
         : null
       // Plan 03.1-09 (D-W-7): cant_reach nudge wins over silence nudge — both
       // happen at "things are not progressing" but cant_reach is the proximate
@@ -1383,6 +1230,17 @@ function maybeWarnByteCap(loop, warned) {
   // anthropicClient returns { toolUses, text, ... } — reconstruct the
   // assistant content array (text + tool_use blocks) for Loop append.
   function buildAssistantContent(resp) {
+    // When extended thinking is enabled, `thinking` (and `redacted_thinking`)
+    // blocks MUST be preserved verbatim in the assistant turn or Anthropic
+    // 400s on the next call (whenever the turn also produced tool_use). Pass
+    // through the raw response content so signatures/positions stay intact;
+    // fall back to a synthesized array for callers / mocks without `content`.
+    if (Array.isArray(resp.content) && resp.content.length > 0) {
+      return resp.content.map(b => {
+        if (b.type === 'tool_use') return { type: 'tool_use', id: b.id, name: b.name, input: b.input }
+        return b
+      })
+    }
     const out = []
     if (resp.text) out.push({ type: 'text', text: resp.text })
     for (const u of resp.toolUses ?? []) {
@@ -1499,6 +1357,7 @@ function maybeWarnByteCap(loop, warned) {
       logger.warn('[sei/orch] Rate limit hit — dropping personality call')
       return null
     }
+    const budget = config.anthropic.thinking_budget_tokens ?? 0
     return await anthropic.call({
       systemBlocks: cachedSystemBlocks,
       tools: combinedToolsFor(),
@@ -1506,6 +1365,12 @@ function maybeWarnByteCap(loop, warned) {
       namedUserBlocks: loop._internal.messages,
       signal,
       timeoutMs: config.anthropic.timeout_ms,
+      // Small private scratchpad so the model can recap state, plan, and
+      // debug failures WITHOUT polluting in-game chat. Text blocks stay
+      // reserved for deliberate in-character speech to the owner.
+      // max_tokens must exceed budget_tokens; bump headroom accordingly.
+      ...(budget > 0 ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
+      maxTokens: 1024 + (budget > 0 ? budget : 0),
     })
   }
 
