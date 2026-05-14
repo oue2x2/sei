@@ -107,7 +107,7 @@ const SYSTEM_INSTRUCTIONS = [
 const ACTION_DESCRIPTIONS = {
   goTo: 'Move the bot to the given (x, y, z) coordinates within `range` blocks.',
   setGoals: 'Add or remove a goal from owner_goals or self_goals.',
-  follow: 'Continuously trail an entity at follow_range. Pass `player` (username), or `entity` / `entity_id` / `target` for a mob. Does NOT attack — pair with attackEntity if you want hits. The body trails the target on a 1s tick; an attackEntity call can land a swing as soon as the target is within reach. Default-on at spawn for the owner; the snapshot shows `follow_target` so you know who you are trailing.',
+  follow: 'Continuously trail an entity at follow_range. Pass `player` (username), or `entity` / `entity_id` / `target` for a mob. Does NOT attack — pair with attackEntity if you want hits. The body trails the target on a 1s tick; an attackEntity call can land a swing as soon as the target is within reach. The snapshot shows `follow_target` so you know who you are trailing. Call `unfollow` before any task that requires moving away from the trail target (gathering, digging far blocks, exploring) — the trail tick will fight your path otherwise. You can re-`follow` afterward if it makes sense.',
   unfollow: 'Stop trailing the current follow target. The body holds position until you issue another movement.',
   attackEntity: 'Swing at an entity. `times` (1–10, default 1) hits the target up to N times in one call with ~600ms between swings; stops early if the target dies, moves out of reach, or you are interrupted. Use a higher `times` when hunting to amortize LLM round-trips — e.g. `times: 5` for sheep/pig, `times: 8` for tougher mobs.',
   // Plan 07-04 Task 2: canonical text lives next to dig.js as DIG_DESCRIPTION.

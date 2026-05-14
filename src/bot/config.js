@@ -47,10 +47,12 @@ export const ConfigSchema = z.object({
     api_key: z.string().min(1),                                             // required; no default
     model: z.string().default('claude-haiku-4-5-20251001'),                 // D-20: Haiku 3 RETIRED
     timeout_ms: z.number().int().min(1000).default(20_000),
-    // Extended thinking budget. 0 disables. 1024 is the API minimum and the
-    // smallest reasoning scratchpad that still teaches the model to separate
-    // private thinking from in-character text. Keep small to bound latency.
-    thinking_budget_tokens: z.number().int().min(0).default(1024),
+    // Extended thinking budget. 0 disables. 1024 is the API minimum; thinking
+    // adds latency to every call without changing what the model says aloud,
+    // since assistant text blocks ARE the chat channel now (see orchestrator).
+    // Default off; flip to 1024+ if you want a private scratchpad before tool
+    // dispatch.
+    thinking_budget_tokens: z.number().int().min(0).default(0),
   }),
   llm: z.object({
     rate_limit_per_min: z.number().int().min(1).default(30),

@@ -39,13 +39,13 @@ export function startFollow(bot, config) {
   const mc = config?.adapter?.minecraft ?? config ?? {}
   const range = Number.isFinite(mc.follow_range) ? mc.follow_range : 3
   _config = { follow_range: range }
-  const ownerUsername = config?.owner_username ?? mc.owner_username
 
   if (!bot.hasPlugin(pathfinder)) bot.loadPlugin(pathfinder)
   bot.pathfinder.setMovements(new Movements(bot))
 
-  // Default target: configured owner. LLM can change this via the follow action.
-  if (!_target && ownerUsername) setFollowTarget({ kind: 'player', username: ownerUsername })
+  // No default target — the LLM decides whether to call follow(owner) on the
+  // join event. Hardcoding it caused the body to drift toward the owner
+  // between every gap in LLM-issued movement.
 
   // GoalFollow with dynamic=true tracks the entity itself, so we don't need
   // to recompute paths each tick. We only re-install when the pathfinder is

@@ -218,6 +218,12 @@ export async function createSessionState({ ownerMdPath, diary, compactor: initia
 
   async function onPlayerJoined(player) {
     if (!player || !player.uuid) return
+    // Idempotency: checkOwnerPresent at spawn synthesizes onPlayerJoined for
+    // the already-present owner, and mineflayer ALSO emits a real playerJoined
+    // for that same player. Without this guard, fireSessionStart runs twice,
+    // bumping total_sessions cold→warm in the same connect and telling the
+    // model "second time meeting" right after a memory wipe.
+    if (player.uuid === activeOwnerUuid) return
     const recognition = recognize(player)
     if (!recognition) return
     try {
