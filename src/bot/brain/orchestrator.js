@@ -99,7 +99,13 @@ const SYSTEM_INSTRUCTIONS = [
   'Hunting rule: to kill a moving mob, call follow on the target then attackEntity with `times` set high (e.g. 5 for sheep, 8 for tougher mobs). One attackEntity swings up to N times, stopping early if the mob dies or moves out of reach. If "moved out of reach" comes back, just call attackEntity again. Don\'t chase with goTo. Call unfollow when dead.',
   'dig accepts {block:\'oak_log\'} to dig the nearest matching block — prefer this over coords for parallel batches.',
   'Pathfinder rule: if goTo returns cant_reach twice for the same destination, ask the owner for help instead of trying again.',
-  'Owner messages preempt the body and abort the in-flight action. After answering, decide explicitly: resume, drop, or switch. The aborted task is in tool_use history — resume by re-issuing if it still makes sense.',
+  // 260513-wkd: replaces the old "Owner messages preempt the body and abort
+  // the in-flight action..." line. The orchestrator now decouples mid-loop
+  // long-runners from the FSM signal: while one runs, owner chat (P1) or
+  // attack (P0) can wake the model WITHOUT auto-aborting the body. The model
+  // chooses cancel-semantics explicitly: text-only continues (default), `stop`
+  // tool aborts and holds, a new long-running tool switches tasks.
+  'When you receive an owner message or take damage mid-action, the snapshot will show `in_flight:` — the body is already doing something. You ALWAYS say something on receipt of owner chat or an attack. Then decide: respond and keep going (text only, the default), or call `stop` to halt the in-flight action and hold, or call a different long-running tool to switch tasks. Don\'t restate the in-flight action — it\'s already underway.',
   'The loop has a 30-iteration cap; if you hit it, the orchestrator aborts. Decide task completion yourself — don\'t pad. End the loop by emitting no tool calls (text alone, or nothing).',
   'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
 ].join('\n')
@@ -131,7 +137,14 @@ const ACTION_DESCRIPTIONS = {
 // a 1s background tick (behaviors/follow.js). Treating them as movement keeps
 // the iteration loop alive and the LLM hot-spams follow() each turn, starving
 // the tick. Classify them as personality so a follow-only turn is terminal.
-const PERSONALITY_NAMES = new Set(['setGoals', 'noteToSelf', 'follow', 'unfollow'])
+//
+// 260513-wkd: `stop` is the explicit "task done, abandon in_flight, hold
+// position" tool. It is terminal (no follow-up iteration) AND, in Task 2,
+// causes the orchestrator to abort the in_flight AbortController so the
+// long-runner halts within one signal tick. In Task 1 (this commit), stop is
+// registered + classified terminal; the body still blocks on dispatch so the
+// abort path is no-op in practice (no in_flight is live mid-iteration).
+const PERSONALITY_NAMES = new Set(['setGoals', 'noteToSelf', 'follow', 'unfollow', 'stop'])
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
 /**
@@ -419,6 +432,17 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         },
         required: ['kind', 'summary'],
       },
+    },
+    // 260513-wkd: `stop` is the explicit cancel-semantics signal. The model
+    // emits it when an owner says "we have enough" / "stop" mid-action, or
+    // when the model itself decides an in-flight long-runner should end.
+    // No args, returns 'stopped'. Terminal (in PERSONALITY_NAMES). Task 2
+    // wires the orchestrator to abort the in_flight AbortController on this
+    // call so the long-running behavior halts within one signal tick.
+    {
+      name: 'stop',
+      description: "Signal that the current task is done and you intend to hold position. Use ONLY when an in-flight long-running action (gather, dig, build, attack, goTo) should be aborted because the owner just told you to stop or you've decided the task is complete. Pair with a spoken acknowledgement in your text. No args. Returns 'stopped'.",
+      input_schema: { type: 'object', properties: {}, additionalProperties: false },
     },
   ]
 
@@ -1028,6 +1052,15 @@ function maybeWarnByteCap(loop, warned) {
               logger.warn(`[sei/orch] setGoals failed: ${err.message}`)
               results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err.message}`, is_error: true }
             }
+          } else if (u.name === 'stop') {
+            // 260513-wkd: terminal cancel-semantics signal. In Task 1 this is
+            // a structural placeholder — the old blocking loop does not have
+            // a live in_flight mid-iteration (dispatch awaits to completion),
+            // so there is nothing to abort here. Task 2 wires the abort path
+            // (currentLoop.inFlight?.abortController.abort()) into the new
+            // FSM-event-driven loop.
+            lastActionResult = 'stopped'
+            results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'stopped', is_error: false }
           } else if (u.name === 'noteToSelf') {
             // Plan 03.1-04 (D-M-1, D-M-4). Dispatch:
             //   AFFECT.md  ← always (any kind)

@@ -5,6 +5,15 @@
  *   P0   = safety (attacked, critical health)
  *   P1   = chat received
  *   P2   = movement/action completion
+ *   P2.1 = action_complete (260513-wkd) — fired by the orchestrator when an
+ *          in_flight long-running action (gather/dig/build/attack/goTo)
+ *          settles. Distinct numeric tier above P2_MOVEMENT so a same-batch
+ *          P2_MOVEMENT enqueue runs FIRST (e.g. a P2 movement event arrives
+ *          alongside an action_complete: movement gets dequeued first by
+ *          priority asc). Below P2_5_LOOP_END so action_complete cannot
+ *          preempt a loop-end tick that was already in flight. Same-tier
+ *          FIFO is no longer required for action_complete ordering — the
+ *          numeric separation makes it explicit.
  *   P2.5 = end-of-loop tick (260505-iqo) — fires after every real-activity
  *          loop terminal, prompting the model to decide a follow-up sub-goal
  *          rather than wait for the 60s idle fallback. Above P3 so it
@@ -22,6 +31,9 @@ export const Priority = Object.freeze({
   P0_SAFETY: 0,
   P1_CHAT: 1,
   P2_MOVEMENT: 2,
+  // 260513-wkd: action_complete sits between P2_MOVEMENT and P2_5_LOOP_END.
+  // Routed via index.js reenqueue switch (event: 'sei:action_complete').
+  P2_ACTION_COMPLETE: 2.1,
   P2_5_LOOP_END: 2.5,
   P3_IDLE: 3,
 })

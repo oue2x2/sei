@@ -131,6 +131,11 @@ export async function gatherAction(args, bot, config, _deps) {
   // 3. Mine block-by-block, closest-remaining-first, abort-aware.
   let dug = 0
   const total = positions.length
+  // 260513-wkd: emit an initial 0/N progress tick the moment the batch is
+  // known so the next snapshot's `in_flight:` line shows `dug 0/N` instead of
+  // running progress-less for the first dig. Same onProgress channel as
+  // cuboid build/dig — no new config field invented.
+  try { config?.onProgress?.({ dug, total }) } catch {}
   while (true) {
     if (signal?.aborted) return `aborted after ${dug}/${total} ${blockName}`
 
@@ -164,6 +169,10 @@ export async function gatherAction(args, bot, config, _deps) {
     // Whether success, out-of-range, timeout, no-block, or target-changed:
     // mark done and continue. Failures are surfaced only via aggregate K<N.
     nextEntry.done = true
+    // 260513-wkd: push progress tick after each entry is marked done so the
+    // snapshot's `in_flight: gather(...) — K/N` line tracks the batch in real
+    // time. Same onProgress channel as cuboid build/dig.
+    try { config?.onProgress?.({ dug, total }) } catch {}
   }
 
   const capNote = total >= BATCH_CAP ? ' (cap reached)' : ''

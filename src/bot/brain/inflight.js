@@ -61,3 +61,41 @@ export function describeArgs(name, args) {
   }
   return parts.join(' ').slice(0, 64)
 }
+
+/**
+ * 260513-wkd: render the snapshot's `in_flight:` line from a tracker entry.
+ *
+ * Format: `in_flight: <name>(<argblurb>) started=<X.X>s ago[ — <completed>/<total>[, y=<currentY>]]`
+ *
+ * Preserves the Phase 7 D-10 em-dash separator AND the `y=<currentY>` channel
+ * exactly as snapshot.js rendered them; the ONLY visible delta vs the prior
+ * `(Xs)` trailer is the new `started=Xs ago` form (locked in CONTEXT.md
+ * "Snapshot mid-flight enrichment").
+ *
+ * When `entry.progress` carries either `placed/total` (cuboid build) or
+ * `dug/total` (cuboid dig + gather, both via the same onProgress channel),
+ * a suffix is appended. `y=<currentY>` is preserved when present on the
+ * progress payload (cuboid build/dig emit it; gather does not).
+ *
+ * @param {{ id:number, name:string, args:any, startedAt:number, progress:any } | null} entry
+ * @param {number} [now=Date.now()] — injected for deterministic tests.
+ * @returns {string} empty string when entry is null/undefined; otherwise the
+ *   formatted line.
+ */
+export function getInFlightLineForSnapshot(entry, now = Date.now()) {
+  if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string') return ''
+  const elapsed = Math.max(0, (now - (entry.startedAt ?? now)) / 1000).toFixed(1)
+  const argblurb = describeArgs(entry.name, entry.args)
+  let suffix = ''
+  const p = entry.progress
+  if (p && typeof p.total === 'number') {
+    const completed = (typeof p.placed === 'number') ? p.placed
+                    : (typeof p.dug === 'number') ? p.dug
+                    : null
+    if (completed != null) {
+      const yPart = (typeof p.currentY === 'number') ? `, y=${p.currentY}` : ''
+      suffix = ` — ${completed}/${p.total}${yPart}`
+    }
+  }
+  return `in_flight: ${entry.name}(${argblurb}) started=${elapsed}s ago${suffix}`
+}

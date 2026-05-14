@@ -132,7 +132,10 @@ export function createDefaultRegistry() {
       if (range <= 1 && isCoordsAtKnownPlayer(bot, args.x, args.y, args.z)) {
         range = 2
       }
-      return goTo(bot, args.x, args.y, args.z, range, timeoutMs)
+      // 260513-wkd: pass through config.signal so loop-level abort halts the
+      // pathfind via bot.pathfinder.stop() rather than waiting for the 12s
+      // wall-clock timeout. Returns 'aborted' on abort (distinct from timeout).
+      return goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
     }
   )
 

@@ -104,6 +104,11 @@ export async function start({ config, adapter, logger = console }) {
         case 'sei:chat_received':  p = Priority.P1_CHAT; break
         case 'sei:joined':         p = Priority.P1_CHAT; break
         case 'sei:loop_terminal':  p = Priority.P2_5_LOOP_END; break
+        // 260513-wkd: action_complete fires when an in_flight long-running
+        // action settles (resolve OR abort). Routed at P2.1 so a same-batch
+        // P2_MOVEMENT enqueue dequeues first (sort by priority asc); the new
+        // mid-loop iteration runs on the next processNext tick.
+        case 'sei:action_complete': p = Priority.P2_ACTION_COMPLETE; break
         case 'sei:loop_end':       p = Priority.P2_5_LOOP_END; break
         case 'sei:idle':           p = Priority.P3_IDLE; break
         default:                   p = Priority.P2_MOVEMENT; break

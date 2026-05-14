@@ -8,23 +8,12 @@ import { surveyBlocks } from './veins.js'
 import { nearbyEntities } from './entities.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 import { getFollowTargetLabel } from '../behaviors/follow.js'
+// 260513-wkd: centralised in_flight line rendering. Helper preserves the
+// Phase 7 D-10 em-dash + y=<currentY> channels byte-stable; only the elapsed
+// trailer changes from `(Xs)` to `started=Xs ago` (locked in CONTEXT.md).
+import { getInFlightLineForSnapshot } from '../../../brain/inflight.js'
 
 const MAX_ENTITIES = 6
-
-// Compact inline rendering of inflight args (avoid pulling describeArgs from
-// inflight.js to keep snapshot.js dependency-free of llm/).
-function describeInflightArgs(args) {
-  if (!args || typeof args !== 'object') return ''
-  const parts = []
-  if (typeof args.block === 'string') parts.push(args.block)
-  else if (typeof args.target === 'string') parts.push(args.target)
-  else if (typeof args.item === 'string') parts.push(args.item)
-  else if (typeof args.entity === 'string') parts.push(args.entity)
-  if (typeof args.x === 'number' && typeof args.y === 'number' && typeof args.z === 'number') {
-    parts.push(`@${args.x},${args.y},${args.z}`)
-  }
-  return parts.join(' ').slice(0, 64)
-}
 
 /**
  * Compose a compact snapshot of the bot's current world state.
@@ -61,25 +50,12 @@ export function composeSnapshot(bot, opts = {}) {
   }
 
   // In-flight action — surfaced early so the LLM sees it before reasoning
-  // about new actions. Format: `in_flight: <name> <argblurb> (<elapsed>s)`.
-  if (inFlight && typeof inFlight.name === 'string') {
-    const elapsed = Math.max(0, (Date.now() - (inFlight.startedAt ?? Date.now())) / 1000).toFixed(1)
-    const blurb = describeInflightArgs(inFlight.args)
-    // Phase 7 D-10 (Option A): if the action has pushed a progress tick,
-    // append `— <completed>/<total>[, y=<currentY>]`. Shape per Plans 07-02
-    // (build: placed/total) and 07-03 (digCuboid: dug/total).
-    const progressSuffix = (() => {
-      const p = inFlight.progress
-      if (!p) return ''
-      const completed = (typeof p.placed === 'number') ? p.placed
-                      : (typeof p.dug === 'number') ? p.dug
-                      : null
-      if (completed == null || typeof p.total !== 'number') return ''
-      const yPart = (typeof p.currentY === 'number') ? `, y=${p.currentY}` : ''
-      return ` — ${completed}/${p.total}${yPart}`
-    })()
-    lines.push(`in_flight: ${inFlight.name}${blurb ? ' ' + blurb : ''} (${elapsed}s)${progressSuffix}`)
-  }
+  // about new actions. 260513-wkd: rendered via getInFlightLineForSnapshot so
+  // brain + adapter share a single source-of-truth formatter. The helper
+  // preserves the Phase 7 D-10 em-dash + y=<currentY> channels byte-stable;
+  // only the elapsed trailer changes from `(Xs)` to `started=Xs ago`.
+  const inFlightLine = getInFlightLineForSnapshot(inFlight)
+  if (inFlightLine) lines.push(inFlightLine)
 
   // Inventory
   const invEntries = Object.entries(inv)

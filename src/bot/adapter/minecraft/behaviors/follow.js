@@ -29,6 +29,15 @@ function resolveTargetEntity() {
   return _bot.entities?.[_target.entityId] ?? null
 }
 
+/**
+ * Abort contract (260513-wkd): callers clear the target via
+ * `setFollowTarget(null)`; the 1 s tick is a no-op on the next entry (the tick
+ * already checks `_target` before doing any work). follow.js does NOT accept
+ * an AbortSignal — its tick is too coarse for signal-level abort to add value
+ * over the existing target-clear path. The orchestrator's mid-loop cancel
+ * semantics treat follow as terminal-on-call (no `in_flight` registration),
+ * so there is nothing for a signal to interrupt mid-action.
+ */
 export function startFollow(bot, config) {
   _bot = bot
   // Resolve the minecraft adapter slice — the caller passes the top-level
