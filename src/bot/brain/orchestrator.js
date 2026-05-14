@@ -339,7 +339,7 @@ export async function composeSeedBlocks({
  *   priority queue. Required when the brain runs in production; defaults
  *   to a no-op for test harnesses.
  */
-export function createOrchestrator({ adapter, config, logger = console, sessionState = null, ownerStore = null, diary = null, reenqueue = () => {} }) {
+export function createOrchestrator({ adapter, config, logger = console, sessionState = null, ownerStore = null, diary = null, reenqueue = () => {}, _anthropicOverride = null }) {
   if (!adapter) throw new Error('createOrchestrator: adapter required')
   // Locally re-bind into the same names the body uses; the registry surface
   // is exposed through the adapter rather than a separate parameter.
@@ -350,7 +350,11 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     execute: (name, args, _bot, execOpts) => adapter.executeAction(name, args, execOpts),
   }
   const goals = createGoalStore()
-  const anthropic = createAnthropicClient(config)
+  // 260513-wkd: _anthropicOverride is a verify-harness seam. The harness
+  // (scripts/verify-260513-wkd.mjs) needs to drive a scripted sequence of
+  // Haiku responses without hitting the real API. Production callers leave
+  // this null and createAnthropicClient runs as normal.
+  const anthropic = _anthropicOverride ?? createAnthropicClient(config)
   // Plan 03.1-04 (D-M-1): affectLog is the immediate-write side of the
   // noteToSelf tool. AFFECT.md is small by construction and loaded in full
   // into every Loop's seed user turn (composeSeedBlocks below).
@@ -530,24 +534,78 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     return `${eventText}\nprior_task: ${priorTask}\n(If the new request is a sub-task or quick favor, resume prior_task after handling it. If it replaces the goal, drop prior_task.)`
   }
 
+  // 260513-wkd: long-running tools — the orchestrator dispatches these in
+  // the background and resumes via `sei:action_complete`. Synchronous tools
+  // (setGoals, noteToSelf, stop, find, equip, lookAt, placeBlock, follow,
+  // unfollow, consumeItem, dropItem, activateItem, sleep, openContainer,
+  // depositItem, withdrawItem) execute inline in the same iteration.
+  const LONG_RUNNERS = new Set(['goTo', 'gather', 'dig', 'build', 'attackEntity'])
+  function isLongRunner(name, _args) {
+    return LONG_RUNNERS.has(name)
+  }
+
   // Run a registry action with inflight tracking so the snapshot reflects
   // what the bot is doing right now AND follow yields for its full lifecycle.
-  async function runWithInflight(name, args, execOpts) {
-    const handle = inflight.start({ name, args })
-    // Phase 7 D-10 (Option A): cuboid actions get a progress callback that
-    // updates the inflight handle so the next snapshot's `in_flight:` line
-    // shows progress. No new LLM iteration is scheduled mid-action; the
-    // existing FSM AbortController path remains the sole preempt surface.
-    const isCuboid = name === 'build' || (name === 'dig' && args && args.to)
-    const opts = isCuboid
+  //
+  // 260513-wkd: split into two surfaces:
+  //   - runWithInflightAwait: blocking wrapper used by synchronous-tool
+  //     branches in the iteration step (setGoals only path today — kept for
+  //     back-compat with any caller that wants the awaited form).
+  //   - startLongRunner: non-blocking dispatcher. Starts the action, returns
+  //     { promise, abortController, handle }. The caller attaches a settle
+  //     handler that re-enqueues `sei:action_complete`.
+  //
+  // The progress-flavored detection now includes `gather` (in addition to
+  // build + cuboid dig). Same onProgress channel as cuboid — no parallel
+  // pattern, no invented config field (CONTEXT.md "Signal threading scope").
+  function _buildExecOpts(name, args, execOpts, handle) {
+    const isProgressFlavored = name === 'build'
+      || name === 'gather'
+      || (name === 'dig' && args && args.to)
+    return isProgressFlavored
       ? { ...execOpts, onProgress: (p) => inflight.updateProgress(handle, p) }
       : execOpts
+  }
+
+  async function runWithInflightAwait(name, args, execOpts) {
+    const handle = inflight.start({ name, args })
+    const opts = _buildExecOpts(name, args, execOpts, handle)
     try {
       return await registry.execute(name, args, null /* adapter owns bot */, opts)
     } finally {
       inflight.end(handle)
     }
   }
+
+  /**
+   * 260513-wkd: kick off a long-running action in the background. Returns
+   * synchronously with the action's promise + its own AbortController + the
+   * inflight tracker handle. The caller wires `.then`/`.catch`/`.finally`
+   * onto the promise (e.g. to reenqueue sei:action_complete on settle).
+   *
+   * The returned `abortController` is INDEPENDENT of the loop's outer
+   * abortController. P0/P1 preempt aborts BOTH (loop's outer for the next
+   * Haiku call; in_flight's for the running behavior).
+   */
+  function startLongRunner(name, args, execOpts) {
+    const handle = inflight.start({ name, args })
+    const abortController = new AbortController()
+    const opts = _buildExecOpts(name, args, { ...execOpts, signal: abortController.signal }, handle)
+    const promise = (async () => {
+      try {
+        return await registry.execute(name, args, null /* adapter owns bot */, opts)
+      } finally {
+        inflight.end(handle)
+      }
+    })()
+    return { promise, abortController, handle, startedAt: handle.startedAt }
+  }
+
+  // Back-compat alias — the old name. Any callers outside this file that
+  // imported runWithInflight from the orchestrator's closure (none today)
+  // would have used the await form. Internal call-sites switch to
+  // runWithInflightAwait or startLongRunner explicitly.
+  const runWithInflight = runWithInflightAwait
 
   // Pitfall 4 cache invariant: scan a system blocks array for OWNER/DIARY
 // markdown headers. Throws if any text block contains them. Defense-in-depth
@@ -635,6 +693,30 @@ function maybeWarnByteCap(loop, warned) {
       return
     }
 
+    // 260513-wkd: sei:action_complete drives the next iteration when a
+    // long-runner settles. Routed at Priority.P2_ACTION_COMPLETE (2.1).
+    // Drops if no currentLoop (the loop already terminated before the
+    // action_complete arrived — e.g. case 2 stop dropped the loop before the
+    // aborted in_flight's settle handler fired). Drops if the loop is
+    // already terminal (same scenario; the late action_complete is
+    // informational only).
+    if (event === 'sei:action_complete') {
+      if (currentLoop === null) {
+        logger.debug?.(`[sei/orch] sei:action_complete arrived with no currentLoop — drop (name=${data?.name}, aborted=${data?.aborted})`)
+        return
+      }
+      if (currentLoop.isTerminal) {
+        logger.debug?.(`[sei/orch] sei:action_complete arrived with terminal loop — drop (loop=${currentLoop.id})`)
+        return
+      }
+      if (currentLoop._pendingActionUse && currentLoop._pendingActionUse.id === data?.tool_use_id) {
+        await handleActionComplete(currentLoop, data)
+      } else {
+        logger.debug?.(`[sei/orch] sei:action_complete tool_use_id mismatch — pending=${currentLoop._pendingActionUse?.id}, got=${data?.tool_use_id}`)
+      }
+      return
+    }
+
     // Single-flight branch: while a Loop is active, owner-chat preempts
     // (interrupt path) and sei:attacked aborts (re-fired by finally as a
     // fresh dispatch — 260505-twx). Anything else is dropped.
@@ -652,6 +734,18 @@ function maybeWarnByteCap(loop, warned) {
         const sig = `${who}:${chatText}:${Math.floor((data?.ts ?? Date.now()) / 500)}`
         if (shouldPreserveInterrupt(currentLoop, sig)) {
           pendingInterrupt = { chatText: String(chatText) }
+          // 260513-wkd: if a long-runner is in_flight, abort its dedicated
+          // AbortController so the running behavior halts within one
+          // signal tick (B7a). The outer loop.abortController is aborted
+          // too in case a callPersonality is somehow mid-flight; both
+          // signal sources are now active in the new model. The aborted
+          // in_flight will fire sei:action_complete carrying
+          // `aborted: true` which arrives at handleActionComplete; that
+          // path sees pendingInterrupt set and routes through the
+          // mid-loop continuation (PLAYER INTERRUPT turn).
+          if (currentLoop.inFlight) {
+            try { currentLoop.inFlight.abortController.abort() } catch {}
+          }
           try { currentLoop.abortController.abort() } catch {}
         } else {
           logger.debug?.(`[sei/orch] PLAYER INTERRUPT dedup — skipping duplicate (sig=${sig})`)
@@ -660,25 +754,37 @@ function maybeWarnByteCap(loop, warned) {
       }
       if (event === 'sei:attacked') {
         // P0 safety: drop the in-flight loop and re-fire the attack as a
-        // fresh dispatch once the current loop's finally has cleared
-        // currentLoop. We stash the dispatch here, abort the loop, and the
-        // finally block emits it back into the FSM pipeline.
+        // fresh dispatch via teardownLoop.
+        //
+        // 260513-wkd: in the new non-blocking model, currentLoop.abortController
+        // alone is no longer sufficient — the loop may be SUSPENDED with a
+        // live in_flight (no callPersonality awaiting). Abort BOTH the
+        // in_flight (so the long-runner halts) AND the outer signal (in
+        // case the loop is mid-callPersonality). Then synchronously call
+        // teardownLoop so the pendingAttack re-enqueue fires immediately.
+        // Without this, the loop would suspend forever waiting for an
+        // action_complete that arrives normally — but by then, the P0
+        // attack semantics are lost.
         //
         // Plan 03.1-10 (WR-04): if a pending owner-chat interrupt was set
         // before this attack arrived, FORWARD the chat text into the next
-        // loop. Without this, the catch arm sees pendingAttack first,
-        // returns early at runIterations, the interrupt is cleared in the
-        // finally block at line 776, and the owner's chat text is silently
-        // lost. We re-enqueue the chat AFTER the attack re-fire (the
-        // priority queue runs P0 before P1, so the attack opens a fresh
-        // loop first; the chat then arrives as a normal P1 dispatch and
-        // either interrupts the attack loop or runs after it).
+        // loop. The priority queue runs P0 before P1, so the attack opens a
+        // fresh loop first; the chat then arrives as a normal P1 dispatch.
         const preservedInterrupt = pendingInterrupt
           ? { chatText: pendingInterrupt.chatText, who: pendingInterrupt.who ?? data?.who ?? 'owner' }
           : null
         pendingAttack = { event, data, preservedInterrupt }
         pendingInterrupt = null  // explicit: attack-wins-with-preservation
-        try { currentLoop.abortController.abort() } catch {}
+        const dyingLoop = currentLoop
+        if (dyingLoop.inFlight) {
+          try { dyingLoop.inFlight.abortController.abort() } catch {}
+        }
+        try { dyingLoop.abortController.abort() } catch {}
+        // Flag terminal and tear down. teardownLoop fires the
+        // pendingAttack re-enqueue at P0 so a fresh loop opens with the
+        // attack seed addendum (verbal-first eventAddendum).
+        terminateLoop(dyingLoop, 'P0-attack-preempt')
+        await teardownLoop(dyingLoop)
         return
       }
       logger.warn(`[sei/orch] dispatch ${event} arrived while loop active — dropping`)
@@ -792,104 +898,235 @@ function maybeWarnByteCap(loop, warned) {
     // abortController so subsequent external aborts route correctly.
     bridgeExternalAbort(loop)
 
+    // 260513-wkd: stash the originating event + byteWarn on the loop so
+    // teardownLoop can use them even if it runs after handleDispatch returns
+    // (which is the new non-blocking dispatch contract — handleDispatch
+    // returns once the first iteration step dispatches a long-runner; the
+    // loop teardown runs later, in response to action_complete or a
+    // mid-loop preempt that terminates the loop).
+    loop._originatingEvent = event
+    loop._byteWarn = byteWarn
+
+    // Run the first iteration step. If it dispatches a long-runner,
+    // runIterations early-returns (loop.inFlight set); handleDispatch then
+    // returns immediately. If it terminates naturally (no tools, stop, etc.),
+    // teardownLoop fires synchronously through the .then handler.
     try {
       await runIterations(loop, byteWarn)
-      logger.info?.(`[sei/orch] loop terminal (id=${loop.id}, iterations=${loop.iterationCount})`)
-      // Plan 3-02: hand the terminal Loop to sessionState so it can update
-      // per-loop-batch counters. No disk writes from this hook — Plan 3-03
-      // will subscribe here to fire the per-loop-batch summary trigger
-      // immediately AFTER sessionState.onLoopTerminal updates the counters.
-      if (sessionState) {
-        try {
-          const messagesByteSize = JSON.stringify(loop._internal.messages).length
-          // Pass the originating event so sessionState can gate the diary
-          // write to idle-driven loops only — chat-driven and join-driven
-          // loops accumulate counters but defer the actual compaction call
-          // until the bot returns to idle.
-          await sessionState.onLoopTerminal({
-            messagesByteSize,
-            loopMessages: loop._internal.messages,
-            event,
-          })
-        } catch (err) {
-          logger.warn?.(`[sei/orch] sessionState.onLoopTerminal failed: ${err.message}`)
-        }
-      }
     } catch (err) {
-      logger.error?.(`[sei/orch] loop error (id=${loop.id}): ${err && err.message}`)
-    } finally {
-      // Plan 03.1-10 (WR-02): drop any live external-signal listener via
-      // the loop-stored handle (the closure-local `onExternalAbort` no
-      // longer exists). If the listener was already consumed by an abort
-      // this is a no-op. bridgeExternalAbort updates loop._externalAbortListener
-      // every time it installs a fresh listener.
-      if (loop._externalSignal && loop._externalAbortListener) {
-        try { loop._externalSignal.removeEventListener?.('abort', loop._externalAbortListener) } catch {}
-        loop._externalAbortListener = null
-      }
-      // Push completed-loop summary BEFORE clearing currentLoop so that any
-      // observers (none today, but defensive) see consistent state.
+      logger.error?.(`[sei/orch] runIterations rejected (loop=${loop.id}): ${err && err.message}`)
+      terminateLoop(loop, `error: ${err && err.message}`)
+    }
+    // Post-iteration disposition: if a long-runner is in_flight, leave the
+    // loop active and return — sei:action_complete will resume. Otherwise
+    // tear it down now.
+    if (loop._terminated) {
+      await teardownLoop(loop)
+    } else if (loop.inFlight) {
+      // Loop is suspended waiting for sei:action_complete. handleDispatch
+      // returns; the FSM is free to dispatch other events (P1/P0).
+      return
+    } else {
+      // Natural terminal (no tools, rate-limited, cap-close, etc.) without
+      // an in_flight. Tear down.
+      terminateLoop(loop, 'natural-after-step')
+      await teardownLoop(loop)
+    }
+  }
+
+  /**
+   * 260513-wkd: tear down a terminal loop. Idempotent — repeat calls are
+   * no-ops (guarded by loop._tornDown). Runs the loop-history push,
+   * sei:loop_terminal re-enqueue, currentLoop=null reset, and pendingAttack
+   * re-dispatch. Used by the fresh-loop natural-completion path AND by the
+   * action_complete continuation path when its iteration step terminates
+   * the loop (case 2 stop, case 3 reseed, text-only after action_complete).
+   */
+  async function teardownLoop(loop) {
+    if (!loop || loop._tornDown) return
+    loop._tornDown = true
+    const event = loop._originatingEvent ?? 'unknown'
+    logger.info?.(`[sei/orch] loop terminal (id=${loop.id}, iterations=${loop.iterationCount})`)
+    if (sessionState) {
       try {
-        convoMemory.loopHistory.push({
-          loopId: loop.id,
-          startedAt: loop.startedAt,
-          endedAt: Date.now(),
-          event,
+        const messagesByteSize = JSON.stringify(loop._internal.messages).length
+        await sessionState.onLoopTerminal({
+          messagesByteSize,
           loopMessages: loop._internal.messages,
+          event,
         })
       } catch (err) {
-        logger.warn?.(`[sei/orch] convoMemory.loopHistory.push failed: ${err.message}`)
+        logger.warn?.(`[sei/orch] sessionState.onLoopTerminal failed: ${err.message}`)
       }
-      // 260505-iqo: re-enqueue sei:loop_terminal so the brain's priority
-      // queue can reset its idle timer and (unless we were already in a
-      // sei:loop_end loop) enqueue a sei:loop_end tick at P2.5. The
-      // re-enqueue runs through the normal queue → processNext → handler
-      // path AFTER currentLoop = null below, so the single-flight gate
-      // accepts it cleanly. brain.start() handles the loop_terminal →
-      // loop_end translation outside the orchestrator.
-      try {
-        reenqueue('sei:loop_terminal', { loopId: loop.id, originatingEvent: event })
-      } catch (err) {
-        logger.warn?.(`[sei/orch] sei:loop_terminal re-enqueue failed: ${err.message}`)
+    }
+    // Drop the live external-signal listener if still attached.
+    if (loop._externalSignal && loop._externalAbortListener) {
+      try { loop._externalSignal.removeEventListener?.('abort', loop._externalAbortListener) } catch {}
+      loop._externalAbortListener = null
+    }
+    // Push completed-loop summary BEFORE clearing currentLoop.
+    try {
+      convoMemory.loopHistory.push({
+        loopId: loop.id,
+        startedAt: loop.startedAt,
+        endedAt: Date.now(),
+        event,
+        loopMessages: loop._internal.messages,
+      })
+    } catch (err) {
+      logger.warn?.(`[sei/orch] convoMemory.loopHistory.push failed: ${err.message}`)
+    }
+    try {
+      reenqueue('sei:loop_terminal', { loopId: loop.id, originatingEvent: event })
+    } catch (err) {
+      logger.warn?.(`[sei/orch] sei:loop_terminal re-enqueue failed: ${err.message}`)
+    }
+    currentLoop = null
+    pendingInterrupt = null
+    // 260505-twx: re-fire pendingAttack so the brain's priority queue
+    // re-enqueues at P0 → fresh handleDispatch arrives with currentLoop === null
+    // and opens a new loop with the attack seed addendum.
+    if (pendingAttack) {
+      const pa = pendingAttack
+      pendingAttack = null
+      try { reenqueue('sei:attacked', pa.data, 0 /* Priority.P0_SAFETY */) } catch (err) {
+        logger.warn?.(`[sei/orch] sei:attacked re-enqueue failed: ${err.message}`)
       }
-      currentLoop = null
+      if (pa.preservedInterrupt) {
+        try {
+          reenqueue('sei:chat_received', {
+            username: pa.preservedInterrupt.who,
+            text: pa.preservedInterrupt.chatText,
+            message: pa.preservedInterrupt.chatText,
+            ownerSpoke: true,
+          }, 1 /* Priority.P1_CHAT */)
+          logger.info?.(`[sei/orch] WR-04 preserved interrupt re-enqueued: ${pa.preservedInterrupt.chatText.slice(0, 64)}`)
+        } catch (err) {
+          logger.warn?.(`[sei/orch] WR-04 preserved interrupt re-enqueue failed: ${err.message}`)
+        }
+      }
+    }
+    try { await adapter.closeAnySessions() } catch {}
+  }
+
+  /**
+   * 260513-wkd: flag the loop as terminal. Idempotent — repeat calls are
+   * no-ops. The actual teardown (currentLoop=null, sessionState.onLoopTerminal,
+   * sei:loop_terminal re-enqueue, pendingAttack re-fire) is done by
+   * teardownLoop, called from handleDispatch after runIterations returns
+   * naturally OR from handleActionComplete after its continuation iteration
+   * terminates.
+   */
+  function terminateLoop(loop, reason) {
+    if (!loop || loop._terminated) return
+    loop._terminated = true
+    loop.isTerminal = true
+    logger.debug?.(`[sei/orch] terminateLoop loop=${loop.id} reason=${reason}`)
+  }
+
+  /**
+   * 260513-wkd: action_complete dispatch. Appends the long-runner's
+   * tool_result into the pending results array, finalizes it via
+   * loop.appendToolResults, then calls Haiku one more time and dispatches
+   * the response per cancel-semantics:
+   *   - case 1 — text only, no tools: loop stays alive (next event drives)
+   *   - case 2 — `stop`: terminate loop (in_flight already null at this point)
+   *   - case 3 — new long-running tool: gate on _triggerEvent
+   *     - P0/P1 trigger: terminate loop AND re-enqueue the original
+   *       triggering event so a fresh loop seeds with verbal-first eventAddendum
+   *     - non-P0/P1: dispatch as new in_flight in SAME loop (old already
+   *       settled by the time we get here)
+   *   - synchronous tools only: process inline, append results + snapshot,
+   *     and continue iterating (recursive call into runIterations).
+   */
+  async function handleActionComplete(loop, data) {
+    const pendingResults = loop._pendingResults
+    const pendingUse = loop._pendingActionUse
+    const byteWarn = loop._pendingByteWarn ?? loop._byteWarn ?? { flag: false }
+    if (!pendingResults || !pendingUse) {
+      logger.warn?.(`[sei/orch] action_complete: no pending results/use on loop ${loop.id}`)
+      return
+    }
+    // Find the slot for this tool_use_id.
+    const slotIdx = pendingResults.findIndex(r => !r)
+    // We expect the pending action's slot to be the unfilled one (it was
+    // returned from the for-loop with `return` before the slot was filled).
+    if (slotIdx < 0) {
+      logger.warn?.(`[sei/orch] action_complete: no unfilled slot in pendingResults`)
+      return
+    }
+    pendingResults[slotIdx] = {
+      type: 'tool_result',
+      tool_use_id: pendingUse.id,
+      content: data.result ?? 'done',
+      is_error: false,
+    }
+    lastActionResult = data.result ?? null
+    loop._pendingResults = null
+    loop._pendingActionUse = null
+
+    // 260513-wkd: P1 mid-loop preempt path (B7a). If pendingInterrupt is set
+    // when action_complete arrives with `aborted: true`, the long-runner
+    // was interrupted by an owner-chat event — fold the PLAYER INTERRUPT
+    // user turn into the appendToolResults eventText so the same loop
+    // continues with the interrupt context. Mirror repairAfterAbort's
+    // event-text format.
+    let extraEventText = null
+    if (pendingInterrupt && data.aborted) {
+      extraEventText = withPriorTaskHint(
+        loop,
+        `PLAYER INTERRUPT: ${pendingInterrupt.chatText}`,
+      )
       pendingInterrupt = null
-      // 260505-twx: if a sei:attacked arrived mid-loop and aborted us,
-      // re-fire it now (after currentLoop = null) so the brain's priority
-      // queue re-enqueues at P0 → processNext → fresh handleDispatch
-      // arrives with currentLoop === null and opens a new loop with the
-      // attack seed addendum. Order matters: sei:loop_terminal already
-      // fired above; that enqueues sei:loop_end at P2.5 which is below the
-      // P0 sei:attacked we are about to fire, so the attack wins the
-      // queue race.
-      if (pendingAttack) {
-        const pa = pendingAttack
-        pendingAttack = null
-        try { reenqueue('sei:attacked', pa.data, 0 /* Priority.P0_SAFETY */) } catch (err) {
-          logger.warn?.(`[sei/orch] sei:attacked re-enqueue failed: ${err.message}`)
-        }
-        // Plan 03.1-10 (WR-04): if a pending owner-chat interrupt was
-        // preempted by this attack, re-enqueue the chat AFTER the attack.
-        // The priority queue runs P0 before P1, so the attack opens its
-        // loop first; the chat then arrives as a normal P1 dispatch and
-        // either preempts the attack loop (if still running) or runs as
-        // a fresh dispatch when the attack loop ends. Without this the
-        // owner's text is silently dropped.
-        if (pa.preservedInterrupt) {
-          try {
-            reenqueue('sei:chat_received', {
-              username: pa.preservedInterrupt.who,
-              text: pa.preservedInterrupt.chatText,
-              message: pa.preservedInterrupt.chatText,
-              ownerSpoke: true,
-            }, 1 /* Priority.P1_CHAT */)
-            logger.info?.(`[sei/orch] WR-04 preserved interrupt re-enqueued: ${pa.preservedInterrupt.chatText.slice(0, 64)}`)
-          } catch (err) {
-            logger.warn?.(`[sei/orch] WR-04 preserved interrupt re-enqueue failed: ${err.message}`)
-          }
-        }
+      logger.info?.(`[sei/orch] action_complete + PLAYER INTERRUPT folded into loop=${loop.id}`)
+    }
+
+    // Append the now-complete results array + a fresh snapshot turn. This
+    // mirrors the natural end-of-iteration path in runIterations (sans the
+    // silence/cant_reach nudges, which are applied per-iteration; the
+    // action_complete path is a continuation of the same iteration that
+    // dispatched the long-runner, so nudges fire on the NEXT iteration's
+    // own cadence check).
+    try {
+      loop.appendToolResults(pendingResults, {
+        snapshot: snapshotText(),
+        ...(extraEventText ? { eventText: extraEventText } : {}),
+      })
+    } catch (err) {
+      logger.warn?.(`[sei/orch] appendToolResults failed in action_complete: ${err.message}`)
+      terminateLoop(loop, 'append-fail')
+      return
+    }
+    maybeWarnByteCap(loop, byteWarn)
+    // Flag continuation so the cancel-semantics dispatcher in runIterations
+    // applies the case-3 gate on the next iteration's tool_uses.
+    loop._isContinuation = true
+    // Reset the outer abortController since it was aborted by the P1 path.
+    // Without this the next callPersonality immediately throws AbortError.
+    if (loop.abortController.signal.aborted) {
+      replaceAbortController(loop)
+    }
+
+    // Drive ONE more iteration. The next callPersonality response is the
+    // cancel-semantics decision point (case 1/2/3).
+    try {
+      await runIterations(loop, byteWarn)
+      // Same post-condition handling as the initial fresh-loop call site.
+      if (loop._terminated) {
+        // Already terminal (case 2 stop, case 3 reseed) — tear down now.
+      } else if (loop.inFlight) {
+        // Loop is suspended waiting for the next action_complete.
+        return
+      } else {
+        // Natural terminal (text-only response, no tools).
+        terminateLoop(loop, 'natural-after-action-complete')
       }
-      try { await adapter.closeAnySessions() } catch {}
+    } catch (err) {
+      logger.error?.(`[sei/orch] action_complete continuation failed: ${err && err.message}`)
+      terminateLoop(loop, `error: ${err && err.message}`)
+    }
+    if (loop._terminated) {
+      await teardownLoop(loop)
     }
   }
 
@@ -976,6 +1213,97 @@ function maybeWarnByteCap(loop, warned) {
       if (toolUses.length === 0) {
         // Terminal turn — model chose to stop (with or without text). Done.
         return
+      }
+
+      // 260513-wkd: cancel-semantics dispatch table — runs BEFORE the
+      // per-tool processing loop so the three intents (case 1 / 2 / 3) are
+      // visible at one site.
+      //
+      //   Case 1 (text only, no tool_use)  → falls through (toolUses empty
+      //                                       branch above); handled there.
+      //   Case 2 (stop tool present)       → abort any live in_flight here,
+      //                                       then let the per-tool loop
+      //                                       process stop's result slot and
+      //                                       return terminal (PERSONALITY_NAMES
+      //                                       drops it from movementCalls).
+      //   Case 3 (new long-runner present) → if trigger was P0/P1, terminate
+      //                                       current loop AND re-enqueue
+      //                                       the original triggering event
+      //                                       so a fresh loop seeds with
+      //                                       verbal-first eventAddendum.
+      //                                       Otherwise (idle / loop_end /
+      //                                       action_complete trigger),
+      //                                       continue in SAME loop — old
+      //                                       in_flight (if any) aborts, the
+      //                                       new long-runner becomes the
+      //                                       in_flight of the same loop.
+      const hasStop = toolUses.some(u => u.name === 'stop')
+      const newLongRunners = toolUses.filter(u => isLongRunner(u.name, u.input))
+      // _isContinuation marks iterations that came from a continuation path
+      // (action_complete or P1 preempt), not the FIRST iteration of a fresh
+      // loop. Case 3 reseed gate only fires on continuation iterations —
+      // otherwise the very first iteration of a P1-triggered fresh loop
+      // would falsely reseed itself.
+      const isContinuation = !!loop._isContinuation
+      const triggerIsP0P1 = (() => {
+        const e = loop._triggerEvent
+        return e === 'owner_chat' || e === 'sei:chat_received' || e === 'sei:attacked' || e === 'sei:joined'
+      })()
+
+      if (hasStop) {
+        // Case 2 — abort the in_flight (if any) so the long-running behavior
+        // halts within one signal tick. handleActionComplete will see the
+        // aborted result; loop.isTerminal prevents another iteration there.
+        if (loop.inFlight) {
+          logger.debug?.(`[sei/orch] cancel-case=2 stop tool — aborting in_flight ${loop.inFlight.name}`)
+          try { loop.inFlight.abortController.abort() } catch {}
+        } else {
+          logger.debug?.(`[sei/orch] cancel-case=2 stop tool — no in_flight to abort`)
+        }
+        loop.isTerminal = true
+      } else if (isContinuation && newLongRunners.length > 0) {
+        // Case 3 gate — only fires on continuation iterations.
+        logger.debug?.(`[sei/orch] case3-gate trigger=${loop._triggerEvent} ${triggerIsP0P1 ? 'fire' : 'suppress'}`)
+        if (triggerIsP0P1) {
+          // Case 3 fire branch (W-2): terminate current loop and re-enqueue
+          // the ORIGINAL triggering event so the next fresh loop seeds with
+          // the verbal-first eventAddendum / owner-chat context. The
+          // model's mid-loop response is already appended to history; it
+          // surfaces in the next loop via recent_loop_history.
+          logger.debug?.(`[sei/orch] cancel-case=3 fire trigger=${loop._triggerEvent} new=${newLongRunners.map(u => u.name).join(',')}`)
+          if (loop.inFlight) {
+            try { loop.inFlight.abortController.abort() } catch {}
+          }
+          loop.isTerminal = true
+          // Re-enqueue the original triggering event. The brain's priority
+          // queue routes it back through handleDispatch as a fresh dispatch
+          // (currentLoop will be null by then since terminateLoop fires
+          // the outer completion resolver).
+          try {
+            reenqueue(loop._triggerEvent, loop._triggerData ?? null)
+          } catch (err) {
+            logger.warn?.(`[sei/orch] case-3 reseed re-enqueue failed: ${err.message}`)
+          }
+          // Fall through so per-tool loop fills out results array; we still
+          // need to append tool_results to keep the assistant turn paired.
+          // Synthesize aborted placeholders for the long-runners since we
+          // won't dispatch them.
+        } else {
+          // Case 3 suppress branch — same loop continues; old in_flight
+          // aborts, new long-runner becomes the next in_flight of the same
+          // loop. Fall through to per-tool loop which dispatches the new
+          // long-runner via the long-runner branch.
+          logger.debug?.(`[sei/orch] cancel-case=3 suppress trigger=${loop._triggerEvent} new=${newLongRunners.map(u => u.name).join(',')}`)
+          if (loop.inFlight) {
+            try { loop.inFlight.abortController.abort() } catch {}
+          }
+        }
+      } else if (newLongRunners.length > 0) {
+        // First-iteration long-runner — straightforward dispatch (no
+        // continuation context, no cancel gating). Falls through.
+        logger.debug?.(`[sei/orch] cancel-case=0 first-iter long-runner=${newLongRunners.map(u => u.name).join(',')}`)
+      } else {
+        logger.debug?.(`[sei/orch] cancel-case=1 text+sync trigger=${loop._triggerEvent} cont=${isContinuation}`)
       }
 
       // Process tool_uses. Single-layer: every movement tool fires from the
@@ -1093,10 +1421,105 @@ function maybeWarnByteCap(loop, warned) {
               logger.warn(`[sei/orch] noteToSelf failed: ${err.message}`)
               results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err?.message ?? 'note failed'}`, is_error: true }
             }
+          } else if (isLongRunner(u.name, u.input)) {
+            // 260513-wkd: if case-3-fire flagged the loop terminal during
+            // pre-dispatch, synthesize an aborted result instead of
+            // launching the long-runner. The model's mid-loop response is
+            // already appended to history; a fresh loop will seed shortly.
+            if (loop.isTerminal) {
+              results[i] = {
+                type: 'tool_result',
+                tool_use_id: u.id,
+                content: `aborted: ${u.name} (case-3 reseed)`,
+                is_error: false,
+              }
+              continue
+            }
+            // NON-BLOCKING dispatch. Start the long-runner with
+            // its own AbortController, stash the in_flight handle on the
+            // loop, attach a settle handler that reenqueues
+            // `sei:action_complete`. The tool_result for this tool_use is
+            // appended when the action_complete event arrives — at that
+            // point handleActionComplete finalizes the results array.
+            //
+            // We DO NOT await the action here. Any preceding synchronous
+            // tool_uses in this same batch (setGoals / noteToSelf / stop /
+            // sync registry actions) have already filled their results
+            // slot above; the long-runner's slot stays unfilled and the
+            // entire results array is stashed on loop._pendingResults until
+            // action_complete arrives.
+            //
+            // The cancel-semantics dispatcher (case 2/3 in handleActionComplete)
+            // calls inFlight.abortController.abort() when the model emits
+            // `stop` or a new long-runner. Owner-chat (P1) preempt aborts it
+            // via the P1 branch in handleDispatch.
+            const runner = startLongRunner(u.name, u.input, {
+              ...config,
+              _goalStore: goals,
+            })
+            const inflightEntry = {
+              name: u.name,
+              input: u.input,
+              promise: runner.promise,
+              abortController: runner.abortController,
+              handle: runner.handle,
+              startedAt: runner.startedAt,
+              tool_use_id: u.id,
+            }
+            loop.inFlight = inflightEntry
+            loop._pendingActionUse = { id: u.id, name: u.name, input: u.input }
+            loop._pendingResults = results
+            loop._pendingByteWarn = byteWarn
+            // Settle handler — reenqueue sei:action_complete carrying the
+            // result (or the aborted partial-progress string). Fire-and-forget;
+            // FSM-side re-enqueue routes it back through handleDispatch at
+            // Priority.P2_ACTION_COMPLETE.
+            runner.promise
+              .then(r => {
+                const aborted = runner.abortController.signal.aborted
+                const result = formatToolResult(u.name, r)
+                try { logActionResult(u.name, r) } catch {}
+                if (loop.inFlight === inflightEntry) loop.inFlight = null
+                try {
+                  reenqueue('sei:action_complete', {
+                    name: u.name,
+                    input: u.input,
+                    result,
+                    aborted,
+                    tool_use_id: u.id,
+                  })
+                } catch (err) {
+                  logger.warn?.(`[sei/orch] sei:action_complete re-enqueue failed: ${err.message}`)
+                }
+              })
+              .catch(err => {
+                const aborted = runner.abortController.signal.aborted ||
+                                (err && (err.name === 'AbortError'))
+                const result = aborted ? `aborted: ${u.name}` : `error: ${err?.message ?? 'unknown'}`
+                try { logActionResult(u.name, `error: ${err?.message ?? 'unknown'}`) } catch {}
+                if (loop.inFlight === inflightEntry) loop.inFlight = null
+                try {
+                  reenqueue('sei:action_complete', {
+                    name: u.name,
+                    input: u.input,
+                    result,
+                    aborted,
+                    tool_use_id: u.id,
+                  })
+                } catch (err) {
+                  logger.warn?.(`[sei/orch] sei:action_complete re-enqueue failed: ${err.message}`)
+                }
+              })
+            // Return early — runIterations will be re-entered via the
+            // action_complete branch in handleDispatch.
+            return
           } else {
             // Combined-path movement action: execute via registry directly.
+            // Synchronous tools (find, equip, lookAt, placeBlock, etc.) —
+            // not in the long-runner set, so they finish before the
+            // iteration step ends.
             try {
-              const r = await runWithInflight(u.name, u.input, {
+              const r = await runWithInflightAwait(u.name, u.input, {
                 ...config,
                 _goalStore: goals,
                 signal,
@@ -1206,6 +1629,12 @@ function maybeWarnByteCap(loop, warned) {
       })
       maybeWarnByteCap(loop, byteWarn)
 
+      // 260513-wkd: case 2 (stop) and case 3 (new long-runner reseed) set
+      // loop.isTerminal. The legacy `continueLoop = movementCalls.length > 0`
+      // would otherwise treat a case-3-fire response (which contains a
+      // long-runner tool_use) as "keep iterating" — so we honor isTerminal
+      // first.
+      if (loop.isTerminal) return
       if (!continueLoop) return
     }
   }
