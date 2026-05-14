@@ -534,28 +534,30 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     return `${eventText}\nprior_task: ${priorTask}\n(If the new request is a sub-task or quick favor, resume prior_task after handling it. If it replaces the goal, drop prior_task.)`
   }
 
-  // 260513-wkd: long-running tools — the orchestrator dispatches these in
-  // the background and resumes via `sei:action_complete`. Synchronous tools
-  // (setGoals, noteToSelf, stop, find, equip, lookAt, placeBlock, follow,
-  // unfollow, consumeItem, dropItem, activateItem, sleep, openContainer,
-  // depositItem, withdrawItem) execute inline in the same iteration.
-  const LONG_RUNNERS = new Set(['goTo', 'gather', 'dig', 'build', 'attackEntity'])
-  function isLongRunner(name, _args) {
-    return LONG_RUNNERS.has(name)
+  // 260514-gam D1 (B/A/A locked): every world-touching tool dispatches
+  // non-blocking via startLongRunner so the loop suspends and is preemptible
+  // by P1 owner-chat / P0 attack within one signal tick. Only pure-metadata
+  // tools (setGoals / noteToSelf / stop) stay inline — they complete in
+  // microseconds and gain nothing from suspend/resume, and routing them
+  // through action_complete would inflate iteration count and add a haiku
+  // continuation per call for no benefit.
+  //
+  // Dispatch model after 260514-gam:
+  //   - INLINE_METADATA tool → fill result inline via inflight.start/end,
+  //     keep processing the same batch.
+  //   - Anything else → startLongRunner, stash remaining tool_uses on
+  //     loop._pendingToolUses, suspend. handleActionComplete drains the
+  //     queue one tool at a time. ONE haiku call fires per logical turn,
+  //     not per tool.
+  //   - case-2 (stop) and case-3 (reseed) abort loop.inFlight.abortController;
+  //     since every non-inline tool now goes through startLongRunner, those
+  //     branches transparently apply to sync tools too.
+  const INLINE_METADATA = new Set(['setGoals', 'noteToSelf', 'stop'])
+  function isInlineMetadata(name) {
+    return INLINE_METADATA.has(name)
   }
 
-  // Run a registry action with inflight tracking so the snapshot reflects
-  // what the bot is doing right now AND follow yields for its full lifecycle.
-  //
-  // 260513-wkd: split into two surfaces:
-  //   - runWithInflightAwait: blocking wrapper used by synchronous-tool
-  //     branches in the iteration step (setGoals only path today — kept for
-  //     back-compat with any caller that wants the awaited form).
-  //   - startLongRunner: non-blocking dispatcher. Starts the action, returns
-  //     { promise, abortController, handle }. The caller attaches a settle
-  //     handler that re-enqueues `sei:action_complete`.
-  //
-  // The progress-flavored detection now includes `gather` (in addition to
+  // The progress-flavored detection includes `gather` (in addition to
   // build + cuboid dig). Same onProgress channel as cuboid — no parallel
   // pattern, no invented config field (CONTEXT.md "Signal threading scope").
   function _buildExecOpts(name, args, execOpts, handle) {
@@ -567,21 +569,19 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       : execOpts
   }
 
-  async function runWithInflightAwait(name, args, execOpts) {
-    const handle = inflight.start({ name, args })
-    const opts = _buildExecOpts(name, args, execOpts, handle)
-    try {
-      return await registry.execute(name, args, null /* adapter owns bot */, opts)
-    } finally {
-      inflight.end(handle)
-    }
-  }
-
   /**
-   * 260513-wkd: kick off a long-running action in the background. Returns
-   * synchronously with the action's promise + its own AbortController + the
-   * inflight tracker handle. The caller wires `.then`/`.catch`/`.finally`
-   * onto the promise (e.g. to reenqueue sei:action_complete on settle).
+   * 260513-wkd / 260514-gam: kick off a non-blocking tool dispatch in the
+   * background. Returns synchronously with the action's promise + its own
+   * AbortController + the inflight tracker handle. The caller wires
+   * `.then`/`.catch`/`.finally` onto the promise (e.g. to reenqueue
+   * sei:action_complete on settle).
+   *
+   * Since 260514-gam, this is the universal dispatch path for every
+   * world-touching tool — sync (placeBlock, equip, find, lookAt, dropItem,
+   * activateItem, sleep, openContainer, depositItem, withdrawItem,
+   * consumeItem, follow, unfollow) and async (goTo, gather, dig, build,
+   * attackEntity) alike. Only INLINE_METADATA (setGoals/noteToSelf/stop)
+   * skip this path.
    *
    * The returned `abortController` is INDEPENDENT of the loop's outer
    * abortController. P0/P1 preempt aborts BOTH (loop's outer for the next
@@ -600,12 +600,6 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     })()
     return { promise, abortController, handle, startedAt: handle.startedAt }
   }
-
-  // Back-compat alias — the old name. Any callers outside this file that
-  // imported runWithInflight from the orchestrator's closure (none today)
-  // would have used the await form. Internal call-sites switch to
-  // runWithInflightAwait or startLongRunner explicitly.
-  const runWithInflight = runWithInflightAwait
 
   // Pitfall 4 cache invariant: scan a system blocks array for OWNER/DIARY
 // markdown headers. Throws if any text block contains them. Defense-in-depth
@@ -1025,6 +1019,146 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   /**
+   * 260514-gam: execute an INLINE_METADATA tool (setGoals / noteToSelf /
+   * stop) synchronously and produce its tool_result block. Pure-metadata —
+   * no inflight registration, no action_complete reenqueue, no haiku
+   * continuation. Returns `{ result, terminate }` where `terminate=true`
+   * signals the caller that the loop should flag terminal (used by `stop`).
+   *
+   * Mirrors the inline arms previously inlined in the per-tool for-loop
+   * (orchestrator.js setGoals / stop / noteToSelf branches). Both the for-loop
+   * and the handleActionComplete batched-queue drain share this helper —
+   * single source of truth.
+   */
+  async function executeInlineMetadata(loop, use) {
+    if (use.name === 'setGoals') {
+      try {
+        const r = await registry.execute('setGoals', use.input, null /* adapter owns bot */, { ...config, _goalStore: goals })
+        const s = typeof r === 'string' ? r : (r && typeof r.ok !== 'undefined' ? `setGoals:${r.ok ? 'ok' : 'fail'}` : 'setGoals:done')
+        lastActionResult = s
+        return { result: { type: 'tool_result', tool_use_id: use.id, content: s, is_error: false }, terminate: false }
+      } catch (err) {
+        lastActionResult = 'setGoals error'
+        logger.warn(`[sei/orch] setGoals failed: ${err.message}`)
+        return { result: { type: 'tool_result', tool_use_id: use.id, content: `error: ${err.message}`, is_error: true }, terminate: false }
+      }
+    }
+    if (use.name === 'stop') {
+      lastActionResult = 'stopped'
+      return { result: { type: 'tool_result', tool_use_id: use.id, content: 'stopped', is_error: false }, terminate: true }
+    }
+    if (use.name === 'noteToSelf') {
+      try {
+        const kind = use.input?.kind
+        const summary = use.input?.summary
+        await affectLog.append({ kind, summary, when: new Date() })
+        if (kind === 'name') {
+          const raw = String(use.input?.name ?? '').trim()
+          if (raw.length >= 2 && /^[\p{L}][\p{L}\p{M}\p{N}'\-\s]*$/u.test(raw)) {
+            await setPreferredName(config.memory.owner_md_path, raw)
+          } else {
+            logger.debug?.(`[sei/orch] noteToSelf kind=name skipped OWNER.md write — name field missing or invalid`)
+          }
+        } else if (kind === 'preference') {
+          await appendNote(config.memory.owner_md_path, summary)
+        }
+        loop._affectMarked = true
+        lastActionResult = 'noted'
+        return { result: { type: 'tool_result', tool_use_id: use.id, content: 'noted', is_error: false }, terminate: false }
+      } catch (err) {
+        lastActionResult = 'noteToSelf error'
+        logger.warn(`[sei/orch] noteToSelf failed: ${err.message}`)
+        return { result: { type: 'tool_result', tool_use_id: use.id, content: `error: ${err?.message ?? 'note failed'}`, is_error: true }, terminate: false }
+      }
+    }
+    throw new Error(`[sei/orch] executeInlineMetadata: not an inline metadata tool: ${use.name}`)
+  }
+
+  /**
+   * 260514-gam: attach the `.then`/`.catch` settle handler to a startLongRunner
+   * promise. Fires sei:action_complete at P2.1 carrying { name, input, result,
+   * aborted, tool_use_id }. Single source of truth — both the for-loop FIRST
+   * dispatch and the handleActionComplete queue-drain re-dispatch call this.
+   *
+   * `inflightEntry` is the same object stashed on loop.inFlight; we null it
+   * here on settle iff it's still the live entry (guards against a stale
+   * settle racing with a fresh in_flight from queue-drain).
+   */
+  function attachSettleHandler(loop, runner, use, inflightEntry) {
+    runner.promise
+      .then(r => {
+        const aborted = runner.abortController.signal.aborted
+        const result = formatToolResult(use.name, r)
+        try { logActionResult(use.name, r) } catch {}
+        if (loop.inFlight === inflightEntry) loop.inFlight = null
+        try {
+          reenqueue('sei:action_complete', {
+            name: use.name,
+            input: use.input,
+            result,
+            aborted,
+            tool_use_id: use.id,
+          })
+        } catch (err) {
+          logger.warn?.(`[sei/orch] sei:action_complete re-enqueue failed: ${err.message}`)
+        }
+      })
+      .catch(err => {
+        const aborted = runner.abortController.signal.aborted ||
+                        (err && (err.name === 'AbortError'))
+        const result = aborted ? `aborted: ${use.name}` : `error: ${err?.message ?? 'unknown'}`
+        try { logActionResult(use.name, `error: ${err?.message ?? 'unknown'}`) } catch {}
+        if (loop.inFlight === inflightEntry) loop.inFlight = null
+        try {
+          reenqueue('sei:action_complete', {
+            name: use.name,
+            input: use.input,
+            result,
+            aborted,
+            tool_use_id: use.id,
+          })
+        } catch (err) {
+          logger.warn?.(`[sei/orch] sei:action_complete re-enqueue failed: ${err.message}`)
+        }
+      })
+  }
+
+  /**
+   * 260514-gam: dispatch a single non-inline tool_use via startLongRunner,
+   * register it on the loop as in_flight, stash _pendingActionUse /
+   * _pendingResults / _pendingByteWarn / _pendingToolUses (the remaining
+   * batched queue), and attach the settle handler. The loop suspends; the
+   * next sei:action_complete drives handleActionComplete which drains the
+   * queue one entry at a time.
+   *
+   * Single source of truth for the dispatch payload — called from both the
+   * per-tool for-loop on FIRST non-inline dispatch and from
+   * handleActionComplete when the queue still has a non-inline entry.
+   */
+  function dispatchSuspendingTool(loop, use, results, byteWarn, remainingQueue) {
+    const runner = startLongRunner(use.name, use.input, {
+      ...config,
+      _goalStore: goals,
+    })
+    const inflightEntry = {
+      name: use.name,
+      input: use.input,
+      promise: runner.promise,
+      abortController: runner.abortController,
+      handle: runner.handle,
+      startedAt: runner.startedAt,
+      tool_use_id: use.id,
+    }
+    loop.inFlight = inflightEntry
+    loop._pendingActionUse = { id: use.id, name: use.name, input: use.input }
+    loop._pendingResults = results
+    loop._pendingByteWarn = byteWarn
+    loop._pendingToolUses = remainingQueue && remainingQueue.length > 0 ? remainingQueue : null
+    logger.debug?.(`[sei/orch] dispatch suspend tool=${use.name} batch_remaining=${remainingQueue ? remainingQueue.length : 0}`)
+    attachSettleHandler(loop, runner, use, inflightEntry)
+  }
+
+  /**
    * 260513-wkd: action_complete dispatch. Appends the long-runner's
    * tool_result into the pending results array, finalizes it via
    * loop.appendToolResults, then calls Haiku one more time and dispatches
@@ -1079,6 +1213,84 @@ function maybeWarnByteCap(loop, warned) {
       )
       pendingInterrupt = null
       logger.info?.(`[sei/orch] action_complete + PLAYER INTERRUPT folded into loop=${loop.id}`)
+    }
+
+    // 260514-gam D3: drain the batched queue. The model emitted N tool_uses
+    // in a single assistant turn; the for-loop dispatched the FIRST non-inline
+    // tool and stashed the remaining tool_uses on loop._pendingToolUses. On
+    // each sei:action_complete, fill the just-completed slot (above) and then
+    // walk the queue:
+    //   - inline-metadata entries fill their slot inline and we continue,
+    //   - the FIRST non-inline entry dispatches via dispatchSuspendingTool
+    //     and returns — the loop stays suspended waiting for the next
+    //     action_complete (NO callPersonality yet).
+    // Only when the queue is empty (or empty after draining the rest of an
+    // inline-only tail) do we fall through to appendToolResults + one haiku
+    // call. This is the "one haiku per logical turn, not per tool" invariant.
+    //
+    // PLAYER INTERRUPT abandon path: if pendingInterrupt was just folded
+    // (extraEventText set), the remaining queue entries are abandoned —
+    // synthesize aborted placeholders so pairing holds, then fall through
+    // to appendToolResults so the PLAYER INTERRUPT turn renders ONCE.
+    const queue = loop._pendingToolUses
+    loop._pendingToolUses = null
+    if (queue && queue.length > 0) {
+      if (extraEventText) {
+        for (const entry of queue) {
+          pendingResults[entry.index] = {
+            type: 'tool_result',
+            tool_use_id: entry.use.id,
+            content: 'aborted: player interrupt',
+            is_error: false,
+          }
+        }
+        // Fall through to appendToolResults below.
+      } else {
+        // Drain inline entries; on first non-inline, dispatch + return.
+        while (queue.length > 0) {
+          const entry = queue.shift()
+          if (isInlineMetadata(entry.use.name)) {
+            logger.debug?.(`[sei/orch] action_complete drain inline=${entry.use.name}`)
+            try {
+              const r = await executeInlineMetadata(loop, entry.use)
+              pendingResults[entry.index] = r.result
+              if (r.terminate) loop.isTerminal = true
+            } catch (err) {
+              logger.warn?.(`[sei/orch] action_complete drain inline ${entry.use.name} failed: ${err.message}`)
+              pendingResults[entry.index] = {
+                type: 'tool_result',
+                tool_use_id: entry.use.id,
+                content: `error: ${err.message}`,
+                is_error: true,
+              }
+            }
+            continue
+          }
+          // Non-inline entry — if the loop is already terminal (case-3 reseed
+          // or stop drained inline above), synthesize an aborted placeholder
+          // instead of dispatching. The for-loop's case-3 branch has the
+          // same guard at the FIRST dispatch site; mirror it here for the
+          // queue-drain path.
+          if (loop.isTerminal) {
+            pendingResults[entry.index] = {
+              type: 'tool_result',
+              tool_use_id: entry.use.id,
+              content: `aborted: ${entry.use.name} (loop terminal)`,
+              is_error: false,
+            }
+            continue
+          }
+          // Dispatch the next non-inline tool. The remaining queue (still
+          // includes any tail inline metadata) goes onto loop._pendingToolUses
+          // for the NEXT action_complete to drain.
+          logger.debug?.(`[sei/orch] action_complete drain dispatch tool=${entry.use.name} remaining=${queue.length}`)
+          dispatchSuspendingTool(loop, entry.use, pendingResults, byteWarn, queue.slice())
+          return  // suspend; next sei:action_complete continues the drain
+        }
+        // Queue drained to empty without dispatching — all remaining entries
+        // were inline metadata (or aborted via loop.isTerminal). Fall through
+        // to appendToolResults + one haiku call below.
+      }
     }
 
     // Append the now-complete results array + a fresh snapshot turn. This
@@ -1238,7 +1450,11 @@ function maybeWarnByteCap(loop, warned) {
       //                                       new long-runner becomes the
       //                                       in_flight of the same loop.
       const hasStop = toolUses.some(u => u.name === 'stop')
-      const newLongRunners = toolUses.filter(u => isLongRunner(u.name, u.input))
+      // 260514-gam: every non-inline-metadata tool now suspends the loop, so
+      // the case-3 "new long-running tool present" predicate naturally extends
+      // to every world-touching tool. Variable name retained as
+      // `newSuspendingTools` for clarity (was `newSuspendingTools` pre-260514-gam).
+      const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
       // _isContinuation marks iterations that came from a continuation path
       // (action_complete or P1 preempt), not the FIRST iteration of a fresh
       // loop. Case 3 reseed gate only fires on continuation iterations —
@@ -1261,7 +1477,7 @@ function maybeWarnByteCap(loop, warned) {
           logger.debug?.(`[sei/orch] cancel-case=2 stop tool — no in_flight to abort`)
         }
         loop.isTerminal = true
-      } else if (isContinuation && newLongRunners.length > 0) {
+      } else if (isContinuation && newSuspendingTools.length > 0) {
         // Case 3 gate — only fires on continuation iterations.
         logger.debug?.(`[sei/orch] case3-gate trigger=${loop._triggerEvent} ${triggerIsP0P1 ? 'fire' : 'suppress'}`)
         if (triggerIsP0P1) {
@@ -1270,7 +1486,7 @@ function maybeWarnByteCap(loop, warned) {
           // the verbal-first eventAddendum / owner-chat context. The
           // model's mid-loop response is already appended to history; it
           // surfaces in the next loop via recent_loop_history.
-          logger.debug?.(`[sei/orch] cancel-case=3 fire trigger=${loop._triggerEvent} new=${newLongRunners.map(u => u.name).join(',')}`)
+          logger.debug?.(`[sei/orch] cancel-case=3 fire trigger=${loop._triggerEvent} new=${newSuspendingTools.map(u => u.name).join(',')}`)
           if (loop.inFlight) {
             try { loop.inFlight.abortController.abort() } catch {}
           }
@@ -1293,15 +1509,15 @@ function maybeWarnByteCap(loop, warned) {
           // aborts, new long-runner becomes the next in_flight of the same
           // loop. Fall through to per-tool loop which dispatches the new
           // long-runner via the long-runner branch.
-          logger.debug?.(`[sei/orch] cancel-case=3 suppress trigger=${loop._triggerEvent} new=${newLongRunners.map(u => u.name).join(',')}`)
+          logger.debug?.(`[sei/orch] cancel-case=3 suppress trigger=${loop._triggerEvent} new=${newSuspendingTools.map(u => u.name).join(',')}`)
           if (loop.inFlight) {
             try { loop.inFlight.abortController.abort() } catch {}
           }
         }
-      } else if (newLongRunners.length > 0) {
+      } else if (newSuspendingTools.length > 0) {
         // First-iteration long-runner — straightforward dispatch (no
         // continuation context, no cancel gating). Falls through.
-        logger.debug?.(`[sei/orch] cancel-case=0 first-iter long-runner=${newLongRunners.map(u => u.name).join(',')}`)
+        logger.debug?.(`[sei/orch] cancel-case=0 first-iter long-runner=${newSuspendingTools.map(u => u.name).join(',')}`)
       } else {
         logger.debug?.(`[sei/orch] cancel-case=1 text+sync trigger=${loop._triggerEvent} cont=${isContinuation}`)
       }
@@ -1343,89 +1559,67 @@ function maybeWarnByteCap(loop, warned) {
       // Collect tool_results in the SAME order as toolUses so pairing holds.
       const results = new Array(toolUses.length)
 
+      // 260514-gam: pre-fill the dig-cap and follow-noop placeholder results
+      // for the ENTIRE batch BEFORE the for-loop runs. Required so the
+      // batched-queue serialization path (handleActionComplete drain) sees
+      // these slots as already-filled — without this, a non-inline tool early
+      // in the batch would dispatch and suspend, then the queue would still
+      // contain capped digs / follow-noops that handleActionComplete cannot
+      // resolve (the digCapped / followNoop sets live in this for-loop's
+      // closure only).
+      for (let k = 0; k < toolUses.length; k++) {
+        const uk = toolUses[k]
+        if (_digCapped.has(uk.id)) {
+          results[k] = {
+            type: 'tool_result',
+            tool_use_id: uk.id,
+            content: 'aborted: only one dig per turn allowed; re-issue next turn or use {block:"<name>"} for repeat digs',
+            is_error: false,
+          }
+        } else if (_followNoop.has(uk.id)) {
+          results[k] = {
+            type: 'tool_result',
+            tool_use_id: uk.id,
+            content: 'already pursuing: combat reflex auto-pursues moving mobs; attackEntity alone is enough',
+            is_error: false,
+          }
+        }
+      }
+
       try {
         for (let i = 0; i < toolUses.length; i++) {
           const u = toolUses[i]
           if (signal.aborted) throw makeAbortError()
-          if (_digCapped.has(u.id)) {
-            // Parallel-dig cap (D-W-2 / D-W-3 / D-H-5): only one dig per turn.
-            results[i] = {
-              type: 'tool_result',
-              tool_use_id: u.id,
-              content: 'aborted: only one dig per turn allowed; re-issue next turn or use {block:"<name>"} for repeat digs',
-              is_error: false,
-            }
-            continue
-          }
-          if (_followNoop.has(u.id)) {
-            // follow + attackEntity in same turn (D-H-6): combat reflex
-            // auto-pursues, so the explicit follow becomes a no-op rather
-            // than racing the attack and returning "target gone".
-            results[i] = {
-              type: 'tool_result',
-              tool_use_id: u.id,
-              content: 'already pursuing: combat reflex auto-pursues moving mobs; attackEntity alone is enough',
-              is_error: false,
-            }
-            continue
-          }
-          if (u.name === 'setGoals') {
+          // Skip slots already pre-filled by the guards above. The
+          // for-loop's pre-fill pass synthesizes dig-cap / follow-noop
+          // placeholders; nothing else to do here.
+          if (results[i]) continue
+          if (isInlineMetadata(u.name)) {
+            // 260514-gam: setGoals / noteToSelf / stop fill their result slot
+            // synchronously via the shared executeInlineMetadata helper. No
+            // inflight registration, no action_complete reenqueue, no haiku
+            // continuation. `stop`'s terminate=true flag is honored by the
+            // case-2 dispatcher above (which already set loop.isTerminal); we
+            // also set it here in case the for-loop got here without the
+            // pre-dispatch case-2 branch firing (defense-in-depth).
             try {
-              const r = await runWithInflight('setGoals', u.input, { ...config, _goalStore: goals })
-              const s = typeof r === 'string' ? r : (r && typeof r.ok !== 'undefined' ? `setGoals:${r.ok ? 'ok' : 'fail'}` : 'setGoals:done')
-              lastActionResult = s
-              results[i] = { type: 'tool_result', tool_use_id: u.id, content: s, is_error: false }
+              const r = await executeInlineMetadata(loop, u)
+              results[i] = r.result
+              if (r.terminate) loop.isTerminal = true
             } catch (err) {
-              lastActionResult = 'setGoals error'
-              logger.warn(`[sei/orch] setGoals failed: ${err.message}`)
+              lastActionResult = `${u.name} error`
+              logger.warn(`[sei/orch] ${u.name} failed: ${err.message}`)
               results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err.message}`, is_error: true }
             }
-          } else if (u.name === 'stop') {
-            // 260513-wkd: terminal cancel-semantics signal. In Task 1 this is
-            // a structural placeholder — the old blocking loop does not have
-            // a live in_flight mid-iteration (dispatch awaits to completion),
-            // so there is nothing to abort here. Task 2 wires the abort path
-            // (currentLoop.inFlight?.abortController.abort()) into the new
-            // FSM-event-driven loop.
-            lastActionResult = 'stopped'
-            results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'stopped', is_error: false }
-          } else if (u.name === 'noteToSelf') {
-            // Plan 03.1-04 (D-M-1, D-M-4). Dispatch:
-            //   AFFECT.md  ← always (any kind)
-            //   OWNER.md preferred_name ← when kind='name' and `name` field
-            //                              is a valid Unicode-letter token
-            //   OWNER.md notes section  ← when kind='preference'
-            // Validation: the explicit `name` field is the source of truth
-            // for kind='name' (D-M-4 Warning #4 fix — no extraction from
-            // summary). If the field is missing/invalid we still log to
-            // AFFECT.md (the durable record) but skip the OWNER.md write.
-            try {
-              const kind = u.input?.kind
-              const summary = u.input?.summary
-              await affectLog.append({ kind, summary, when: new Date() })
-              if (kind === 'name') {
-                const raw = String(u.input?.name ?? '').trim()
-                if (raw.length >= 2 && /^[\p{L}][\p{L}\p{M}\p{N}'\-\s]*$/u.test(raw)) {
-                  await setPreferredName(config.memory.owner_md_path, raw)
-                } else {
-                  logger.debug?.(`[sei/orch] noteToSelf kind=name skipped OWNER.md write — name field missing or invalid`)
-                }
-              } else if (kind === 'preference') {
-                await appendNote(config.memory.owner_md_path, summary)
-              }
-              loop._affectMarked = true
-              lastActionResult = 'noted'
-              results[i] = { type: 'tool_result', tool_use_id: u.id, content: 'noted', is_error: false }
-            } catch (err) {
-              lastActionResult = 'noteToSelf error'
-              logger.warn(`[sei/orch] noteToSelf failed: ${err.message}`)
-              results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err?.message ?? 'note failed'}`, is_error: true }
-            }
-          } else if (isLongRunner(u.name, u.input)) {
-            // 260513-wkd: if case-3-fire flagged the loop terminal during
-            // pre-dispatch, synthesize an aborted result instead of
-            // launching the long-runner. The model's mid-loop response is
-            // already appended to history; a fresh loop will seed shortly.
+          } else {
+            // 260514-gam D1: every world-touching tool dispatches non-blocking
+            // via startLongRunner so the loop suspends and is preemptible by
+            // P1 owner-chat / P0 attack within one signal tick.
+            //
+            // If case-3-fire flagged the loop terminal during pre-dispatch,
+            // synthesize an aborted result instead of launching the runner.
+            // The model's mid-loop response is already appended to history;
+            // a fresh loop will seed shortly.
             if (loop.isTerminal) {
               results[i] = {
                 type: 'tool_result',
@@ -1435,105 +1629,24 @@ function maybeWarnByteCap(loop, warned) {
               }
               continue
             }
-            // NON-BLOCKING dispatch. Start the long-runner with
-            // its own AbortController, stash the in_flight handle on the
-            // loop, attach a settle handler that reenqueues
-            // `sei:action_complete`. The tool_result for this tool_use is
-            // appended when the action_complete event arrives — at that
-            // point handleActionComplete finalizes the results array.
-            //
-            // We DO NOT await the action here. Any preceding synchronous
-            // tool_uses in this same batch (setGoals / noteToSelf / stop /
-            // sync registry actions) have already filled their results
-            // slot above; the long-runner's slot stays unfilled and the
-            // entire results array is stashed on loop._pendingResults until
-            // action_complete arrives.
-            //
-            // The cancel-semantics dispatcher (case 2/3 in handleActionComplete)
-            // calls inFlight.abortController.abort() when the model emits
-            // `stop` or a new long-runner. Owner-chat (P1) preempt aborts it
-            // via the P1 branch in handleDispatch.
-            const runner = startLongRunner(u.name, u.input, {
-              ...config,
-              _goalStore: goals,
-            })
-            const inflightEntry = {
-              name: u.name,
-              input: u.input,
-              promise: runner.promise,
-              abortController: runner.abortController,
-              handle: runner.handle,
-              startedAt: runner.startedAt,
-              tool_use_id: u.id,
+            // 260514-gam D3: stash the REMAINING tool_uses on
+            // loop._pendingToolUses so handleActionComplete can drain them
+            // one at a time without a haiku call per tool. Each queue entry
+            // carries the original slot index so the results array stays
+            // 1:1 with the assistant turn's tool_use blocks.
+            const remainingQueue = []
+            for (let k = i + 1; k < toolUses.length; k++) {
+              const nu = toolUses[k]
+              // Skip entries that were already pre-filled by the cap / noop
+              // guards above (digCapped, followNoop).
+              if (results[k]) continue
+              remainingQueue.push({ index: k, use: nu })
             }
-            loop.inFlight = inflightEntry
-            loop._pendingActionUse = { id: u.id, name: u.name, input: u.input }
-            loop._pendingResults = results
-            loop._pendingByteWarn = byteWarn
-            // Settle handler — reenqueue sei:action_complete carrying the
-            // result (or the aborted partial-progress string). Fire-and-forget;
-            // FSM-side re-enqueue routes it back through handleDispatch at
-            // Priority.P2_ACTION_COMPLETE.
-            runner.promise
-              .then(r => {
-                const aborted = runner.abortController.signal.aborted
-                const result = formatToolResult(u.name, r)
-                try { logActionResult(u.name, r) } catch {}
-                if (loop.inFlight === inflightEntry) loop.inFlight = null
-                try {
-                  reenqueue('sei:action_complete', {
-                    name: u.name,
-                    input: u.input,
-                    result,
-                    aborted,
-                    tool_use_id: u.id,
-                  })
-                } catch (err) {
-                  logger.warn?.(`[sei/orch] sei:action_complete re-enqueue failed: ${err.message}`)
-                }
-              })
-              .catch(err => {
-                const aborted = runner.abortController.signal.aborted ||
-                                (err && (err.name === 'AbortError'))
-                const result = aborted ? `aborted: ${u.name}` : `error: ${err?.message ?? 'unknown'}`
-                try { logActionResult(u.name, `error: ${err?.message ?? 'unknown'}`) } catch {}
-                if (loop.inFlight === inflightEntry) loop.inFlight = null
-                try {
-                  reenqueue('sei:action_complete', {
-                    name: u.name,
-                    input: u.input,
-                    result,
-                    aborted,
-                    tool_use_id: u.id,
-                  })
-                } catch (err) {
-                  logger.warn?.(`[sei/orch] sei:action_complete re-enqueue failed: ${err.message}`)
-                }
-              })
+            dispatchSuspendingTool(loop, u, results, byteWarn, remainingQueue)
             // Return early — runIterations will be re-entered via the
-            // action_complete branch in handleDispatch.
+            // action_complete branch in handleDispatch, which drains the
+            // batched queue one tool at a time.
             return
-          } else {
-            // Combined-path movement action: execute via registry directly.
-            // Synchronous tools (find, equip, lookAt, placeBlock, etc.) —
-            // not in the long-runner set, so they finish before the
-            // iteration step ends.
-            try {
-              const r = await runWithInflightAwait(u.name, u.input, {
-                ...config,
-                _goalStore: goals,
-                signal,
-              })
-              const s = formatToolResult(u.name, r)
-              lastActionResult = s
-              logActionResult(u.name, r)
-              results[i] = { type: 'tool_result', tool_use_id: u.id, content: s, is_error: false }
-            } catch (err) {
-              if (err && (err.name === 'AbortError' || signal.aborted)) throw err
-              lastActionResult = `${u.name} error`
-              logActionResult(u.name, `error: ${err.message}`)
-              results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err.message}`, is_error: true }
-            }
           }
         }
       } catch (err) {
