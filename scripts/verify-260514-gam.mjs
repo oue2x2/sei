@@ -439,11 +439,18 @@ try {
   ok('G4', 'case-2 end_loop after sync inflight aborts in_flight via P1 chat AND end_loop tears down loop')
 } catch (e) { bad('G4', e) }
 
-// ─── G5 — case-3 reseed: new long-runner while sync inflight is running ─
-// Setup: trigger=owner_chat (P1). Iteration 1 dispatches placeBlock
-// (sync, now non-blocking). action_complete continuation iteration emits
-// a NEW long-runner [goTo(...)]. Per case-3 with P0/P1 trigger gate, the
-// current loop terminates and the original trigger event is re-enqueued.
+// ─── G5 — same-loop in-place action switch on action_complete continuation
+// 260514-ngj: semantic shift from 260513-wkd. Under old case-3-fire, a
+// continuation P1 iteration emitting a new long-runner would terminate +
+// reseed. Under R1-R4, the continuation iteration is P2-triggered (sei:
+// action_complete), so a new long-runner means R2/suppress — SAME loop
+// continues, old in_flight is null (already settled), new in_flight =
+// goTo. No reseed.
+//
+// Setup: trigger=owner_chat (P1). Iteration 1 dispatches placeBlock. After
+// placeBlock settles naturally, the continuation iteration's trigger is
+// sei:action_complete (P2). Model emits a NEW long-runner [goTo(...)] —
+// R2/suppress applies regardless of original trigger.
 try {
   const { orch, anthropic, adapter, reenqueue } = makeOrch()
   anthropic.queue.push({ text: 'placing', toolUses: [{ name: 'placeBlock', input: { x: 0, y: 0, z: 0, block: 'dirt' } }] })
@@ -452,21 +459,29 @@ try {
   const dispatchP = orch.handleDispatch('sei:chat_received', { username: 'shawn', text: 'place a cactus then come back', ownerSpoke: true })
   await sleep(10)
   assert.ok(orch.currentLoop?.inFlight, 'G5: expected inFlight after placeBlock dispatch')
+  const firstLoopId = orch.currentLoop.id
   // Naturally settle the placeBlock.
   adapter.resolveHead('placed')
   await sleep(10)
   await drainActionComplete(orch, reenqueue)
   await sleep(20)
-  await dispatchP
-  // Case-3 fire path: loop terminated AND original trigger re-enqueued.
-  assert.equal(orch.currentLoop, null, 'G5: expected loop terminated after case-3 fire')
+  // Same loop, new in_flight = goTo. NO reseed.
+  assert.notEqual(orch.currentLoop, null, 'G5: expected loop NOT terminated under R2 semantics')
+  assert.equal(orch.currentLoop.id, firstLoopId, 'G5: expected SAME loop id under R2 semantics')
+  assert.ok(orch.currentLoop.inFlight, 'G5: expected new in_flight after continuation')
+  assert.equal(orch.currentLoop.inFlight.name, 'goTo', 'G5: expected new in_flight name=goTo')
+  // No reseed: reenqueue log should not contain a fresh sei:chat_received
+  // beyond what the original handleDispatch invocation logged (the test
+  // called handleDispatch directly so the original is NOT in the log).
   const reseedCalls = reenqueue.log.filter(c => c.event === 'sei:chat_received')
-  // One came from the original handleDispatch invocation (recorded by
-  // makeMockReenqueue only when reenqueue is called — the test called
-  // handleDispatch directly, NOT via reenqueue, so the FIRST chat is NOT
-  // in the log). The reseed call IS via reenqueue, so we expect >=1.
-  assert.ok(reseedCalls.length >= 1, `G5: expected >=1 sei:chat_received reseed, got ${reseedCalls.length}`)
-  ok('G5', 'case-3 reseed after sync inflight settles: loop terminates AND original trigger re-enqueued')
+  assert.equal(reseedCalls.length, 0, `G5: expected 0 sei:chat_received reseeds under R2, got ${reseedCalls.length}`)
+  // Cleanup
+  adapter.resolveHead('arrived')
+  await sleep(10)
+  await drainActionComplete(orch, reenqueue)
+  await sleep(20)
+  await dispatchP
+  ok('G5', 'R2/suppress: new long-runner on P2 continuation continues same loop with new in_flight, no reseed')
 } catch (e) { bad('G5', e) }
 
 // ─── G6 — grep-gate: forbidden tokens absent from orchestrator.js ───────

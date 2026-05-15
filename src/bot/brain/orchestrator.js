@@ -871,6 +871,14 @@ function maybeWarnByteCap(loop, warned) {
         : 'mobs get hit back. Call attackEntity (use `times: 5+` to amortize swings) once you have spoken. follow first if it is moving.'
       eventAddendum = `\n\n${label} (${kind}) just hit you. React out loud first — short, in-character. Then decide: ${reactClause} Resume any prior task only if it still makes sense.`
     }
+    // 260514-ngj: R1-R4 reminder on P0/P1-triggered iterations. Owner chat
+    // / attack loops keep alive until end_loop fires; this addendum reminds
+    // the model of the four response options so it doesn't fall back to
+    // "end loop by emitting no tool calls" (which is the P2/P3 rule).
+    const isP0P1Event = event === 'owner_chat' || event === 'sei:chat_received' || event === 'sei:attacked'
+    if (isP0P1Event) {
+      eventAddendum += "\n\nYou can end this loop with end_loop, or change your action by calling a new action tool. If you just want to keep doing what you're already doing, no tool call is needed — the body continues."
+    }
     const eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`
     if (sessionState && ownerStore && diary) {
       let seedBlocks
@@ -1236,9 +1244,19 @@ function maybeWarnByteCap(loop, warned) {
       extraEventText = withPriorTaskHint(
         loop,
         `PLAYER INTERRUPT: ${pendingInterrupt.chatText}`,
-      )
+      ) + "\n\nYou can end this loop with end_loop, or change your action by calling a new action tool. If you just want to keep doing what you're already doing, no tool call is needed — the body continues."
       pendingInterrupt = null
       logger.info?.(`[sei/orch] action_complete + PLAYER INTERRUPT folded into loop=${loop.id}`)
+      // 260514-ngj: the next iteration is driven by a PLAYER INTERRUPT —
+      // re-classify it as P1-triggered so R1-R4 gating fires correctly
+      // (text-only continues, end_loop terminates, etc.).
+      loop._currentIterationTrigger = 'sei:chat_received'
+    } else {
+      // 260514-ngj: natural action_complete — the iteration is driven by
+      // the long-runner settling, NOT by owner chat or attack. P2-triggered;
+      // R1-R4 gating does not apply (text-only terminates the loop as
+      // before).
+      loop._currentIterationTrigger = 'sei:action_complete'
     }
 
     // 260514-gam D3: drain the batched queue. The model emitted N tool_uses
@@ -1336,9 +1354,11 @@ function maybeWarnByteCap(loop, warned) {
       return
     }
     maybeWarnByteCap(loop, byteWarn)
-    // Flag continuation so the cancel-semantics dispatcher in runIterations
-    // applies the case-3 gate on the next iteration's tool_uses.
-    loop._isContinuation = true
+    // 260514-ngj: _isContinuation flag removed. R1-R4 gating is now driven
+    // by loop._currentIterationTrigger (set above based on whether this
+    // continuation is a PLAYER INTERRUPT fold or a natural action_complete),
+    // so the dispatcher no longer needs a separate "is this a continuation"
+    // boolean — the trigger speaks for itself.
     // Reset the outer abortController since it was aborted by the P1 path.
     // Without this the next callPersonality immediately throws AbortError.
     if (loop.abortController.signal.aborted) {
@@ -1346,7 +1366,7 @@ function maybeWarnByteCap(loop, warned) {
     }
 
     // Drive ONE more iteration. The next callPersonality response is the
-    // cancel-semantics decision point (case 1/2/3).
+    // R1-R4 decision point.
     try {
       await runIterations(loop, byteWarn)
       // Same post-condition handling as the initial fresh-loop call site.
@@ -1448,113 +1468,96 @@ function maybeWarnByteCap(loop, warned) {
         }
       }
 
-      if (toolUses.length === 0) {
-        // Terminal turn — model chose to stop (with or without text). Done.
-        return
-      }
-
-      // 260513-wkd: cancel-semantics dispatch table — runs BEFORE the
-      // per-tool processing loop so the three intents (case 1 / 2 / 3) are
-      // visible at one site.
-      //
-      //   Case 1 (text only, no tool_use)  → falls through (toolUses empty
-      //                                       branch above); handled there.
-      //   Case 2 (stop tool present)       → abort any live in_flight here,
-      //                                       then let the per-tool loop
-      //                                       process stop's result slot and
-      //                                       return terminal (PERSONALITY_NAMES
-      //                                       drops it from movementCalls).
-      //   Case 3 (new long-runner present) → if trigger was P0/P1, terminate
-      //                                       current loop AND re-enqueue
-      //                                       the original triggering event
-      //                                       so a fresh loop seeds with
-      //                                       verbal-first eventAddendum.
-      //                                       Otherwise (idle / loop_end /
-      //                                       action_complete trigger),
-      //                                       continue in SAME loop — old
-      //                                       in_flight (if any) aborts, the
-      //                                       new long-runner becomes the
-      //                                       in_flight of the same loop.
-      // 260514-ngj: `stop` retired, `end_loop` replaces it. Variable renamed
-      // to `hasEndLoop` for clarity. The dispatcher semantics in this Task 1
-      // commit still follow the old case-2 (terminate) / case-3 (reseed)
-      // intent — Task 2 replaces this whole block with the R1-R4 model.
-      const hasEndLoop = toolUses.some(u => u.name === 'end_loop')
-      // 260514-gam: every non-inline-metadata tool now suspends the loop, so
-      // the case-3 "new long-running tool present" predicate naturally extends
-      // to every world-touching tool. Variable name retained as
-      // `newSuspendingTools` for clarity (was `newSuspendingTools` pre-260514-gam).
-      const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
-      // _isContinuation marks iterations that came from a continuation path
-      // (action_complete or P1 preempt), not the FIRST iteration of a fresh
-      // loop. Case 3 reseed gate only fires on continuation iterations —
-      // otherwise the very first iteration of a P1-triggered fresh loop
-      // would falsely reseed itself.
-      const isContinuation = !!loop._isContinuation
-      // 260514-ngj: dropped sei:joined from the P0/P1 trigger set — spawn
-      // first-fire now enqueues sei:idle (P3) instead, so sei:joined is no
-      // longer a routable orchestrator event.
-      const triggerIsP0P1 = (() => {
-        const e = loop._triggerEvent
+      // 260514-ngj: R1-R4 interrupt-response dispatcher. Keyed off the
+      // CURRENT iteration's trigger (loop._currentIterationTrigger), NOT
+      // the loop's originating event. This lets a single loop alternate
+      // between P0/P1-triggered iterations (R1-R4 apply) and P2-triggered
+      // iterations (text-only terminates as before) as different events
+      // drive each iteration.
+      const iterationTriggerIsP0P1 = (() => {
+        const e = loop._currentIterationTrigger ?? loop._triggerEvent
         return e === 'owner_chat' || e === 'sei:chat_received' || e === 'sei:attacked'
       })()
 
-      if (hasEndLoop) {
-        // Case 2 (interim, retained from 260513-wkd dispatcher; Task 2
-        // replaces with R3/R4 split) — abort the in_flight (if any) so the
-        // long-running behavior halts within one signal tick.
-        // handleActionComplete will see the aborted result; loop.isTerminal
-        // prevents another iteration there.
+      if (toolUses.length === 0) {
+        if (iterationTriggerIsP0P1 && loop.inFlight) {
+          // R1 — text-only on a P0/P1-triggered iteration WITH an in_flight
+          // long-runner still running: keep the loop alive. The body keeps
+          // doing what it was doing; the next iteration is driven by
+          // whatever event arrives next (action_complete from the natural
+          // in_flight completion, another preempt, or an attack). Return
+          // WITHOUT tearing down. The spoken text was already emitted above
+          // via adapter.chat.
+          //
+          // Without the loop.inFlight guard, a P0/P1-triggered iteration
+          // with no in_flight (e.g., fresh-loop first iteration where the
+          // model just says "hi") would suspend forever — nothing would
+          // drive it forward. With the guard, that case falls through to
+          // natural terminal as expected.
+          logger.debug?.(`[sei/orch] R1 text-only on P0/P1 iteration — loop stays alive (loop=${loop.id}, trigger=${loop._currentIterationTrigger}, in_flight=${loop.inFlight.name})`)
+          return
+        }
+        // P2/P3-triggered iteration (action_complete, idle, loop_end) OR
+        // P0/P1-triggered with no in_flight: text-only terminates the loop
+        // as before. The outer handleDispatch / handleActionComplete tail
+        // will call teardownLoop when neither loop.inFlight nor
+        // loop._terminated holds.
+        return
+      }
+
+      // 260514-ngj: tool composition predicates for R2/R3/R4.
+      const hasEndLoop = toolUses.some(u => u.name === 'end_loop')
+      // newSuspendingTools = every non-inline-metadata tool. INLINE_METADATA
+      // is {setGoals, noteToSelf, end_loop}; everything else suspends the
+      // loop via startLongRunner (260514-gam universal-inflight).
+      const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
+
+      if (hasEndLoop && newSuspendingTools.length > 0) {
+        // R4 — text + end_loop + new action: terminate current loop AND
+        // open a fresh one seeded with the ORIGINAL trigger event + data
+        // (preserves owner chat text / attacker label so the new loop's
+        // seed_owner block sees the original request). The model's mid-loop
+        // response is already appended to history; it surfaces in the next
+        // loop via recent_loop_history.
+        //
+        // The per-tool loop below synthesizes aborted placeholders for the
+        // new long-runners (loop.isTerminal=true gates the dispatch). end_loop
+        // itself fills its slot inline via executeInlineMetadata with content
+        // 'loop ended'.
+        logger.debug?.(`[sei/orch] R4 end_loop + new action: terminate + reseed trigger=${loop._currentIterationTrigger ?? loop._triggerEvent} new=${newSuspendingTools.map(u => u.name).join(',')}`)
         if (loop.inFlight) {
-          logger.debug?.(`[sei/orch] cancel-case=2 end_loop tool — aborting in_flight ${loop.inFlight.name}`)
           try { loop.inFlight.abortController.abort() } catch {}
-        } else {
-          logger.debug?.(`[sei/orch] cancel-case=2 end_loop tool — no in_flight to abort`)
         }
         loop.isTerminal = true
-      } else if (isContinuation && newSuspendingTools.length > 0) {
-        // Case 3 gate — only fires on continuation iterations.
-        logger.debug?.(`[sei/orch] case3-gate trigger=${loop._triggerEvent} ${triggerIsP0P1 ? 'fire' : 'suppress'}`)
-        if (triggerIsP0P1) {
-          // Case 3 fire branch (W-2): terminate current loop and re-enqueue
-          // the ORIGINAL triggering event so the next fresh loop seeds with
-          // the verbal-first eventAddendum / owner-chat context. The
-          // model's mid-loop response is already appended to history; it
-          // surfaces in the next loop via recent_loop_history.
-          logger.debug?.(`[sei/orch] cancel-case=3 fire trigger=${loop._triggerEvent} new=${newSuspendingTools.map(u => u.name).join(',')}`)
-          if (loop.inFlight) {
-            try { loop.inFlight.abortController.abort() } catch {}
-          }
-          loop.isTerminal = true
-          // Re-enqueue the original triggering event. The brain's priority
-          // queue routes it back through handleDispatch as a fresh dispatch
-          // (currentLoop will be null by then since terminateLoop fires
-          // the outer completion resolver).
-          try {
-            reenqueue(loop._triggerEvent, loop._triggerData ?? null)
-          } catch (err) {
-            logger.warn?.(`[sei/orch] case-3 reseed re-enqueue failed: ${err.message}`)
-          }
-          // Fall through so per-tool loop fills out results array; we still
-          // need to append tool_results to keep the assistant turn paired.
-          // Synthesize aborted placeholders for the long-runners since we
-          // won't dispatch them.
-        } else {
-          // Case 3 suppress branch — same loop continues; old in_flight
-          // aborts, new long-runner becomes the next in_flight of the same
-          // loop. Fall through to per-tool loop which dispatches the new
-          // long-runner via the long-runner branch.
-          logger.debug?.(`[sei/orch] cancel-case=3 suppress trigger=${loop._triggerEvent} new=${newSuspendingTools.map(u => u.name).join(',')}`)
-          if (loop.inFlight) {
-            try { loop.inFlight.abortController.abort() } catch {}
-          }
+        try {
+          reenqueue(loop._triggerEvent, loop._triggerData ?? null)
+        } catch (err) {
+          logger.warn?.(`[sei/orch] R4 reseed re-enqueue failed: ${err.message}`)
         }
+      } else if (hasEndLoop) {
+        // R3 — text + end_loop (no new action): terminate the loop. Abort
+        // any in_flight; end_loop's slot is filled by executeInlineMetadata.
+        // No reseed.
+        logger.debug?.(`[sei/orch] R3 end_loop alone: terminating loop=${loop.id}`)
+        if (loop.inFlight) {
+          try { loop.inFlight.abortController.abort() } catch {}
+        }
+        loop.isTerminal = true
       } else if (newSuspendingTools.length > 0) {
-        // First-iteration long-runner — straightforward dispatch (no
-        // continuation context, no cancel gating). Falls through.
-        logger.debug?.(`[sei/orch] cancel-case=0 first-iter long-runner=${newSuspendingTools.map(u => u.name).join(',')}`)
+        // R2 (P0/P1-triggered) OR same-loop continuation (P2/P3-triggered)
+        // with a new long-runner: abort any in_flight, new action becomes
+        // in_flight in the SAME loop. Both paths converge — the dispatch
+        // happens in the per-tool for-loop below. Loop stays alive.
+        if (loop.inFlight) {
+          logger.debug?.(`[sei/orch] R2/suppress new action — aborting old in_flight=${loop.inFlight.name} new=${newSuspendingTools.map(u => u.name).join(',')} trigger=${loop._currentIterationTrigger ?? loop._triggerEvent}`)
+          try { loop.inFlight.abortController.abort() } catch {}
+        } else {
+          logger.debug?.(`[sei/orch] first-iter/no-inflight long-runner=${newSuspendingTools.map(u => u.name).join(',')} trigger=${loop._currentIterationTrigger ?? loop._triggerEvent}`)
+        }
       } else {
-        logger.debug?.(`[sei/orch] cancel-case=1 text+sync trigger=${loop._triggerEvent} cont=${isContinuation}`)
+        // text + only inline-metadata tools (setGoals / noteToSelf — end_loop
+        // is handled above). Same-loop continuation, no abort, no terminal.
+        logger.debug?.(`[sei/orch] inline-metadata only: trigger=${loop._currentIterationTrigger ?? loop._triggerEvent}`)
       }
 
       // Process tool_uses. Single-layer: every movement tool fires from the
@@ -1651,15 +1654,16 @@ function maybeWarnByteCap(loop, warned) {
             // via startLongRunner so the loop suspends and is preemptible by
             // P1 owner-chat / P0 attack within one signal tick.
             //
-            // If case-3-fire flagged the loop terminal during pre-dispatch,
-            // synthesize an aborted result instead of launching the runner.
-            // The model's mid-loop response is already appended to history;
-            // a fresh loop will seed shortly.
+            // 260514-ngj: if R3 or R4 flagged the loop terminal during the
+            // pre-dispatch R1-R4 gate, synthesize an aborted result instead
+            // of launching the runner. For R4 the model's mid-loop response
+            // is already appended to history; the reseeded fresh loop will
+            // pick it up via recent_loop_history.
             if (loop.isTerminal) {
               results[i] = {
                 type: 'tool_result',
                 tool_use_id: u.id,
-                content: `aborted: ${u.name} (case-3 reseed)`,
+                content: `aborted: ${u.name} (R4 reseed)`,
                 is_error: false,
               }
               continue
@@ -1893,7 +1897,10 @@ function maybeWarnByteCap(loop, warned) {
 
     const chatText = pendingInterrupt?.chatText ?? ''
     const eventText = chatText ? `PLAYER INTERRUPT: ${chatText}` : 'PLAYER INTERRUPT'
+    // 260514-ngj: append R1-R4 reminder so the model knows the loop stays
+    // alive until end_loop fires (or a new action is called).
     const eventTextWithHint = withPriorTaskHint(loop, eventText)
+      + "\n\nYou can end this loop with end_loop, or change your action by calling a new action tool. If you just want to keep doing what you're already doing, no tool call is needed — the body continues."
 
     if (aborted.length > 0) {
       loop.appendToolResults(aborted, { snapshot: snapshotText(), eventText: eventTextWithHint })
@@ -1904,6 +1911,9 @@ function maybeWarnByteCap(loop, warned) {
       ])
     }
     pendingInterrupt = null
+    // 260514-ngj: repairAfterAbort is the PLAYER INTERRUPT path triggered
+    // when callPersonality aborts. The next iteration is P1-triggered.
+    loop._currentIterationTrigger = 'sei:chat_received'
     logger.info?.(`[sei/orch] PLAYER INTERRUPT preserved (loop=${loop.id}, history=${loop._internal.messages.length})`)
   }
 

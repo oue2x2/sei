@@ -302,12 +302,16 @@ try {
   ok('B2b', 'priority tier ordering P2_MOVEMENT(2) before P2_ACTION_COMPLETE(2.1)')
 } catch (e) { bad('B2b', e) }
 
-// ─── B5 — case 2 (stop tool) ─────────────────────────────────────────────
+// ─── B5 — case 2 (end_loop tool) ─────────────────────────────────────────
+// 260514-ngj: stop -> end_loop. Semantic equivalent: on a natural action_complete
+// continuation, the model emits end_loop → loop terminates cleanly.
+// Note: under R1-R4 this is a P2-triggered iteration (sei:action_complete),
+// and end_loop on P2 still terminates the loop (R3-style: text + end_loop).
 try {
   const { orch, anthropic, adapter, reenqueue } = makeOrch()
   anthropic.queue.push({ text: 'starting', toolUses: [{ name: 'gather', input: { block: 'cactus' } }] })
-  // After action_complete, scripted response = stop
-  anthropic.queue.push({ text: 'we have enough', toolUses: [{ name: 'stop', input: {} }] })
+  // After action_complete, scripted response = end_loop
+  anthropic.queue.push({ text: 'we have enough', toolUses: [{ name: 'end_loop', input: {} }] })
   await orch.handleDispatch('sei:chat_received', { username: 'shawn', text: 'gather cactus', ownerSpoke: true })
   const fakeLongRef = adapter.lastFakeLong
   // Naturally complete the in_flight so action_complete fires.
@@ -318,25 +322,25 @@ try {
   assert.equal(ac.event, 'sei:action_complete')
   await orch.handleDispatch(ac.event, ac.data)
   await sleep(20)
-  // After stop tool: loop is torn down, chat received the spoken text.
-  assert.equal(orch.currentLoop, null, 'B5: expected currentLoop=null after stop')
+  // After end_loop tool: loop is torn down, chat received the spoken text.
+  assert.equal(orch.currentLoop, null, 'B5: expected currentLoop=null after end_loop')
   // chat log should contain both "starting" and "we have enough"
   assert.ok(adapter.chatLog.some(l => l.includes('we have enough')),
     `B5: expected 'we have enough' in chat log; got: ${JSON.stringify(adapter.chatLog)}`)
-  ok('B5', 'case 2 — stop tool tears down loop AND emits spoken text')
+  ok('B5', 'case 2 — end_loop tool tears down loop AND emits spoken text')
 } catch (e) { bad('B5', e) }
 
-// ─── B5b — stop aborts a STILL-RUNNING in_flight (via P1 preempt) ───────
-// This validates the abort wire end-to-end: an owner-chat with in_flight
-// running triggers in_flight.abortController.abort(), which fires
-// action_complete with aborted=true. The orchestrator then folds PLAYER
-// INTERRUPT into the next iteration; if THAT iteration emits stop, the
-// loop terminates and the (already-aborted) signal stays aborted.
+// ─── B5b — end_loop aborts a STILL-RUNNING in_flight (via P1 preempt) ───
+// 260514-ngj: stop -> end_loop. Validates the abort wire end-to-end: an
+// owner-chat with in_flight running triggers in_flight.abortController.abort(),
+// which fires action_complete with aborted=true. The orchestrator folds
+// PLAYER INTERRUPT into the next iteration; that iteration emits end_loop
+// (R3 — text + end_loop on a P1-triggered iteration), terminating the loop.
 try {
   const { orch, anthropic, adapter, reenqueue } = makeOrch()
   anthropic.queue.push({ text: 'starting', toolUses: [{ name: 'gather', input: { block: 'cactus' } }] })
-  // Next response (after P1 PLAYER INTERRUPT injection): stop
-  anthropic.queue.push({ text: 'we have enough, holding', toolUses: [{ name: 'stop', input: {} }] })
+  // Next response (after P1 PLAYER INTERRUPT injection): end_loop (R3)
+  anthropic.queue.push({ text: 'we have enough, holding', toolUses: [{ name: 'end_loop', input: {} }] })
   await orch.handleDispatch('sei:chat_received', { username: 'shawn', text: 'gather cactus', ownerSpoke: true })
   const longRef = adapter.lastFakeLong
   assert.ok(longRef, 'B5b: long-runner not started')
@@ -353,18 +357,31 @@ try {
   assert.equal(ac.data.aborted, true, 'B5b: action_complete should carry aborted=true')
   await orch.handleDispatch(ac.event, ac.data)
   await sleep(20)
-  // After stop response: loop torn down.
-  assert.equal(orch.currentLoop, null, 'B5b: expected currentLoop=null after stop after preempt')
-  ok('B5b', 'P1 preempt aborts in_flight; subsequent stop tears down loop')
+  // After end_loop response: loop torn down.
+  assert.equal(orch.currentLoop, null, 'B5b: expected currentLoop=null after end_loop after preempt')
+  ok('B5b', 'P1 preempt aborts in_flight; subsequent end_loop (R3) tears down loop')
 } catch (e) { bad('B5b', e) }
 
-// ─── B6-fire — case 3 with P0/P1 trigger (reseed) ────────────────────────
+// ─── B6-fire — R4 (end_loop + new action) reseeds original trigger ──────
+// 260514-ngj: semantic shift from old case-3-fire. Under R1-R4, a new
+// long-runner alone on a P2-triggered continuation = R2/suppress (same
+// loop, NO reseed). Reseed now requires the model to explicitly emit
+// end_loop + new action (R4). This test exercises R4: the continuation
+// iteration emits text + end_loop + new long-runner → original loop
+// terminates AND original trigger event is re-enqueued. We also assert
+// the trigger data is preserved (R4 reseed carries loop._triggerData).
 try {
   const { orch, anthropic, adapter, reenqueue } = makeOrch()
   // First response: gather (long-runner). Trigger = owner_chat (P1).
   anthropic.queue.push({ text: 'starting', toolUses: [{ name: 'gather', input: { block: 'cactus' } }] })
-  // After action_complete: model emits NEW long-runner (switch tasks).
-  anthropic.queue.push({ text: 'switching to food', toolUses: [{ name: 'gather', input: { block: 'meat' } }] })
+  // After action_complete: model emits end_loop + NEW long-runner (R4).
+  anthropic.queue.push({
+    text: 'switching to food',
+    toolUses: [
+      { name: 'end_loop', input: {} },
+      { name: 'gather', input: { block: 'meat' } },
+    ],
+  })
   await orch.handleDispatch('sei:chat_received', { username: 'shawn', text: 'gather cactus', ownerSpoke: true })
   const firstLong = adapter.lastFakeLong
   firstLong.resolve('gathered 3/7 cactus')
@@ -374,14 +391,16 @@ try {
   assert.equal(ac.event, 'sei:action_complete')
   await orch.handleDispatch(ac.event, ac.data)
   await sleep(20)
-  // Case 3 fire branch: current loop terminated, the ORIGINAL triggering
-  // event (sei:chat_received) re-enqueued.
-  assert.equal(orch.currentLoop, null, 'B6-fire: expected currentLoop=null after case-3 fire')
+  // R4 branch: current loop terminated, ORIGINAL triggering event re-enqueued
+  // with ORIGINAL trigger data (carries 'gather cactus' message).
+  assert.equal(orch.currentLoop, null, 'B6-fire: expected currentLoop=null after R4')
   const reseedCalls = reenqueue.log.filter(c => c.event === 'sei:chat_received')
-  // 1 is the original (this test triggered it manually, not via reenqueue);
-  // 1 should be the case-3 reseed.
-  assert.ok(reseedCalls.length >= 1, `B6-fire: expected >=1 reseed of sei:chat_received, got ${reseedCalls.length}`)
-  ok('B6-fire', 'case 3 fire — owner_chat trigger reseeds original event after new long-runner')
+  assert.ok(reseedCalls.length >= 1, `B6-fire: expected >=1 R4 reseed of sei:chat_received, got ${reseedCalls.length}`)
+  // Trigger data should be preserved (loop._triggerData plumbing).
+  const reseed = reseedCalls[reseedCalls.length - 1]
+  assert.equal(reseed.data?.text, 'gather cactus', `B6-fire: expected R4 reseed to carry original text 'gather cactus', got ${reseed.data?.text}`)
+  assert.equal(reseed.data?.ownerSpoke, true, 'B6-fire: expected R4 reseed to carry ownerSpoke=true')
+  ok('B6-fire', 'R4 (text + end_loop + new action) on P1-triggered loop reseeds original trigger with original data')
 } catch (e) { bad('B6-fire', e) }
 
 // ─── B6-suppress — case 3 with non-P0/P1 trigger (continue same loop) ───
