@@ -139,21 +139,6 @@ export function createDefaultRegistry() {
     }
   )
 
-  registry.register(
-    'setGoals',
-    z.object({
-      list: z.enum(['owner', 'self']),
-      op:   z.enum(['add', 'remove']),
-      goal: z.string().min(1),
-    }),
-    async (args, bot, config) => {
-      const store = config?._goalStore
-      if (!store) throw new Error('setGoals invoked without _goalStore in config')
-      if (args.op === 'add')    return { ok: store.add(args.list, args.goal),    snapshot: store.snapshot() }
-      if (args.op === 'remove') return { ok: store.remove(args.list, args.goal), snapshot: store.snapshot() }
-    }
-  )
-
   registry.register('dig', DigSchema, digAction)
 
   // Phase 6 (D-NEW-SCAV-2): `find` resolves a loose term or exact MC ID to the
@@ -260,6 +245,15 @@ export function createDefaultRegistry() {
     attackEntityAction
   )
 
+  // 260516-0yw: follow is now an OPEN-ENDED long-running action. The handler
+  // installs the follow target and then BLOCKS on the AbortSignal until
+  // either: (a) the orchestrator aborts it (P0/P1 preempt, R2/R3/R4 dispatch,
+  // or the model called unfollow), or (b) the controller is otherwise
+  // aborted. Resolving synchronously (the prior behavior) made the
+  // long-runner promise settle immediately, action_complete fired, and the
+  // bot entered a "following you" spam loop on every iteration. The 10s
+  // action_tick (sei:action_tick at P2.3) gives the model a chance to peel
+  // away with end_loop or unfollow without re-saying "following you".
   registry.register(
     'follow',
     z.object({
@@ -270,21 +264,44 @@ export function createDefaultRegistry() {
       (a) => a.entity || a.target || a.player,
       { message: 'must specify entity name, #N target, or player username' }
     ),
-    async (args, bot) => {
+    async (args, bot, config) => {
+      // Resolve target and install it (same as before).
+      let label
       if (args.player) {
         if (!bot.players?.[args.player]) return `no such player: ${args.player}`
         setFollowTarget({ kind: 'player', username: args.player })
-        return `following ${args.player}`
+        label = args.player
+      } else {
+        const ent = resolveEntity(args, bot)
+        if (!ent) return 'target gone'
+        if (ent.type === 'player' || ent.username) {
+          setFollowTarget({ kind: 'player', username: ent.username })
+          label = ent.username
+        } else {
+          label = ent.name ?? ent.displayName ?? `entity-${ent.id}`
+          setFollowTarget({ kind: 'entity', entityId: ent.id, label })
+        }
       }
-      const ent = resolveEntity(args, bot)
-      if (!ent) return 'target gone'
-      if (ent.type === 'player' || ent.username) {
-        setFollowTarget({ kind: 'player', username: ent.username })
-        return `following ${ent.username}`
+      // Open-ended block: resolve ONLY on abort. The orchestrator's
+      // startLongRunner plumbs config.signal end-to-end via
+      // _buildExecOpts → adapter.executeAction → registry.execute(name,
+      // args, bot, execConfig) → handler third arg. If a future regression
+      // strips config.signal, the test-actionTick.mjs end-to-end assertion
+      // fails loudly.
+      const signal = config?.signal
+      if (!signal) {
+        // Safety: no signal means we're in a test env or a caller that
+        // didn't plumb it. Preserve the legacy synchronous contract so
+        // existing unit tests don't hang.
+        return `following ${label}`
       }
-      const label = ent.name ?? ent.displayName ?? `entity-${ent.id}`
-      setFollowTarget({ kind: 'entity', entityId: ent.id, label })
-      return `following ${label}`
+      if (signal.aborted) { setFollowTarget(null); return `aborted: follow ${label}` }
+      await new Promise(resolve => {
+        const onAbort = () => { signal.removeEventListener('abort', onAbort); resolve() }
+        signal.addEventListener('abort', onAbort)
+      })
+      setFollowTarget(null)
+      return `aborted: follow ${label}`
     }
   )
 

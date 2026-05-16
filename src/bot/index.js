@@ -168,10 +168,10 @@ export async function start(config, hooks = {}) {
     _adapter = createMinecraftAdapter({ bot: _bot, config })
     _brain = await startBrain({ config, adapter: _adapter, logger })
 
-    // Wire the legacy chat behavior (bot.on('chat') with owner/addressed/
+    // Wire the legacy chat behavior (bot.on('chat') with player/addressed/
     // nearby filtering and sei:chat_received emission) without an
     // orchestrator handle. fsmWires translates sei:chat_received into
-    // brain.onChat; the brain priority queue handles owner-chat preemption
+    // brain.onChat; the brain priority queue handles player-chat preemption
     // (P1→P0 escalation when a non-P0 action is in flight). Stop-verb
     // fast-path body-cancel was previously a synchronous side-effect of
     // chat.js when given an orchestrator; with the brain↔adapter seam,
@@ -232,23 +232,21 @@ async function bootstrapWithInit(initData) {
     lanPort,
     userDataDir,
     mc_username,         // BLOCKER-4: Minecraft username collected in onboarding
-    preferred_name,      // BLOCKER-1: seeds owner_username for owner-recognition
+    preferred_name,      // seeds player_username for player-recognition
   } = initData
 
-  // BLOCKER-1 fix: build a config shape that satisfies ConfigSchema.parse
-  // (see src/bot/config.js — adapter.minecraft requires {host, auth, username}
+  // Build a config shape that satisfies ConfigSchema.parse (see
+  // src/bot/config.js — adapter.minecraft requires {host, auth, username}
   // and `version` must be a string, not boolean). v1 hardcodes
   // `auth: 'microsoft'` per CONN-02. Username comes from onboarding's
   // UserConfig (NOT from character.id — characters are personas, not
-  // Minecraft accounts). owner_username is seeded from preferred_name so
-  // the bot recognises the owner from the first owner-chat.
+  // Minecraft accounts). player_username is seeded from preferred_name so
+  // the bot recognises the human player from the first chat.
   //
-  // BLOCKER-2 fix: memory paths follow Phase-3 D-59 schema explicitly
-  // (owner_md_path / diary_md_path / affect_md_path). A `memory.dir`
-  // wrapper is NOT part of ConfigSchema — passing one would be silently
-  // stripped by Zod, leaving the defaults (./memory/...) which EROFS in
-  // the read-only packaged Sei.app bundle. Plan 03's saveCharacter
-  // pre-creates the parent dir so atomic-write helpers find it.
+  // Memory paths are explicit: player_md_path + memory_md_path. A
+  // `memory.dir` wrapper is NOT part of ConfigSchema — passing one would
+  // be silently stripped by Zod, leaving the defaults (./memory/...)
+  // which EROFS in the read-only packaged Sei.app bundle.
   const memDir = `${userDataDir}/memory/${character.id}`
   // 260508-nkk root cause #1: the Electron path was constructing this object
   // and passing it directly to start(config). The CLI path runs config
@@ -275,21 +273,35 @@ async function bootstrapWithInit(initData) {
   }
   const bot_mc_username = sanitizeMcName(character.name)
 
-  // owner_username = how the bot recognizes the user in in-game chat. That
-  // matching happens against MC display names (mc_username), NOT the friendly
-  // preferred_name. Fall back to preferred_name then 'Player' if the user
-  // skipped the MC name during onboarding.
-  const ownerName = (typeof mc_username === 'string' && mc_username.trim())
+  // player_username = how the bot recognizes the human player in in-game
+  // chat. Matching happens against MC display names (mc_username), NOT the
+  // friendly preferred_name. Fall back to preferred_name then 'Player' if
+  // the user skipped the MC name during onboarding.
+  const playerName = (typeof mc_username === 'string' && mc_username.trim())
     || (typeof preferred_name === 'string' && preferred_name.trim())
     || 'Player'
 
+  // 260516-0yw: read the LLM-expanded persona prompt off character.persona.expanded.
+  // The old character.persona_prompt / character.description fields have been
+  // retired in favor of { source, expanded } per the new CharacterSchema. If
+  // the migrated character has an empty expanded prompt, throw an explicit
+  // error so the user knows to re-save in the GUI (no backwards-compat shim).
+  if (!character.persona || typeof character.persona.expanded !== 'string' || character.persona.expanded.trim() === '') {
+    emitLifecycle({
+      type: 'error',
+      error: 'BOT_CRASH',
+      message: 'persona expansion missing — re-save the character in the GUI to populate persona.expanded',
+    })
+    return
+  }
   const rawConfig = {
     chat_mode: 'chat',  // default for v1; renderer can flip in a later phase
-    owner_username: ownerName,
+    player_username: playerName,
     persona: {
-      name: character.name,
-      backstory: character.persona_prompt,
-      tone: 'curious',  // tone preset retained for back-compat with Phase 2 prompts
+      // persona.name is the MC-safe sanitized name so the bot's in-chat
+      // identity and login username always match.
+      name: bot_mc_username,
+      expanded: character.persona.expanded,
     },
     anthropic: { api_key: apiKey },
     adapter: {
@@ -303,9 +315,8 @@ async function bootstrapWithInit(initData) {
       },
     },
     memory: {
-      owner_md_path:  `${memDir}/OWNER.md`,
-      diary_md_path:  `${memDir}/DIARY.md`,
-      affect_md_path: `${memDir}/AFFECT.md`,
+      player_md_path: `${memDir}/PLAYER.md`,
+      memory_md_path: `${memDir}/MEMORY.md`,
     },
     // llm: omitted — Zod default fills the entire {} sub-tree.
   }
@@ -342,7 +353,7 @@ async function bootstrapWithInit(initData) {
   logger.info(
     `LAN connected at port ${lanPort}, starting "${character.name}" ` +
     `(mc_username=${config.adapter.minecraft.username}, ` +
-    `owner=${config.owner_username}, version=${config.adapter.minecraft.version})`,
+    `player=${config.player_username}, version=${config.adapter.minecraft.version})`,
   )
 
   // 260508-nkk root cause #2: previously `summon-ready` fired immediately

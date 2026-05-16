@@ -30,13 +30,16 @@ function resolveTargetEntity() {
 }
 
 /**
- * Abort contract (260513-wkd): callers clear the target via
- * `setFollowTarget(null)`; the 1 s tick is a no-op on the next entry (the tick
- * already checks `_target` before doing any work). follow.js does NOT accept
- * an AbortSignal — its tick is too coarse for signal-level abort to add value
- * over the existing target-clear path. The orchestrator's mid-loop cancel
- * semantics treat follow as terminal-on-call (no `in_flight` registration),
- * so there is nothing for a signal to interrupt mid-action.
+ * Abort contract (260516-0yw): follow is now an OPEN-ENDED long-runner. The
+ * registry handler in src/bot/adapter/minecraft/registry.js installs the
+ * follow target and BLOCKS on the AbortSignal until the orchestrator aborts
+ * (P0/P1 preempt, R2/R3/R4 dispatch, or the model calls unfollow). When the
+ * signal fires, the handler clears the target via `setFollowTarget(null)` and
+ * resolves with `aborted: follow <label>`. The 1s background pathfinder tick
+ * in this file remains a no-op when `_target` is null, so clearing the target
+ * is enough to stop the bot's body movement; the AbortSignal is the channel
+ * that drives that target-clear. follow.js itself does not consume the
+ * signal — the registry handler owns the long-running lifecycle.
  */
 export function startFollow(bot, config) {
   _bot = bot
@@ -52,8 +55,8 @@ export function startFollow(bot, config) {
   if (!bot.hasPlugin(pathfinder)) bot.loadPlugin(pathfinder)
   bot.pathfinder.setMovements(new Movements(bot))
 
-  // No default target — the LLM decides whether to call follow(owner) on the
-  // join event. Hardcoding it caused the body to drift toward the owner
+  // No default target — the LLM decides whether to call follow(player) on the
+  // join event. Hardcoding it caused the body to drift toward the player
   // between every gap in LLM-issued movement.
 
   // GoalFollow with dynamic=true tracks the entity itself, so we don't need

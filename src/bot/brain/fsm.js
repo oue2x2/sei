@@ -34,6 +34,16 @@ export const Priority = Object.freeze({
   // 260513-wkd: action_complete sits between P2_MOVEMENT and P2_5_LOOP_END.
   // Routed via index.js reenqueue switch (event: 'sei:action_complete').
   P2_ACTION_COMPLETE: 2.1,
+  // 260516-0yw: action_tick fires every 10s while a long-runner is in_flight
+  // so the model can comment or abort. LOCKED at 2.3 (NOT 2.4, NOT 2.5).
+  // Sits strictly between P2_ACTION_COMPLETE (2.1) and P2_5_LOOP_END (2.5):
+  //   - same-batch action_complete (2.1) drains BEFORE a queued action_tick
+  //     (so a tick is naturally suppressed when the action just settled).
+  //   - a queued loop_end (2.5) terminal still wins over a queued tick.
+  //   - P1 chat (1) and P0 attack (0) preempt by construction.
+  // NOTE: CONTEXT.md prose says "P2.5" for the tick, but that slot is already
+  // P2_5_LOOP_END. The CONTEXT wording is a known bug; 2.3 is the locked value.
+  P2_ACTION_TICK: 2.3,
   P2_5_LOOP_END: 2.5,
   P3_IDLE: 3,
 })
@@ -88,16 +98,16 @@ export function createPriorityQueue({ onDispatch, idleFallbackMs = 60_000, logge
         queue.some(q => q.event === event)) {
       return
     }
-    // Owner chat preempts in-flight non-P0 work. Without this, a chat-driven
-    // dispatch (already P1) cannot be aborted by a fresh owner chat (also P1)
+    // Player chat preempts in-flight non-P0 work. Without this, a chat-driven
+    // dispatch (already P1) cannot be aborted by a fresh player chat (also P1)
     // — they queue equally and the in-flight movement keeps running until it
-    // finishes, ignoring the new instruction. Promoting owner chat to P0
+    // finishes, ignoring the new instruction. Promoting player chat to P0
     // *only when there is a non-P0 action in flight* makes processNext fire
     // the abort path so action handlers see signal.aborted and bail with
     // 'aborted', clearing inflight for the new chat dispatch.
     if (
       event === 'sei:chat_received' &&
-      data?.ownerSpoke === true &&
+      data?.playerSpoke === true &&
       currentAction &&
       currentAction.priority > Priority.P0_SAFETY
     ) {

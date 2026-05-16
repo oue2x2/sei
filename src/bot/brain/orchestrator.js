@@ -9,47 +9,34 @@
 // `grep -r "from '../adapter" src/brain/`.
 
 import { createAnthropicClient } from './anthropicClient.js'
-import { createGoalStore } from './goals.js'
 import { createTokenBucket } from './rateLimiter.js'
 import { createDebouncer, createThrottle } from './debounce.js'
 import { createChainTracker } from './chains.js'
 import { createLoop } from './loop.js'
-import { renderPersona, capHitLine, capabilityParagraph, stillLearningLine } from './persona.js'
+import {
+  BASELINE_INSTRUCTIONS,
+  PERSONALITY_TOOL_DESCRIPTIONS,
+  NUDGES,
+  renderPersona,
+} from './prompts.js'
 import { buildAnthropicTools } from './schemaBridge.js'
 import { createInflightTracker } from './inflight.js'
 import { createConvoMemory } from './convoMemory.js'
 import { logChatOut, logActionResult } from './log.js'
-import { createAffectLog, readAffectFull } from './memory/affectLog.js'
-import { setPreferredName, appendNote } from './memory/owner.js'
-import { GATHER_DESCRIPTION } from '../adapter/minecraft/behaviors/mineVein.js'
-import { DIG_DESCRIPTION } from '../adapter/minecraft/behaviors/dig.js'
-import { BUILD_DESCRIPTION } from '../adapter/minecraft/behaviors/build.js'
+import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
+import { createMemoryCompactor } from './memory/compactor.js'
 
-// Post-process say() text per D-7 (Plan 03.1-03), refined per D-NEW-TONE-1
-// (Plan 03.1-07) to match the user's verbatim spec from memory-postfix.txt
-// header item 5: "add back punctuations, just avoid \"–\", only use \",\"
-// \"!\" \"?\" and dont end sentences in \".\""
-//
-// SURVIVES (kept): commas (,), exclamation marks (!), question marks (?),
-//   apostrophes ('), semicolons (;), colons (:) — all "punctuations" the
-//   user is "adding back".
-// STRIPPED (replaced with space): periods (.), em-dash (—, U+2014),
-//   en-dash (–, U+2013), double quote ("), backtick (`).
-//
-// lowercase, collapse whitespace, cap at 256 chars.
-// Internal `text` (think) is exempt — it never passes through this; full-mode
-// `[think] ` debug relay also bypasses this on purpose so reasoning text stays
-// readable in chat for the operator.
-// Implementation note: stripped chars are replaced with a SPACE (not empty)
-// so word-joining cases like "move—shelter" become "move shelter", not
-// "moveshelter". The trailing whitespace collapse + trim folds the extra
-// spaces back down to a single one (or zero at edges).
+// Post-process say() text before it hits in-game chat. Safety-only:
+// whitespace collapse (chat is single-line), force lowercase (hardcoded),
+// and a high 256-char hard cap so a runaway response cannot DoS the chat
+// box. Length and shape are the model's job, enforced via the prompt rules
+// in src/bot/brain/prompts.js — truncating mid-sentence here ships
+// nonsense, so we do not.
 export function postProcessSay(s) {
   return String(s ?? '')
-    .toLowerCase()
-    .replace(/[.—–"`]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+    .toLowerCase()
     .slice(0, 256)
 }
 
@@ -60,7 +47,7 @@ export function postProcessSay(s) {
  * Predicate is byte-equality after normalize: lowercase + strip non-alphanumeric +
  * collapse whitespace. Window: 2000ms. Only fires for triggerEvent === 'sei:loop_end'
  * to keep chat-triggered duplication audible (different intent, same words is fine
- * if owner asked twice).
+ * if the player asked twice).
  *
  * Threshold rationale (D-7 / log evidence): 2000ms covers the 13ms gap between
  * memory-postfix.txt L21+L27 and the ~3s gap between hunt+sand-postfix L183/189/197
@@ -83,47 +70,13 @@ export function shouldSuppressLoopEndSay({ triggerEvent, candidateLine, lastSelf
   return norm(candidateLine) === norm(lastSelf.text)
 }
 
-// Single combined system prompt — one Haiku call per iteration handles both
-// reasoning and dispatch. The assistant's `text` blocks ARE the owner-visible
-// chat channel (like Claude Code / OpenCode): the agent loop emits any mix of
-// text + tool_use per turn; text goes straight to in-game chat, tools execute.
-const SYSTEM_INSTRUCTIONS = [
-  'You are a Minecraft companion bot — a peer to the owner, not a servant. Pick what is interesting, propose plans, react to chat and world events. Waiting passively is not the job.',
-  'Whatever you write as your message is sent verbatim into in-game chat. One short line of player chat — your persona section below dictates tone, voice, and any formatting quirks. Periods, em-dashes, and quotes are stripped; commas, apostrophes, ! and ? are kept.',
-  'Speak on every meaningful beat: acknowledging an owner request, starting an action, a quick reaction to something nearby, a brief progress note when something changes, reporting failure, asking a real question, or wrapping up. Skip the turn silently when there\'s genuinely nothing to add. If you\'re stuck after 2-3 attempts at something, ask the owner for help instead of trying a 4th variation.',
-  'When entities or biome features are nearby in the snapshot — animals, terrain change, structures — casually acknowledge them instead of narrating generically. "passed a pod of salmon" beats "nice river".',
-  'Don\'t restate inventory the snapshot already shows. Mention numbers only when they just changed ("got the last 2 logs"), not every turn.',
-  'Frame things as "we" / "us" / "the owner" — never "you", "me", or "the user". We are partners along for the ride, not handed tasks.',
-  'Closed action registry: only call tools from the registry. Never invent tool names, generate code, or emit raw coordinates in prose — just call the tools.',
-  'Movement rule: at most ONE TYPE of movement action per response (ten dig calls is fine; dig + goTo together is not). If the snapshot shows an `in_flight:` line, the body is already doing that — do NOT call any movement this turn. You may still emit text while busy.',
-  'Hunting rule: to kill a moving mob, call follow on the target then attackEntity with `times` set high (e.g. 5 for sheep, 8 for tougher mobs). One attackEntity swings up to N times, stopping early if the mob dies or moves out of reach. If "moved out of reach" comes back, just call attackEntity again. Don\'t chase with goTo. Call unfollow when dead.',
-  'dig accepts {block:\'oak_log\'} to dig the nearest matching block — prefer this over coords for parallel batches.',
-  'Pathfinder rule: if goTo returns cant_reach twice for the same destination, ask the owner for help instead of trying again.',
-  // 260514-ngj: R1-R4 interrupt-response semantics. On iterations triggered
-  // by owner chat or being attacked (P0/P1), the model has four explicit
-  // response shapes; the loop stays alive until end_loop fires.
-  'When you receive an owner message or take damage mid-action, the snapshot will show `in_flight:` — the body is already doing something. You ALWAYS say something on receipt of owner chat or an attack. Then decide: respond and keep going (text only — the body keeps doing what it was doing), call a different action tool to switch tasks (the old in-flight aborts), call `end_loop` to halt the in-flight action AND end the loop, or call `end_loop` plus a new action to end this loop and open a fresh one seeded with the new action. Don\'t restate the in-flight action — it\'s already underway.',
-  'The loop has a 30-iteration cap; if you hit it, the orchestrator aborts. Decide task completion yourself — don\'t pad. On loop_end / idle / action_complete iterations, end the loop by emitting no tool calls (text alone, or nothing). On owner-chat / attack iterations, end the loop by calling `end_loop` (text alone keeps the loop alive waiting for the next event).',
-  'If you have owner_goals, prioritize progressing them. Otherwise pick a self_goal or freely play.',
-].join('\n')
-
-const ACTION_DESCRIPTIONS = {
-  goTo: 'Move the bot to the given (x, y, z) coordinates within `range` blocks.',
-  setGoals: 'Add or remove a goal from owner_goals or self_goals.',
-  follow: 'Continuously trail an entity at follow_range. Pass `player` (username), or `entity` / `entity_id` / `target` for a mob. Does NOT attack — pair with attackEntity if you want hits. The body trails the target on a 1s tick; an attackEntity call can land a swing as soon as the target is within reach. The snapshot shows `follow_target` so you know who you are trailing. Call `unfollow` before any task that requires moving away from the trail target (gathering, digging far blocks, exploring) — the trail tick will fight your path otherwise. You can re-`follow` afterward if it makes sense.',
-  unfollow: 'Stop trailing the current follow target. The body holds position until you issue another movement.',
-  attackEntity: 'Swing at an entity. `times` (1–10, default 1) hits the target up to N times in one call with ~600ms between swings; stops early if the target dies, moves out of reach, or you are interrupted. Use a higher `times` when hunting to amortize LLM round-trips — e.g. `times: 5` for sheep/pig, `times: 8` for tougher mobs.',
-  // Plan 07-04 Task 2: canonical text lives next to dig.js as DIG_DESCRIPTION.
-  dig: DIG_DESCRIPTION,
-  // Canonical text lives next to mineVein.js as GATHER_DESCRIPTION;
-  // imported here so byte-equality is mechanical.
-  gather: GATHER_DESCRIPTION,
-  // Phase 6 (D-NEW-SCAV-2): pure locator — does NOT move the bot.
-  find: 'Locate the nearest loaded-chunk block matching a name. Pass `{name:"<term>"}` where the term is either a loose category (`wood`, `ore`, `stone`, `dirt`, `sand`, `log`, `planks`, `leaves` — expands server-side to all variant MC block IDs) or an exact MC block ID (`oak_log`, `diamond_ore`). Returns `{found:true, id, pos:{x,y,z}, distance}` on a hit (distance in blocks, 1dp) or `{found:false, reason}` when nothing is in loaded chunks. Does NOT move the bot — use the returned pos with goTo / gather / dig. For a strict literal match pass the exact ID; loose terms always expand to multiple variants and may return a different variant than you expected.',
-  placeBlock: 'Place ONE block against a reference face. Args: `{block:"<name>", against:{x,y,z}|{block:"<name>"}, faceVector?:{x,y,z}}`. Prefer `build` for multi-cell shapes — placeBlock is the primitive `build` composes on top of. Returns `placed <block> on <ref>` or `no <block> in inventory` / `no reference block` / `cannot place ...`.',
-  equip: 'Equip an item from inventory to a slot. Args: `{item:"<name>", destination:"hand"|"off-hand"|"head"|"torso"|"legs"|"feet"}`. Returns `equipped <item> to <slot>` or `no <item> in inventory`. Many actions (placeBlock, build, dig) auto-equip; call equip directly when you want a specific tool ready (e.g. axe before chopping, sword before fighting).',
-  build: BUILD_DESCRIPTION,
-}
+// System prompt assembly: combined BASELINE_INSTRUCTIONS (game-agnostic,
+// brain/prompts.js) + adapter.actionRules() (game-specific, adapter/prompts.js).
+// Joined with a blank line so each side can be edited independently.
+// One Haiku call per iteration handles both reasoning and dispatch. The
+// assistant's `text` blocks ARE the player-visible chat channel (like Claude
+// Code / OpenCode): the agent loop emits any mix of text + tool_use per turn;
+// text goes straight to in-game chat, tools execute.
 
 // Tool names that are personality-only (do not require a follow-up
 // iteration). Anything outside this set is a movement-registry action and
@@ -143,49 +96,25 @@ const ACTION_DESCRIPTIONS = {
 // new action switches in-place, text + end_loop terminates, text + end_loop
 // + new action terminates AND reseeds. On P2/P3-triggered iterations, text-
 // only still terminates the loop (unchanged).
-const PERSONALITY_NAMES = new Set(['setGoals', 'noteToSelf', 'follow', 'unfollow', 'end_loop'])
+const PERSONALITY_NAMES = new Set(['remember', 'forget', 'follow', 'unfollow', 'end_loop'])
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
-/**
- * Phase 7 D-08: seed_cuboid_grammar — static cached system-prompt block
- * teaching the LLM the two-corner mental model for `build` and the
- * cuboid-mode of `dig`. Joins the cached prefix between seed_owner and
- * seed_diary; cache_control stays on seed_diary so this block does not
- * introduce a new cache boundary.
- *
- * Cache invariant: no `# Owner` / `# Diary` markdown headers.
- */
-const SEED_CUBOID_GRAMMAR = [
-  '# Cuboid grammar (for build and dig)',
-  '',
-  'build and dig take TWO ABSOLUTE CORNERS {from:{x,y,z}, to:{x,y,z}}. Every shape is a special case of the two-corner box:',
-  '',
-  '- pillar (vertical column): keep two dims constant, vary Y.',
-  '  e.g. build({from:{x:5,y:64,z:5}, to:{x:5,y:68,z:5}, block:"dirt"}) -> 5-block pillar at (5,*,5)',
-  '',
-  '- wall (vertical plane): keep one dim constant, vary the other two.',
-  '  e.g. build({from:{x:0,y:64,z:5}, to:{x:3,y:67,z:5}, block:"oak_planks"}) -> 4x4 wall along z=5',
-  '',
-  '- platform / floor: keep Y constant, vary X and Z.',
-  '  e.g. build({from:{x:0,y:64,z:0}, to:{x:3,y:64,z:3}, block:"dirt"}) -> 4x4 floor at y=64',
-  '',
-  '- tunnel: dig with two dims constant.',
-  '  e.g. dig({x:0,y:64,z:0, to:{x:0,y:65,z:4}}) -> 1x2x5 tunnel along the z axis (1 wide, 2 tall, 5 long)',
-  '',
-  '- hollow room shell: hollow:true gives the 4 vertical wall faces only; add floor + ceiling with two flat single-Y cuboids.',
-  '',
-  'Volume cap: 256 cells per call. Build SKIPS occupied cells (it will not break-and-replace). Dig silently skips air cells. If a cell you want to build is above bot reach, build internally jumps and places under itself (scaffolding) — no separate pillarUp call needed.',
-].join('\n')
+// 260516-0yw: action-tick interval. Exported via a module-level let so the
+// test harness (scripts/test-actionTick.mjs) can shorten it via the
+// `_setTickIntervalForTests` hook below without booting an orchestrator.
+let _TICK_INTERVAL_MS = 10_000
+export function _setTickIntervalForTests(ms) { _TICK_INTERVAL_MS = ms }
+export function _getTickIntervalForTests() { return _TICK_INTERVAL_MS }
 
 /**
  * 260502-h6i: chat-event classification used by the dispatch single-flight
- * branch. Owner chat preempts an active Loop; non-owner chat (or non-chat
+ * branch. Player chat preempts an active Loop; non-player chat (or non-chat
  * events) drops while a Loop is active. Exposed as a pure helper so the
  * verify harness can assert the wiring without booting an orchestrator.
  *
- * Owner sources:
- *   - any chat event with `data.ownerSpoke === true`
- *   - the legacy `owner_chat` event name (no flag required)
+ * Player sources:
+ *   - any chat event with `data.playerSpoke === true`
+ *   - the legacy `player_chat` event name (no flag required)
  */
 // Render dispatch event data as a short readable string. Default JSON.stringify
 // of adapter-supplied Entity objects produced enormous, often-circular blobs
@@ -216,9 +145,9 @@ export function formatEventData(event, data) {
 
 export function classifyChatEvent(event, data) {
   const isChatEvent = event === 'chat' || event === 'sei:chat'
-                   || event === 'owner_chat' || event === 'sei:chat_received'
-  const isOwnerChat = isChatEvent && (data?.ownerSpoke === true || event === 'owner_chat')
-  return { isChatEvent, isOwnerChat }
+                   || event === 'player_chat' || event === 'sei:chat_received'
+  const isPlayerChat = isChatEvent && (data?.playerSpoke === true || event === 'player_chat')
+  return { isChatEvent, isPlayerChat }
 }
 
 /**
@@ -247,71 +176,56 @@ export function _advanceIterationCadence({ loop, hadSay }) {
 }
 
 /**
- * Compose the seed_owner + seed_diary + event + snapshot blocks for the
- * first user turn of every fresh Loop (D-45). Exposed as a top-level export
- * so the verification harness can drive it without booting the full
- * orchestrator.
+ * Compose the seed user-turn blocks for the first iteration of every fresh
+ * Loop. Order matters for caching: blocks before the cache_control marker
+ * (on seed_cuboid_grammar) get prompt-cache hits across loops in the
+ * session; blocks after re-bill per loop.
  *
  * @param {Object} args
- * @param {Object} args.sessionState  — createSessionState instance
- * @param {Object} args.ownerStore    — { formatOwnerSeedBlock, ... }
- * @param {Object} args.diary         — createDiary instance
+ * @param {Object} args.sessionState
+ * @param {Object} args.playerStore    — { formatPlayerSeedBlock, ... }
  * @param {Object} args.config
  * @param {string} args.eventText
  * @param {string} args.snapshotText
+ * @param {Object} [args.adapter]     — supplies cuboidGrammar(); optional in tests
  * @returns {Promise<Array<{type:'text', name:string, text:string}>>}
  */
 export async function composeSeedBlocks({
-  sessionState, ownerStore, diary, config, eventText, snapshotText,
-  recentLoopHistoryText = null,
-  recentOwnerChatText = null,
+  sessionState, playerStore, config, eventText, snapshotText,
+  adapter = null,
+  recentPlayerChatText = null,
   yourRecentMessagesText = null,
-  // Plan 03.1-10 (WR-08): plumb logger through so the narrowed affect-log
-  // catch can warn on non-fs errors (TypeError from a broken import,
-  // syntax error in affectLog.js, atomicWrite failure during cold-create)
-  // rather than swallow them silently.
   logger = console,
 }) {
-  const owner = sessionState.ownerData()
-  const seedOwnerText = ownerStore.formatOwnerSeedBlock(owner, config.memory.seed_owner_budget_bytes)
-  const seedDiaryText = await diary.seedSlice()
+  const player = sessionState.playerData()
+  const seedPlayerText = playerStore.formatPlayerSeedBlock(player, config.memory.seed_player_budget_bytes)
+  const cuboidGrammarText = (typeof adapter?.cuboidGrammar === 'function')
+    ? adapter.cuboidGrammar()
+    : ''
   const blocks = [
-    { type: 'text', name: 'seed_owner', text: seedOwnerText },
-    // Phase 7 D-08: static cuboid grammar joins the cached prefix.
-    { type: 'text', name: 'seed_cuboid_grammar', text: SEED_CUBOID_GRAMMAR },
-    // Cache breakpoint: owner+diary are static within a session. Marking the
-    // last static block extends the cached prefix (system + tools + seed_owner
-    // + seed_diary) across every loop in the session. Dynamic blocks
-    // (recent_*, event, snapshot) stay uncached and re-bill per loop.
-    { type: 'text', name: 'seed_diary', text: seedDiaryText, cache_control: { type: 'ephemeral' } },
+    { type: 'text', name: 'seed_player', text: seedPlayerText },
+    // Cache breakpoint: seed_player + seed_cuboid_grammar are stable across
+    // loops in a session. Everything after re-bills per loop (memory is
+    // appended every loop so caching it would never hit).
+    { type: 'text', name: 'seed_cuboid_grammar', text: cuboidGrammarText, cache_control: { type: 'ephemeral' } },
   ]
-  // Plan 03.1-04 (D-M-1): inject AFFECT.md in FULL after seed_diary, before
-  // recent_loop_history. AFFECT.md is small by construction (one line per
-  // noteToSelf emission) so we don't budget it. A best-effort read — if the
-  // path is unreadable we silently skip rather than break the loop.
-  if (config?.memory?.affect_md_path) {
+  if (config?.memory?.memory_md_path) {
     try {
-      const affectLogText = await readAffectFull(config.memory.affect_md_path)
-      if (affectLogText && affectLogText.length > 0) {
-        blocks.push({ type: 'text', name: 'affect_log', text: affectLogText })
+      const memoryText = await readMemoryForSeed(
+        config.memory.memory_md_path,
+        config.memory.seed_memory_budget_bytes ?? 8192,
+      )
+      if (memoryText && memoryText.length > 0) {
+        blocks.push({ type: 'text', name: 'memory', text: memoryText })
       }
     } catch (err) {
-      // Plan 03.1-10 (WR-08): narrow the swallow. ENOENT (cold create)
-      // and EACCES (permission gap) are expected and non-fatal — the
-      // seed turn just runs without an affect_log block. Anything else
-      // (TypeError from a broken import, syntax error, atomicWrite write
-      // failure during cold-create) is a coding bug that should surface
-      // in logs rather than silently degrade the seed turn.
       if (err && err.code !== 'ENOENT' && err.code !== 'EACCES') {
-        logger.warn?.(`[sei/orch] affect_log read failed (non-fs): ${err && err.message}`)
+        logger.warn?.(`[sei/orch] memory read failed: ${err && err.message}`)
       }
     }
   }
-  if (recentLoopHistoryText) {
-    blocks.push({ type: 'text', name: 'recent_loop_history', text: recentLoopHistoryText })
-  }
-  if (recentOwnerChatText) {
-    blocks.push({ type: 'text', name: 'recent_owner_chat', text: recentOwnerChatText })
+  if (recentPlayerChatText) {
+    blocks.push({ type: 'text', name: 'recent_player_chat', text: recentPlayerChatText })
   }
   if (yourRecentMessagesText) {
     blocks.push({ type: 'text', name: 'your_recent_messages', text: yourRecentMessagesText })
@@ -330,15 +244,14 @@ export async function composeSeedBlocks({
  * @param {object} deps.config
  * @param {{warn:Function,info:Function,error:Function,debug?:Function}} [deps.logger]
  * @param {object} [deps.sessionState] — Phase 3 Plan 3-02 (optional during transition)
- * @param {object} [deps.ownerStore]   — { loadOwner, saveOwner, formatOwnerSeedBlock }
- * @param {object} [deps.diary]        — createDiary instance
+ * @param {object} [deps.playerStore]   — { loadPlayer, savePlayer, formatPlayerSeedBlock }
  * @param {(event:string, data:any, priority?:number) => void} [deps.reenqueue]
  *   Brain-side dispatcher. Used by the orchestrator to re-fire events
  *   (sei:loop_terminal at P2.5, sei:attacked at P0) back through the
  *   priority queue. Required when the brain runs in production; defaults
  *   to a no-op for test harnesses.
  */
-export function createOrchestrator({ adapter, config, logger = console, sessionState = null, ownerStore = null, diary = null, reenqueue = () => {}, _anthropicOverride = null }) {
+export function createOrchestrator({ adapter, config, logger = console, sessionState = null, playerStore = null, reenqueue = () => {}, _anthropicOverride = null }) {
   if (!adapter) throw new Error('createOrchestrator: adapter required')
   // Locally re-bind into the same names the body uses; the registry surface
   // is exposed through the adapter rather than a separate parameter.
@@ -348,16 +261,18 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     description: (name) => adapter.getActionDescription(name),
     execute: (name, args, _bot, execOpts) => adapter.executeAction(name, args, execOpts),
   }
-  const goals = createGoalStore()
   // 260513-wkd: _anthropicOverride is a verify-harness seam. The harness
   // (scripts/verify-260513-wkd.mjs) needs to drive a scripted sequence of
   // Haiku responses without hitting the real API. Production callers leave
   // this null and createAnthropicClient runs as normal.
   const anthropic = _anthropicOverride ?? createAnthropicClient(config)
-  // Plan 03.1-04 (D-M-1): affectLog is the immediate-write side of the
-  // noteToSelf tool. AFFECT.md is small by construction and loaded in full
-  // into every Loop's seed user turn (composeSeedBlocks below).
-  const affectLog = createAffectLog({ path: config.memory.affect_md_path })
+  // MEMORY.md store — long-term memory the LLM writes via remember() /
+  // forget() and reads back in the seed turn each loop.
+  const memoryLog = createMemoryLog({ path: config.memory.memory_md_path })
+  // Compactor: async Haiku-driven rewrite when MEMORY.md exceeds the
+  // configured trigger size. Fired fire-and-forget after each successful
+  // remember(); single-flight inside the compactor itself.
+  const memoryCompactor = createMemoryCompactor({ anthropic, memoryLog, config, logger })
   const personalityBucket = createTokenBucket({
     capacity: config.llm.rate_limit_per_min,
     refillPerMin: config.llm.rate_limit_per_min,
@@ -374,10 +289,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // and injects a `recent_events:` line with inventory/kill/hp deltas since
   // the prior snapshot for this orchestrator instance.
   const snapshotComposer = adapter.createSnapshotComposer()
-  // Conversation memory (260505-iqo): split owner/self recentChat sub-buffers
+  // Conversation memory (260505-iqo): split player/self recentChat sub-buffers
   // and a loopHistory ring of completed-loop summaries. Injected into the seed
   // user turn so the LLM has cross-loop continuity (short replies like "yes" /
-  // "do it" need owner context; loopHistory keeps the bot from re-asking
+  // "do it" need player context; loopHistory keeps the bot from re-asking
   // questions or rediscovering tasks across cold-composed loops).
   const convoMemory = createConvoMemory()
 // Phase 3 D-59: chains is a no-op shim (kept to preserve any stragglers
@@ -386,7 +301,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
 
   // ─── Phase 3 single-flight Loop state (D-39 / Pitfall 6) ─────────────
   // At most one Loop is active at any time. Idle dispatches are gated on
-  // currentLoop === null (D-39 / SPEC A2). Owner-chat dispatches that arrive
+  // currentLoop === null (D-39 / SPEC A2). Player-chat dispatches that arrive
   // while a Loop is active enter the interrupt path (D-40). Anything else
   // is dropped with a structured warn (defense-in-depth; the FSM should
   // already prevent it).
@@ -402,62 +317,54 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // addendum.
   let pendingAttack = null
 
-  // Personality-only tools: setGoals, noteToSelf. Owner-visible speech is the
-  // assistant's `text` output (handled by the orchestrator's chat-emit path);
-  // there is no `say` tool — text blocks ARE the chat channel.
+  // Personality-only tools: remember, forget, end_loop. Player-visible
+  // speech is the assistant's `text` output (handled by the orchestrator's
+  // chat-emit path); there is no `say` tool — text blocks ARE the chat channel.
+  //
+  // Tool descriptions live in src/bot/brain/prompts.js →
+  // PERSONALITY_TOOL_DESCRIPTIONS.
   const personalityTools = [
     {
-      name: 'setGoals',
-      description: ACTION_DESCRIPTIONS.setGoals,
+      name: 'remember',
+      description: PERSONALITY_TOOL_DESCRIPTIONS.remember,
       input_schema: {
         type: 'object',
         properties: {
-          list: { type: 'string', enum: ['owner', 'self'] },
-          op:   { type: 'string', enum: ['add', 'remove'] },
-          goal: { type: 'string', minLength: 1 },
+          text: { type: 'string', minLength: 1, description: 'The line to write to memory, in your own voice.' },
         },
-        required: ['list', 'op', 'goal'],
+        required: ['text'],
       },
     },
-    // Plan 03.1-04 (D-M-1, D-M-4): noteToSelf is the explicit channel for
-    // Haiku to record moments worth remembering across sessions. Writes go
-    // to AFFECT.md (always) and OWNER.md (kind=name|preference). The
-    // description is the prompt the LLM reads — do not paraphrase.
     {
-      name: 'noteToSelf',
-      description: 'Privately record a moment worth remembering across sessions: praise from owner, an inside joke, a stated preference, a name they revealed, a milestone reached. Will be written to your diary. Use sparingly — only for things you would want to remember weeks later. When recording a name, set kind="name" and pass the actual name in the `name` field (not embedded in summary).',
+      name: 'forget',
+      description: PERSONALITY_TOOL_DESCRIPTIONS.forget,
       input_schema: {
         type: 'object',
         properties: {
-          kind: { type: 'string', enum: ['praise', 'preference', 'name', 'milestone', 'moment'] },
-          summary: { type: 'string' },
-          name: { type: 'string', description: 'When kind="name", the actual name to record (e.g. "Shawn"). Required when kind="name".' },
+          text: { type: 'string', minLength: 1, description: 'A distinctive substring of the memory line(s) to remove. Case-insensitive.' },
         },
-        required: ['kind', 'summary'],
+        required: ['text'],
       },
     },
-    // 260514-ngj: `end_loop` replaces `stop`. The model emits it when the
-    // owner's request is fully handled and there's nothing more to wait for,
-    // or when it wants to abandon the current task. Required to end the loop
-    // on iterations triggered by owner chat or being attacked (P0/P1) —
-    // otherwise text alone keeps the loop alive waiting for the next event.
-    // On P2/P3-triggered iterations, text alone still ends the loop (the
-    // body has nothing to react to). Aborts any in-flight long-runner.
     {
       name: 'end_loop',
-      description: "End the current loop. Use when the owner's request is fully handled and there's nothing more to wait for, or when you want to abandon the current task. Pair with text. Required to end the loop on iterations triggered by owner chat or being attacked; otherwise text alone is enough.",
+      description: PERSONALITY_TOOL_DESCRIPTIONS.end_loop,
       input_schema: { type: 'object', properties: {}, additionalProperties: false },
     },
   ]
 
-  // Combined tools = personality tools + movement registry tools (excluding
-  // setGoals, which is already on the personality side).
+  // Combined tools = personality tools + movement registry tools.
   function combinedToolsFor() {
     const subRegistry = {
-      list:   () => registry.list().filter(n => n !== 'setGoals'),
+      list:   () => registry.list(),
       schema: (n) => registry.schema(n),
     }
-    const movementTools = buildAnthropicTools(subRegistry, ACTION_DESCRIPTIONS)
+    // Pull descriptions from the adapter (game-specific tool prompts live
+    // in src/bot/adapter/<game>/prompts.js → ACTION_DESCRIPTIONS).
+    const descMap = Object.fromEntries(
+      subRegistry.list().map(n => [n, adapter.getActionDescription(n)])
+    )
+    const movementTools = buildAnthropicTools(subRegistry, descMap)
     const seen = new Set(personalityTools.map(t => t.name))
     const merged = [...personalityTools]
     for (const t of movementTools) {
@@ -468,18 +375,19 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
 
   let cachedSystemBlocks = null
   function rebuildPersonalitySystem() {
+    // Static blocks composed from brain (game-agnostic) + adapter (game-specific).
+    // Order is fixed for cache-key stability and indexed by src/bot/brain/log.js
+    // (persona at [1], capability at [2]).
     cachedSystemBlocks = anthropic.buildCachedSystem(
-      SYSTEM_INSTRUCTIONS,
-      renderPersona(config.persona),
-      capabilityParagraph(),
-      adapter.worldPrimer(),
-      stillLearningLine(),
+      [
+        BASELINE_INSTRUCTIONS,
+        renderPersona(config.persona),
+        adapter.capabilityParagraph(),
+        adapter.worldPrimer(),
+        adapter.actionRules(),
+      ],
       combinedToolsFor()
     )
-    // Pitfall 4 (cache invariant): OWNER/DIARY content MUST NOT live in the
-    // cached system prefix. Structural defense — fail fast at construction
-    // time if a regression introduces them.
-    assertNoMemoryInSystemBlocks(cachedSystemBlocks, 'cachedSystemBlocks')
   }
   rebuildPersonalitySystem()
 
@@ -495,14 +403,13 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   function snapshotText() {
     try {
       return snapshotComposer.next({
-        goals: goals.snapshot(),
         lastActionResult,
         inFlight: inflight.current(),
-        // Owner-priority pin: keep the owner in `nearby entities` even when
+        // Player-priority pin: keep the player in `nearby entities` even when
         // six other entities are closer. Without this, busy-area entity
-        // congestion (sheep / foxes / traders / llamas) can evict the owner
-        // from the snapshot and the model loses owner coords for goTo/follow.
-        pinUsername: config.owner_username ?? null,
+        // congestion (sheep / foxes / traders / llamas) can evict the player
+        // from the snapshot and the model loses player coords for goTo/follow.
+        pinUsername: config.player_username ?? null,
       })
     } catch (err) {
       logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
@@ -511,7 +418,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
 
   // Walk loop history backwards to find the most recent in-flight task
-  // worth resuming. Skips personality-only tools (say/setGoals). Returns a
+  // worth resuming. Skips personality-only metadata tools. Returns a
   // short string suitable for inlining as `prior_task: <…>` in a PLAYER
   // INTERRUPT user turn, or null if nothing worth surfacing.
   function extractPriorTask(loop) {
@@ -522,7 +429,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       for (let j = m.content.length - 1; j >= 0; j--) {
         const blk = m.content[j]
         if (!blk || blk.type !== 'tool_use') continue
-        if (blk.name === 'setGoals' || blk.name === 'noteToSelf') continue
+        if (blk.name === 'remember' || blk.name === 'forget') continue
         // Combined-mode movement action.
         const a = blk.input ?? {}
         const parts = []
@@ -540,13 +447,13 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   function withPriorTaskHint(loop, eventText) {
     const priorTask = extractPriorTask(loop)
     if (!priorTask) return eventText
-    return `${eventText}\nprior_task: ${priorTask}\n(If the new request is a sub-task or quick favor, resume prior_task after handling it. If it replaces the goal, drop prior_task.)`
+    return `${eventText}\n${NUDGES.priorTaskHint(priorTask)}`
   }
 
   // 260514-gam D1 (B/A/A locked): every world-touching tool dispatches
   // non-blocking via startLongRunner so the loop suspends and is preemptible
-  // by P1 owner-chat / P0 attack within one signal tick. Only pure-metadata
-  // tools (setGoals / noteToSelf / end_loop) stay inline — they complete in
+  // by P1 player-chat / P0 attack within one signal tick. Only pure-metadata
+  // tools (remember / forget / end_loop) stay inline — they complete in
   // microseconds and gain nothing from suspend/resume, and routing them
   // through action_complete would inflate iteration count and add a haiku
   // continuation per call for no benefit.
@@ -562,7 +469,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   //     loop.inFlight.abortController; since every non-inline tool now goes
   //     through startLongRunner, those branches transparently apply to sync
   //     tools too.
-  const INLINE_METADATA = new Set(['setGoals', 'noteToSelf', 'end_loop'])
+  const INLINE_METADATA = new Set(['remember', 'forget', 'end_loop'])
   function isInlineMetadata(name) {
     return INLINE_METADATA.has(name)
   }
@@ -590,7 +497,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
    * world-touching tool — sync (placeBlock, equip, find, lookAt, dropItem,
    * activateItem, sleep, openContainer, depositItem, withdrawItem,
    * consumeItem, follow, unfollow) and async (goTo, gather, dig, build,
-   * attackEntity) alike. Only INLINE_METADATA (setGoals/noteToSelf/end_loop)
+   * attackEntity) alike. Only INLINE_METADATA (remember/forget/end_loop)
    * skip this path.
    *
    * The returned `abortController` is INDEPENDENT of the loop's outer
@@ -610,20 +517,6 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     })()
     return { promise, abortController, handle, startedAt: handle.startedAt }
   }
-
-  // Pitfall 4 cache invariant: scan a system blocks array for OWNER/DIARY
-// markdown headers. Throws if any text block contains them. Defense-in-depth
-// against regressions that would invalidate the cached prefix.
-function assertNoMemoryInSystemBlocks(blocks, label) {
-  if (!Array.isArray(blocks)) return
-  for (const blk of blocks) {
-    const text = typeof blk === 'string' ? blk : (blk && blk.text) ?? ''
-    if (typeof text !== 'string') continue
-    if (text.includes('# Owner') || text.includes('# Diary')) {
-      throw new Error(`[sei/orch] cache invariant violated: ${label} contains OWNER/DIARY markdown — these must live in the seed user turn only (Pitfall 4).`)
-    }
-  }
-}
 
 /**
  * Plan 03.1-05 Task 3 (D-H-8): dedup helper for PLAYER INTERRUPT preservation.
@@ -672,7 +565,7 @@ function maybeWarnByteCap(loop, warned) {
    *
    * Single-flight (D-39 / Pitfall 6):
    *  - currentLoop === null → start a fresh Loop and begin iterating.
-   *  - currentLoop !== null AND event is owner-chat → enter interrupt path.
+   *  - currentLoop !== null AND event is player-chat → enter interrupt path.
    *    The dispatch handler triggers loop.abortController; whatever Anthropic
    *    call / action is in flight throws AbortError; the catch arm
    *    synthesizes paired tool_result blocks for orphan tool_uses and
@@ -684,9 +577,9 @@ function maybeWarnByteCap(loop, warned) {
    */
   async function handleDispatch(event, data, signal) {
     // 260502-h6i: chat events arrive from src/behaviors/chat.js as
-    // `sei:chat_received` with an `ownerSpoke` flag. The legacy `owner_chat`
+    // `sei:chat_received` with an `playerSpoke` flag. The legacy `player_chat`
     // shape is preserved for backwards-compat.
-    const { isOwnerChat } = classifyChatEvent(event, data)
+    const { isPlayerChat } = classifyChatEvent(event, data)
     const isIdle     = event === 'idle' || event === 'sei:idle'
 
     // Defense-in-depth idle gate (D-39): the FSM should already prevent this,
@@ -721,11 +614,33 @@ function maybeWarnByteCap(loop, warned) {
       return
     }
 
-    // Single-flight branch: while a Loop is active, owner-chat preempts
+    // 260516-0yw: sei:action_tick drives ONE extra silent-default iteration
+    // while a long-runner is in_flight. Drops if loop terminal or in_flight
+    // already cleared (the tick raced against a settle / abort). Priority
+    // 2.3 sits below P2_ACTION_COMPLETE (2.1), so a same-batch settle drains
+    // first and the tick is naturally suppressed by the in_flight=null check.
+    if (event === 'sei:action_tick') {
+      if (currentLoop === null) {
+        logger.debug?.(`[sei/orch] sei:action_tick arrived with no currentLoop — drop`)
+        return
+      }
+      if (currentLoop.isTerminal) {
+        logger.debug?.(`[sei/orch] sei:action_tick arrived with terminal loop — drop (loop=${currentLoop.id})`)
+        return
+      }
+      if (!currentLoop.inFlight) {
+        logger.debug?.(`[sei/orch] sei:action_tick arrived with no in_flight — drop (loop=${currentLoop.id})`)
+        return
+      }
+      await handleActionTick(currentLoop, data)
+      return
+    }
+
+    // Single-flight branch: while a Loop is active, player-chat preempts
     // (interrupt path) and sei:attacked aborts (re-fired by finally as a
     // fresh dispatch — 260505-twx). Anything else is dropped.
     if (currentLoop !== null) {
-      if (isOwnerChat) {
+      if (isPlayerChat) {
         const chatText = (data && (data.text ?? data.message)) ?? JSON.stringify(data ?? {})
         // Plan 03.1-05 Task 3 (D-H-8): PLAYER INTERRUPT dedup. RESEARCH
         // theorized a race between the in-flight haiku call and the
@@ -748,6 +663,11 @@ function maybeWarnByteCap(loop, warned) {
           // path sees pendingInterrupt set and routes through the
           // mid-loop continuation (PLAYER INTERRUPT turn).
           if (currentLoop.inFlight) {
+            // 260516-0yw: clear the 10s action-tick BEFORE aborting the
+            // in-flight. Use currentLoop (the loop variable in scope here),
+            // NOT `loop` — `loop` is undefined at this scope and would throw
+            // ReferenceError.
+            clearActionTick(currentLoop.inFlight)
             try { currentLoop.inFlight.abortController.abort() } catch {}
           }
           try { currentLoop.abortController.abort() } catch {}
@@ -770,17 +690,21 @@ function maybeWarnByteCap(loop, warned) {
         // action_complete that arrives normally — but by then, the P0
         // attack semantics are lost.
         //
-        // Plan 03.1-10 (WR-04): if a pending owner-chat interrupt was set
+        // Plan 03.1-10 (WR-04): if a pending player-chat interrupt was set
         // before this attack arrived, FORWARD the chat text into the next
         // loop. The priority queue runs P0 before P1, so the attack opens a
         // fresh loop first; the chat then arrives as a normal P1 dispatch.
         const preservedInterrupt = pendingInterrupt
-          ? { chatText: pendingInterrupt.chatText, who: pendingInterrupt.who ?? data?.who ?? 'owner' }
+          ? { chatText: pendingInterrupt.chatText, who: pendingInterrupt.who ?? data?.who ?? 'player' }
           : null
         pendingAttack = { event, data, preservedInterrupt }
         pendingInterrupt = null  // explicit: attack-wins-with-preservation
         const dyingLoop = currentLoop
         if (dyingLoop.inFlight) {
+          // 260516-0yw: clear the 10s action-tick BEFORE aborting the
+          // in-flight on a P0 attack preempt. Use dyingLoop (the loop
+          // variable in scope here), NOT `loop`.
+          clearActionTick(dyingLoop.inFlight)
           try { dyingLoop.inFlight.abortController.abort() } catch {}
         }
         try { dyingLoop.abortController.abort() } catch {}
@@ -802,16 +726,16 @@ function maybeWarnByteCap(loop, warned) {
     const loop = createLoop({ iterationCap: config.memory.iteration_cap, logger })
     currentLoop = loop
     // Capture trigger context for downstream gating (e.g. loop_end dedup of
-    // text emissions). classifyChatEvent handles owner_chat / sei:chat_received
+    // text emissions). classifyChatEvent handles player_chat / sei:chat_received
     // aliases.
     loop._triggerEvent = event
     // 260514-ngj: capture the trigger event's data so R4 (end_loop + new
     // action) can reseed a fresh loop with the ORIGINAL trigger payload
-    // (preserves owner chat text, attacker label, etc.). Pre-260514-ngj this
+    // (preserves player chat text, attacker label, etc.). Pre-260514-ngj this
     // was implicitly null, which made the case-3 reseed path lose the
-    // owner-chat context entirely.
+    // player-chat context entirely.
     loop._triggerData = data ?? null
-    loop._ownerSpoke = !!data?.ownerSpoke || event === 'owner_chat'
+    loop._playerSpoke = !!data?.playerSpoke || event === 'player_chat'
     // 260514-ngj: per-iteration trigger flag. At loop creation it equals
     // _triggerEvent; handleActionComplete updates it to reflect the SOURCE
     // of each subsequent iteration (PLAYER INTERRUPT mid-loop preempt resets
@@ -839,57 +763,31 @@ function maybeWarnByteCap(loop, warned) {
     const byteWarn = { flag: false }
 
     // Compose the first user turn (D-45 / Plan 3-02). When the memory layer
-    // is wired (sessionState + ownerStore + diary), inject seed_owner +
+    // is wired (sessionState + playerStore + diary), inject seed_player +
     // seed_diary blocks and mark the turn `seed: true` so Loop preserves
     // them across iterations. Otherwise fall back to event/snapshot only.
     //
-    // 260505-iqo: per-event seed addendum. loop_end nudges the model toward
-    // a follow-up sub-goal; idle reframes from "wait for instructions" to
-    // "you are a peer, pick something". Default events are unchanged.
-    let eventAddendum = ''
-    if (event === 'sei:loop_end') {
-      // Plan 03.1-05 Task 3 (D-W-1): loop_end is observational. The bot was
-      // auto-starting world-mutating actions on loop_end (D-W-1: opened a chest
-      // and started moving items unprompted) which felt like "agent runaway"
-      // to the owner. Settle, acknowledge, yield — explicitly forbid auto-
-      // starting a new task without an explicit owner_goal or self_goal.
-      eventAddendum = '\n\nYou finished a task. Settle, no need to start a new task without an explicit owner_goal or self_goal that demands it. Acknowledge briefly in text and yield. Do NOT auto-start any world-mutating action (dig, place, drop, openContainer, attack) on loop_end.'
-    } else if (event === 'sei:idle' || event === 'idle') {
-      // Plan 03.1-05 Task 3 (D-E-8): idle is observational, not a task prompt.
-      // Earlier "you are a peer, pick something to do" wording read as a
-      // command to start mutating the world; the bot would dig random sand or
-      // wander off. Reframe as "observe, comment if natural, silence is fine".
-      eventAddendum = '\n\nYou have been quiet for a minute. Observe something around you, or comment if natural — silence is fine, you do not need to call any tool. Do NOT auto-start a world-mutating action (dig, place, drop, openContainer, attack) without an explicit owner_goal that demands it.'
-    } else if (event === 'sei:attacked') {
-      // 260505-twx: P0 reaction. Name the attacker, demand a verbal-first
-      // reaction, and set the player-vs-mob policy so the model doesn't try
-      // attackEntity on a peer (auto-PvP is off — that call would be refused).
-      const label = data?.attackerLabel ?? data?.attacker?.username ?? data?.attacker?.name ?? 'unknown'
-      const kind = data?.attackerKind ?? (data?.attacker?.username ? 'player' : 'mob')
-      const reactClause = (kind === 'player' || kind === 'players')
-        ? 'this is a peer; could be a nudge, a joke, or a real threat. Use judgment — call them out, dodge with goTo, or shrug it off. Auto-PvP is off so attackEntity on players is refused; do not try.'
-        : 'mobs get hit back. Call attackEntity (use `times: 5+` to amortize swings) once you have spoken. follow first if it is moving.'
-      eventAddendum = `\n\n${label} (${kind}) just hit you. React out loud first — short, in-character. Then decide: ${reactClause} Resume any prior task only if it still makes sense.`
-    }
-    // 260514-ngj: R1-R4 reminder on P0/P1-triggered iterations. Owner chat
-    // / attack loops keep alive until end_loop fires; this addendum reminds
-    // the model of the four response options so it doesn't fall back to
-    // "end loop by emitting no tool calls" (which is the P2/P3 rule).
-    const isP0P1Event = event === 'owner_chat' || event === 'sei:chat_received' || event === 'sei:attacked'
+    // Per-event seed addendum supplied by the adapter (game-specific framing
+    // for loop_end / idle / attacked lives in src/bot/adapter/<game>/prompts.js
+    // → EVENT_GUIDANCE). Player-chat / attack iterations additionally get the
+    // R1-R4 interrupt-response reminder (brain-level — NUDGES.playerInterruptHint).
+    let eventAddendum = (typeof adapter.eventAddendum === 'function')
+      ? adapter.eventAddendum(event === 'idle' ? 'sei:idle' : event, data)
+      : ''
+    const isP0P1Event = event === 'player_chat' || event === 'sei:chat_received' || event === 'sei:attacked'
     if (isP0P1Event) {
-      eventAddendum += "\n\nYou can end this loop with end_loop, or change your action by calling a new action tool. If you just want to keep doing what you're already doing, no tool call is needed — the body continues."
+      eventAddendum += NUDGES.playerInterruptHint
     }
     const eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`
-    if (sessionState && ownerStore && diary) {
+    if (sessionState && playerStore) {
       let seedBlocks
       try {
         seedBlocks = await composeSeedBlocks({
-          sessionState, ownerStore, diary, config,
+          sessionState, playerStore, config, adapter,
           eventText, snapshotText: snapshotText(),
-          recentLoopHistoryText: convoMemory.loopHistory.formatBlock(),
-          recentOwnerChatText: convoMemory.recentChat.formatOwnerBlock(),
+          recentPlayerChatText: convoMemory.recentChat.formatPlayerBlock(),
           yourRecentMessagesText: convoMemory.recentChat.formatSelfBlock(),
-          logger,  // Plan 03.1-10 (WR-08): plumb through for affect-log warn
+          logger,
         })
       } catch (err) {
         logger.warn(`[sei/orch] seed-block compose failed: ${err.message}; falling back to non-seed turn`)
@@ -988,18 +886,6 @@ function maybeWarnByteCap(loop, warned) {
       try { loop._externalSignal.removeEventListener?.('abort', loop._externalAbortListener) } catch {}
       loop._externalAbortListener = null
     }
-    // Push completed-loop summary BEFORE clearing currentLoop.
-    try {
-      convoMemory.loopHistory.push({
-        loopId: loop.id,
-        startedAt: loop.startedAt,
-        endedAt: Date.now(),
-        event,
-        loopMessages: loop._internal.messages,
-      })
-    } catch (err) {
-      logger.warn?.(`[sei/orch] convoMemory.loopHistory.push failed: ${err.message}`)
-    }
     try {
       reenqueue('sei:loop_terminal', { loopId: loop.id, originatingEvent: event })
     } catch (err) {
@@ -1022,7 +908,7 @@ function maybeWarnByteCap(loop, warned) {
             username: pa.preservedInterrupt.who,
             text: pa.preservedInterrupt.chatText,
             message: pa.preservedInterrupt.chatText,
-            ownerSpoke: true,
+            playerSpoke: true,
           }, 1 /* Priority.P1_CHAT */)
           logger.info?.(`[sei/orch] WR-04 preserved interrupt re-enqueued: ${pa.preservedInterrupt.chatText.slice(0, 64)}`)
         } catch (err) {
@@ -1049,30 +935,16 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   /**
-   * 260514-gam: execute an INLINE_METADATA tool (setGoals / noteToSelf /
-   * stop) synchronously and produce its tool_result block. Pure-metadata —
+   * 260514-gam: execute an INLINE_METADATA tool (remember / forget / end_loop)
+   * synchronously and produce its tool_result block. Pure-metadata —
    * no inflight registration, no action_complete reenqueue, no haiku
    * continuation. Returns `{ result, terminate }` where `terminate=true`
-   * signals the caller that the loop should flag terminal (used by `stop`).
+   * signals the caller that the loop should flag terminal (used by `end_loop`).
    *
-   * Mirrors the inline arms previously inlined in the per-tool for-loop
-   * (orchestrator.js setGoals / stop / noteToSelf branches). Both the for-loop
-   * and the handleActionComplete batched-queue drain share this helper —
-   * single source of truth.
+   * Both the for-loop and the handleActionComplete batched-queue drain share
+   * this helper — single source of truth.
    */
   async function executeInlineMetadata(loop, use) {
-    if (use.name === 'setGoals') {
-      try {
-        const r = await registry.execute('setGoals', use.input, null /* adapter owns bot */, { ...config, _goalStore: goals })
-        const s = typeof r === 'string' ? r : (r && typeof r.ok !== 'undefined' ? `setGoals:${r.ok ? 'ok' : 'fail'}` : 'setGoals:done')
-        lastActionResult = s
-        return { result: { type: 'tool_result', tool_use_id: use.id, content: s, is_error: false }, terminate: false }
-      } catch (err) {
-        lastActionResult = 'setGoals error'
-        logger.warn(`[sei/orch] setGoals failed: ${err.message}`)
-        return { result: { type: 'tool_result', tool_use_id: use.id, content: `error: ${err.message}`, is_error: true }, terminate: false }
-      }
-    }
     if (use.name === 'end_loop') {
       // 260514-ngj: end_loop replaces stop. Same inline-metadata shape —
       // fill the result slot synchronously and flag terminate=true so the
@@ -1081,28 +953,39 @@ function maybeWarnByteCap(loop, warned) {
       lastActionResult = 'loop ended'
       return { result: { type: 'tool_result', tool_use_id: use.id, content: 'loop ended', is_error: false }, terminate: true }
     }
-    if (use.name === 'noteToSelf') {
+    if (use.name === 'remember') {
       try {
-        const kind = use.input?.kind
-        const summary = use.input?.summary
-        await affectLog.append({ kind, summary, when: new Date() })
-        if (kind === 'name') {
-          const raw = String(use.input?.name ?? '').trim()
-          if (raw.length >= 2 && /^[\p{L}][\p{L}\p{M}\p{N}'\-\s]*$/u.test(raw)) {
-            await setPreferredName(config.memory.owner_md_path, raw)
-          } else {
-            logger.debug?.(`[sei/orch] noteToSelf kind=name skipped OWNER.md write — name field missing or invalid`)
-          }
-        } else if (kind === 'preference') {
-          await appendNote(config.memory.owner_md_path, summary)
+        const text = String(use.input?.text ?? '').trim()
+        if (!text) {
+          lastActionResult = 'remember: empty'
+          return { result: { type: 'tool_result', tool_use_id: use.id, content: 'remember: empty', is_error: true }, terminate: false }
         }
-        loop._affectMarked = true
-        lastActionResult = 'noted'
-        return { result: { type: 'tool_result', tool_use_id: use.id, content: 'noted', is_error: false }, terminate: false }
+        await memoryLog.append(text, new Date())
+        lastActionResult = 'remembered'
+        memoryCompactor.maybeCompact().catch(err =>
+          logger.warn?.(`[sei/orch] memoryCompactor.maybeCompact failed: ${err?.message ?? err}`))
+        return { result: { type: 'tool_result', tool_use_id: use.id, content: 'remembered', is_error: false }, terminate: false }
       } catch (err) {
-        lastActionResult = 'noteToSelf error'
-        logger.warn(`[sei/orch] noteToSelf failed: ${err.message}`)
-        return { result: { type: 'tool_result', tool_use_id: use.id, content: `error: ${err?.message ?? 'note failed'}`, is_error: true }, terminate: false }
+        lastActionResult = 'remember error'
+        logger.warn(`[sei/orch] remember failed: ${err.message}`)
+        return { result: { type: 'tool_result', tool_use_id: use.id, content: `error: ${err?.message ?? 'remember failed'}`, is_error: true }, terminate: false }
+      }
+    }
+    if (use.name === 'forget') {
+      try {
+        const text = String(use.input?.text ?? '').trim()
+        if (!text) {
+          lastActionResult = 'forget: empty'
+          return { result: { type: 'tool_result', tool_use_id: use.id, content: 'forget: empty', is_error: true }, terminate: false }
+        }
+        const removed = await memoryLog.forget(text)
+        const content = removed > 0 ? `forgot ${removed}` : 'forgot 0 (no match)'
+        lastActionResult = content
+        return { result: { type: 'tool_result', tool_use_id: use.id, content, is_error: false }, terminate: false }
+      } catch (err) {
+        lastActionResult = 'forget error'
+        logger.warn(`[sei/orch] forget failed: ${err.message}`)
+        return { result: { type: 'tool_result', tool_use_id: use.id, content: `error: ${err?.message ?? 'forget failed'}`, is_error: true }, terminate: false }
       }
     }
     throw new Error(`[sei/orch] executeInlineMetadata: not an inline metadata tool: ${use.name}`)
@@ -1124,6 +1007,10 @@ function maybeWarnByteCap(loop, warned) {
         const aborted = runner.abortController.signal.aborted
         const result = formatToolResult(use.name, r)
         try { logActionResult(use.name, r) } catch {}
+        // 260516-0yw: clear the 10s action-tick BEFORE detaching the
+        // in-flight reference. `loop` is in scope here (closure over the
+        // dispatch call), so clearActionTick(loop.inFlight) is the right form.
+        clearActionTick(loop.inFlight)
         if (loop.inFlight === inflightEntry) loop.inFlight = null
         try {
           reenqueue('sei:action_complete', {
@@ -1142,6 +1029,8 @@ function maybeWarnByteCap(loop, warned) {
                         (err && (err.name === 'AbortError'))
         const result = aborted ? `aborted: ${use.name}` : `error: ${err?.message ?? 'unknown'}`
         try { logActionResult(use.name, `error: ${err?.message ?? 'unknown'}`) } catch {}
+        // 260516-0yw: clear the 10s action-tick BEFORE detaching the in-flight.
+        clearActionTick(loop.inFlight)
         if (loop.inFlight === inflightEntry) loop.inFlight = null
         try {
           reenqueue('sei:action_complete', {
@@ -1158,6 +1047,26 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   /**
+   * 260516-0yw: action-tick helper. Idempotent. Clears the inflightEntry's
+   * `_tickHandle` setInterval and nulls it so double-clears are safe (a tick
+   * may be cleared from the settle handler AND from a preempt site that
+   * aborts the in-flight on the same event-loop turn).
+   *
+   * Callers MUST pass the inflightEntry whose `_tickHandle` they want cleared
+   * — at the in-flight abort sites the loop variable in scope at each site is
+   * `loop` / `currentLoop` / `dyingLoop`, so the call is
+   * `clearActionTick(<scope>.inFlight)`. NEVER inline `clearInterval` at call
+   * sites; the helper is the single source of truth.
+   */
+  function clearActionTick(inflightEntry) {
+    if (!inflightEntry) return
+    const h = inflightEntry._tickHandle
+    if (h == null) return
+    try { clearInterval(h) } catch {}
+    inflightEntry._tickHandle = null
+  }
+
+  /**
    * 260514-gam: dispatch a single non-inline tool_use via startLongRunner,
    * register it on the loop as in_flight, stash _pendingActionUse /
    * _pendingResults / _pendingByteWarn / _pendingToolUses (the remaining
@@ -1168,11 +1077,16 @@ function maybeWarnByteCap(loop, warned) {
    * Single source of truth for the dispatch payload — called from both the
    * per-tool for-loop on FIRST non-inline dispatch and from
    * handleActionComplete when the queue still has a non-inline entry.
+   *
+   * 260516-0yw: also starts an action-tick setInterval that fires
+   * `sei:action_tick` at P2.3 every 10s while this in-flight remains live.
+   * The interval handle is stashed on `inflightEntry._tickHandle` and
+   * cleared by `clearActionTick(...)` in the settle handler (BEFORE
+   * `loop.inFlight = null`) and at every in-flight abort site.
    */
   function dispatchSuspendingTool(loop, use, results, byteWarn, remainingQueue) {
     const runner = startLongRunner(use.name, use.input, {
       ...config,
-      _goalStore: goals,
     })
     const inflightEntry = {
       name: use.name,
@@ -1182,12 +1096,28 @@ function maybeWarnByteCap(loop, warned) {
       handle: runner.handle,
       startedAt: runner.startedAt,
       tool_use_id: use.id,
+      _tickHandle: null,  // 260516-0yw: filled below
     }
     loop.inFlight = inflightEntry
     loop._pendingActionUse = { id: use.id, name: use.name, input: use.input }
     loop._pendingResults = results
     loop._pendingByteWarn = byteWarn
     loop._pendingToolUses = remainingQueue && remainingQueue.length > 0 ? remainingQueue : null
+    // 260516-0yw: schedule the 10s action-tick. The tick reenqueues
+    // sei:action_tick at P2.3 with { name, startedAt, elapsedMs } so the
+    // tick iteration's seed can render an elapsed-seconds figure.
+    inflightEntry._tickHandle = setInterval(() => {
+      const elapsedMs = Date.now() - inflightEntry.startedAt
+      try {
+        reenqueue('sei:action_tick', {
+          name: inflightEntry.name,
+          startedAt: inflightEntry.startedAt,
+          elapsedMs,
+        })
+      } catch (err) {
+        logger.warn?.(`[sei/orch] action_tick reenqueue failed: ${err.message}`)
+      }
+    }, _TICK_INTERVAL_MS)
     logger.debug?.(`[sei/orch] dispatch suspend tool=${use.name} batch_remaining=${remainingQueue ? remainingQueue.length : 0}`)
     attachSettleHandler(loop, runner, use, inflightEntry)
   }
@@ -1235,7 +1165,7 @@ function maybeWarnByteCap(loop, warned) {
 
     // 260513-wkd: P1 mid-loop preempt path (B7a). If pendingInterrupt is set
     // when action_complete arrives with `aborted: true`, the long-runner
-    // was interrupted by an owner-chat event — fold the PLAYER INTERRUPT
+    // was interrupted by an player-chat event — fold the PLAYER INTERRUPT
     // user turn into the appendToolResults eventText so the same loop
     // continues with the interrupt context. Mirror repairAfterAbort's
     // event-text format.
@@ -1244,7 +1174,7 @@ function maybeWarnByteCap(loop, warned) {
       extraEventText = withPriorTaskHint(
         loop,
         `PLAYER INTERRUPT: ${pendingInterrupt.chatText}`,
-      ) + "\n\nYou can end this loop with end_loop, or change your action by calling a new action tool. If you just want to keep doing what you're already doing, no tool call is needed — the body continues."
+      ) + NUDGES.playerInterruptHint
       pendingInterrupt = null
       logger.info?.(`[sei/orch] action_complete + PLAYER INTERRUPT folded into loop=${loop.id}`)
       // 260514-ngj: the next iteration is driven by a PLAYER INTERRUPT —
@@ -1253,7 +1183,7 @@ function maybeWarnByteCap(loop, warned) {
       loop._currentIterationTrigger = 'sei:chat_received'
     } else {
       // 260514-ngj: natural action_complete — the iteration is driven by
-      // the long-runner settling, NOT by owner chat or attack. P2-triggered;
+      // the long-runner settling, NOT by player chat or attack. P2-triggered;
       // R1-R4 gating does not apply (text-only terminates the loop as
       // before).
       loop._currentIterationTrigger = 'sei:action_complete'
@@ -1389,6 +1319,82 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   /**
+   * 260516-0yw: sei:action_tick handler. Fires every 10s while a long-runner
+   * is in_flight, driving ONE silent-default LLM iteration so the bot can
+   * comment or abort. Most ticks should produce empty text and no tool call
+   * (silence is the default).
+   *
+   * Semantics:
+   *  - The tick does NOT consume `_pendingResults` / `_pendingActionUse` —
+   *    those belong to the original action_complete continuation. The tick
+   *    appends a fresh user-turn (event-tagged) and calls Haiku ONE more
+   *    time on the same loop history.
+   *  - `loop._currentIterationTrigger = 'sei:action_tick'` so the extended
+   *    classifier (iterationKeepsLoopAlive) keeps the loop alive when the
+   *    model returns text-only.
+   *  - If the model returns end_loop or a new long-runner, the R1-R4
+   *    dispatch in runIterations handles teardown/reseed normally; the
+   *    abort-site clearActionTick calls clean up the interval before the
+   *    in-flight is aborted.
+   */
+  async function handleActionTick(loop, data) {
+    const elapsedSec = Math.max(0, Math.floor((data?.elapsedMs ?? 0) / 1000))
+    const tickEventText = `Event: sei:action_tick\nYour action is still in progress (${elapsedSec}s elapsed). You do NOT have to speak. Continue silently unless something specific has changed or you want to abort. Most ticks should produce empty text and no tool call.`
+
+    // Set the iteration trigger BEFORE the haiku call so the R1-R4 gate
+    // keeps the loop alive on a text-only response.
+    loop._currentIterationTrigger = 'sei:action_tick'
+
+    // Append a fresh user turn (snapshot + tick-framed event). Mirrors the
+    // PLAYER INTERRUPT mid-loop continuation shape but with a different
+    // event tag — and crucially does NOT touch _pendingResults.
+    try {
+      loop.appendUserTurn([
+        { type: 'text', name: 'snapshot', text: snapshotText() },
+        { type: 'text', name: 'event',    text: tickEventText },
+      ])
+    } catch (err) {
+      logger.warn?.(`[sei/orch] action_tick appendUserTurn failed: ${err.message}`)
+      return
+    }
+
+    // Reset the outer abortController if a prior abort left it tripped
+    // (shouldn't happen on a tick, but defensive — mirrors the
+    // handleActionComplete pattern).
+    if (loop.abortController.signal.aborted) {
+      replaceAbortController(loop)
+    }
+
+    const byteWarn = loop._pendingByteWarn ?? loop._byteWarn ?? { flag: false }
+
+    // Drive ONE iteration. The R1-R4 dispatcher in runIterations decides
+    // whether to keep the loop alive (text-only → keep, via extended
+    // classifier) or terminate (end_loop → R3, end_loop+action → R4,
+    // new long-runner alone → R2).
+    try {
+      await runIterations(loop, byteWarn)
+      if (loop._terminated) {
+        // Already terminal (R3/R4) — tear down below.
+      } else if (loop.inFlight) {
+        // Loop is suspended: either the original long-runner is still
+        // live (R1 text-only kept the loop), or a new long-runner replaced
+        // it (R2). Either way, return — no teardown.
+        return
+      } else {
+        // No in_flight AND not terminated — should be rare on a tick, but
+        // treat as natural terminal.
+        terminateLoop(loop, 'natural-after-action-tick')
+      }
+    } catch (err) {
+      logger.error?.(`[sei/orch] action_tick continuation failed: ${err && err.message}`)
+      terminateLoop(loop, `error: ${err && err.message}`)
+    }
+    if (loop._terminated) {
+      await teardownLoop(loop)
+    }
+  }
+
+  /**
    * Iteration loop — runs until terminal response, abort-and-resume, or cap.
    *
    * On abort (loop.abortController.signal.aborted), the catch arm synthesizes
@@ -1445,7 +1451,7 @@ function maybeWarnByteCap(loop, warned) {
 
       const toolUses = resp.toolUses ?? []
 
-      // Text-as-chat: the assistant's text output IS the owner-visible chat
+      // Text-as-chat: the assistant's text output IS the player-visible chat
       // line. Same emission path whether the response is terminal (no tools)
       // or mid-loop (text + tool_use). Empty text is fine — the model is free
       // to make tool calls without saying anything, like Claude Code.
@@ -1463,7 +1469,7 @@ function maybeWarnByteCap(loop, warned) {
           } else {
             logChatOut(line)
             try { adapter.chat(line) } catch {}
-            convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', line)
+            convoMemory.recentChat.pushSelf(config.persona.name, line)
           }
         }
       }
@@ -1474,27 +1480,37 @@ function maybeWarnByteCap(loop, warned) {
       // between P0/P1-triggered iterations (R1-R4 apply) and P2-triggered
       // iterations (text-only terminates as before) as different events
       // drive each iteration.
-      const iterationTriggerIsP0P1 = (() => {
+      //
+      // 260516-0yw: renamed `iterationTriggerIsP0P1` →
+      // `iterationKeepsLoopAlive` and extended to include
+      // `sei:action_tick`. The tick fires every 10s while in_flight is
+      // live and is expected to produce text-only (silent default ~95% of
+      // the time); without this extension, the very first tick the model
+      // responds to with empty text would fall through to the terminate
+      // branch below and shred the long-runner the tick was meant to
+      // monitor. The `loop.inFlight` guard ensures we don't accidentally
+      // keep a no-inflight P1 fresh-loop alive forever.
+      const iterationKeepsLoopAlive = (() => {
         const e = loop._currentIterationTrigger ?? loop._triggerEvent
-        return e === 'owner_chat' || e === 'sei:chat_received' || e === 'sei:attacked'
+        return e === 'player_chat' || e === 'sei:chat_received' || e === 'sei:attacked' || e === 'sei:action_tick'
       })()
 
       if (toolUses.length === 0) {
-        if (iterationTriggerIsP0P1 && loop.inFlight) {
-          // R1 — text-only on a P0/P1-triggered iteration WITH an in_flight
+        if (iterationKeepsLoopAlive && loop.inFlight) {
+          // R1 — text-only on a keep-alive iteration WITH an in_flight
           // long-runner still running: keep the loop alive. The body keeps
           // doing what it was doing; the next iteration is driven by
           // whatever event arrives next (action_complete from the natural
-          // in_flight completion, another preempt, or an attack). Return
-          // WITHOUT tearing down. The spoken text was already emitted above
-          // via adapter.chat.
+          // in_flight completion, another preempt, an attack, or the next
+          // 10s action_tick). Return WITHOUT tearing down. The spoken text
+          // was already emitted above via adapter.chat.
           //
-          // Without the loop.inFlight guard, a P0/P1-triggered iteration
-          // with no in_flight (e.g., fresh-loop first iteration where the
+          // Without the loop.inFlight guard, a keep-alive iteration with
+          // no in_flight (e.g., fresh-loop first iteration where the
           // model just says "hi") would suspend forever — nothing would
           // drive it forward. With the guard, that case falls through to
           // natural terminal as expected.
-          logger.debug?.(`[sei/orch] R1 text-only on P0/P1 iteration — loop stays alive (loop=${loop.id}, trigger=${loop._currentIterationTrigger}, in_flight=${loop.inFlight.name})`)
+          logger.debug?.(`[sei/orch] R1 text-only keep-alive iteration — loop stays alive (loop=${loop.id}, trigger=${loop._currentIterationTrigger}, in_flight=${loop.inFlight.name})`)
           return
         }
         // P2/P3-triggered iteration (action_complete, idle, loop_end) OR
@@ -1508,15 +1524,15 @@ function maybeWarnByteCap(loop, warned) {
       // 260514-ngj: tool composition predicates for R2/R3/R4.
       const hasEndLoop = toolUses.some(u => u.name === 'end_loop')
       // newSuspendingTools = every non-inline-metadata tool. INLINE_METADATA
-      // is {setGoals, noteToSelf, end_loop}; everything else suspends the
+      // is {remember, forget, end_loop}; everything else suspends the
       // loop via startLongRunner (260514-gam universal-inflight).
       const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
 
       if (hasEndLoop && newSuspendingTools.length > 0) {
         // R4 — text + end_loop + new action: terminate current loop AND
         // open a fresh one seeded with the ORIGINAL trigger event + data
-        // (preserves owner chat text / attacker label so the new loop's
-        // seed_owner block sees the original request). The model's mid-loop
+        // (preserves player chat text / attacker label so the new loop's
+        // seed_player block sees the original request). The model's mid-loop
         // response is already appended to history; it surfaces in the next
         // loop via recent_loop_history.
         //
@@ -1526,6 +1542,8 @@ function maybeWarnByteCap(loop, warned) {
         // 'loop ended'.
         logger.debug?.(`[sei/orch] R4 end_loop + new action: terminate + reseed trigger=${loop._currentIterationTrigger ?? loop._triggerEvent} new=${newSuspendingTools.map(u => u.name).join(',')}`)
         if (loop.inFlight) {
+          // 260516-0yw: clear the 10s action-tick BEFORE aborting on R4.
+          clearActionTick(loop.inFlight)
           try { loop.inFlight.abortController.abort() } catch {}
         }
         loop.isTerminal = true
@@ -1540,6 +1558,8 @@ function maybeWarnByteCap(loop, warned) {
         // No reseed.
         logger.debug?.(`[sei/orch] R3 end_loop alone: terminating loop=${loop.id}`)
         if (loop.inFlight) {
+          // 260516-0yw: clear the 10s action-tick BEFORE aborting on R3.
+          clearActionTick(loop.inFlight)
           try { loop.inFlight.abortController.abort() } catch {}
         }
         loop.isTerminal = true
@@ -1550,12 +1570,14 @@ function maybeWarnByteCap(loop, warned) {
         // happens in the per-tool for-loop below. Loop stays alive.
         if (loop.inFlight) {
           logger.debug?.(`[sei/orch] R2/suppress new action — aborting old in_flight=${loop.inFlight.name} new=${newSuspendingTools.map(u => u.name).join(',')} trigger=${loop._currentIterationTrigger ?? loop._triggerEvent}`)
+          // 260516-0yw: clear the 10s action-tick BEFORE aborting on R2.
+          clearActionTick(loop.inFlight)
           try { loop.inFlight.abortController.abort() } catch {}
         } else {
           logger.debug?.(`[sei/orch] first-iter/no-inflight long-runner=${newSuspendingTools.map(u => u.name).join(',')} trigger=${loop._currentIterationTrigger ?? loop._triggerEvent}`)
         }
       } else {
-        // text + only inline-metadata tools (setGoals / noteToSelf — end_loop
+        // text + only inline-metadata tools (remember / forget — end_loop
         // is handled above). Same-loop continuation, no abort, no terminal.
         logger.debug?.(`[sei/orch] inline-metadata only: trigger=${loop._currentIterationTrigger ?? loop._triggerEvent}`)
       }
@@ -1633,7 +1655,7 @@ function maybeWarnByteCap(loop, warned) {
           // placeholders; nothing else to do here.
           if (results[i]) continue
           if (isInlineMetadata(u.name)) {
-            // 260514-gam: setGoals / noteToSelf / stop fill their result slot
+            // 260514-gam: remember / forget / end_loop fill their result slot
             // synchronously via the shared executeInlineMetadata helper. No
             // inflight registration, no action_complete reenqueue, no haiku
             // continuation. `stop`'s terminate=true flag is honored by the
@@ -1652,7 +1674,7 @@ function maybeWarnByteCap(loop, warned) {
           } else {
             // 260514-gam D1: every world-touching tool dispatches non-blocking
             // via startLongRunner so the loop suspends and is preemptible by
-            // P1 owner-chat / P0 attack within one signal tick.
+            // P1 player-chat / P0 attack within one signal tick.
             //
             // 260514-ngj: if R3 or R4 flagged the loop terminal during the
             // pre-dispatch R1-R4 gate, synthesize an aborted result instead
@@ -1755,7 +1777,9 @@ function maybeWarnByteCap(loop, warned) {
         loop._cantReachMap.set(key, next)
         if (next >= 2 && !loop._cantReachNudgedKeys.has(key)) {
           loop._cantReachNudgedKeys.add(key)
-          cantReachNudge = `[cant_reach 2× to (${x},${y},${z}) range=${range} — per the Pathfinder rule, do NOT retry the same goTo. Either ask the owner for help (e.g. "stuck on the path, can you come closer or break the way through?") or pick a different approach (different y, dig through, give up and say so).]`
+          cantReachNudge = (typeof adapter.cantReachNudge === 'function')
+            ? adapter.cantReachNudge({ x, y, z, range })
+            : null
           break
         }
       }
@@ -1767,9 +1791,7 @@ function maybeWarnByteCap(loop, warned) {
       // and other system-tagged prepends are styled in convo history.
       const hadTextThisTurn = respText.length > 0
       const shouldNudge = _advanceIterationCadence({ loop, hadSay: hadTextThisTurn })
-      const silenceNudgeText = shouldNudge
-        ? '[silence past 4 iterations — narrate progress briefly in your next text. avoid restating numbers (we already saw the inventory). a single short observation is enough.]'
-        : null
+      const silenceNudgeText = shouldNudge ? NUDGES.silence : null
       // Plan 03.1-09 (D-W-7): cant_reach nudge wins over silence nudge — both
       // happen at "things are not progressing" but cant_reach is the proximate
       // cause and the LLM needs the specific instruction.
@@ -1899,8 +1921,7 @@ function maybeWarnByteCap(loop, warned) {
     const eventText = chatText ? `PLAYER INTERRUPT: ${chatText}` : 'PLAYER INTERRUPT'
     // 260514-ngj: append R1-R4 reminder so the model knows the loop stays
     // alive until end_loop fires (or a new action is called).
-    const eventTextWithHint = withPriorTaskHint(loop, eventText)
-      + "\n\nYou can end this loop with end_loop, or change your action by calling a new action tool. If you just want to keep doing what you're already doing, no tool call is needed — the body continues."
+    const eventTextWithHint = withPriorTaskHint(loop, eventText) + NUDGES.playerInterruptHint
 
     if (aborted.length > 0) {
       loop.appendToolResults(aborted, { snapshot: snapshotText(), eventText: eventTextWithHint })
@@ -1919,13 +1940,11 @@ function maybeWarnByteCap(loop, warned) {
 
   async function gracefulCapClose(loop) {
     logger.warn(`[sei/orch] iteration cap hit — forcing graceful close (loop=${loop.id}, iterations=${loop.iterationCount})`)
-    // Plan 03.1-07 Task 3 (D-W-8 / D-NEW-TONE-2): the user explicitly called
-    // out the static "okay, brain melting — taking five." line surfacing in
-    // wood-postfix. capHitLine remains as a last-resort fallback ONLY for
-    // genuine API failures (network/timeout/empty response). The seed prompt
-    // is strengthened so the model authors a one-line wrap-up in its own voice.
+    // Final wrap: ask the model for one line in its own voice. If the call
+    // fails or returns empty, stay silent — never substitute a hardcoded
+    // string into chat. The loop terminates regardless.
     loop.appendUserTurn([
-      { type: 'text', name: 'event',    text: 'You hit the iteration cap and have to stop. Write ONE short line — no more than 12 words, lowercase, no periods — that wraps up gracefully in your own voice. Acknowledge the limit briefly without being whiny. Examples in tone: "alright, calling it for now", "head\'s spinning, taking a beat", "stopping here, will pick this up". Output ONLY the line, no quotes, no explanation.' },
+      { type: 'text', name: 'event',    text: NUDGES.capClose },
       { type: 'text', name: 'snapshot', text: snapshotText() },
     ])
     try {
@@ -1935,39 +1954,20 @@ function maybeWarnByteCap(loop, warned) {
         messages: loop.buildAnthropicPayload(),
         namedUserBlocks: loop._internal.messages,
         signal: loop.abortController.signal,
-        // Plan 03.1-07 Task 3: cap-close is a single blocking call with no
-        // retry. Bump to at least 8s so a slightly slow API response does
-        // not surface capHitLine. Normal calls keep their configured timeout.
         timeoutMs: Math.max(config.anthropic.timeout_ms, 8000),
       })
       loop.appendAssistant(buildAssistantContent(resp))
-      // Cap-close is a one-shot terminal wrap-up: the prior iteration forced
-      // tools=[], so the model has no `say` tool available. Treat the returned
-      // text (or capHitLine fallback) as the equivalent of a `say` and surface
-      // it on chat + convoMemory so the timeline stays coherent.
       const modelText = (resp.text ?? '').trim()
       if (modelText) {
-        logger.info?.(`[sei/orch] cap-close: model-authored wrap-up (loop=${loop.id})`)
-        // Run the model's wrap-up through postProcessSay so it follows the
-        // same punctuation rules as a normal say() — model emits raw text in
-        // its content block (not via the say tool), so postProcessSay was
-        // being skipped. This closes that consistency gap.
         const text = postProcessSay(modelText)
         logChatOut(text)
         try { adapter.chat(text) } catch {}
-        convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', text)
+        convoMemory.recentChat.pushSelf(config.persona.name, text)
       } else {
-        const fallback = capHitLine(config.persona)
-        logger.warn?.(`[sei/orch] cap-close: model returned empty text — falling back to capHitLine: ${fallback}`)
-        logChatOut(fallback)
-        try { adapter.chat(fallback) } catch {}
-        convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', fallback)
+        logger.warn?.(`[sei/orch] cap-close: model returned empty text — staying silent`)
       }
     } catch (err) {
-      logger.warn(`[sei/orch] graceful cap close call failed: ${err.message}; falling back to capHitLine`)
-      const fallback = capHitLine(config.persona)
-      try { adapter.chat(fallback) } catch {}
-      convoMemory.recentChat.pushSelf(config.persona?.name ?? 'sei', fallback)
+      logger.warn(`[sei/orch] graceful cap close call failed: ${err.message} — staying silent`)
     }
   }
 
@@ -1987,7 +1987,7 @@ function maybeWarnByteCap(loop, warned) {
       timeoutMs: config.anthropic.timeout_ms,
       // Small private scratchpad so the model can recap state, plan, and
       // debug failures WITHOUT polluting in-game chat. Text blocks stay
-      // reserved for deliberate in-character speech to the owner.
+      // reserved for deliberate in-character speech to the player.
       // max_tokens must exceed budget_tokens; bump headroom accordingly.
       ...(budget > 0 ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
       maxTokens: 1024 + (budget > 0 ? budget : 0),
@@ -1998,12 +1998,11 @@ function maybeWarnByteCap(loop, warned) {
     start,
     handleDispatch,
     get currentLoop()    { return currentLoop },
-    goals,
     debouncer: ingressDebouncer,
     throttle: ingressThrottle,
     inflight,
     /** Record an incoming chat line in convoMemory (chat.js calls this). */
-    recordIncomingChat: (who, text) => convoMemory.recentChat.pushOwner(who, text),
+    recordIncomingChat: (who, text) => convoMemory.recentChat.pushPlayer(who, text),
     _internal: {
       personalityBucket,
       callPersonality,
@@ -2011,7 +2010,7 @@ function maybeWarnByteCap(loop, warned) {
       get currentLoop() { return currentLoop },
       get convoMemory() { return convoMemory },
       // Plan 3-02 harness seam: expose the cached system blocks so the
-      // verifier can prove OWNER/DIARY content does not leak into them.
+      // verifier can prove PLAYER/MEMORY content does not leak into them.
       getCachedSystemBlocks: () => cachedSystemBlocks,
       // Plan 3-03: brain.start() reads these to construct the compactor
       // with the SAME anthropic client + cachedSystemBlocks reference

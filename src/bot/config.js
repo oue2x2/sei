@@ -33,15 +33,19 @@ const AdapterSchema = z.object({
 export const ConfigSchema = z.object({
   // chat_mode: 'chat' (default) — only `say()` lines reach Minecraft chat.
   // 'full' — assistant `text` (private scratch) ALSO reaches chat with a
-  // `[think] ` prefix so the owner can watch the bot's reasoning in real
+  // `[think] ` prefix so the player can watch the bot's reasoning in real
   // time. Default keeps existing config.json files (which lack the field)
   // on the prior behavior.
   chat_mode: z.enum(['chat', 'full']).default('chat'),
-  owner_username: z.string(),
+  player_username: z.string(),
+  // 260516-0yw: `backstory` retired in favor of `expanded` — the LLM-generated
+  // long-form persona prompt produced at character-save time by
+  // src/main/personaExpansion.ts. No backwards-compat shim (per CLAUDE.md
+  // "no backwards-compat hacks") — configs missing `persona.expanded` will
+  // fail Zod parsing explicitly so the user re-saves the character in the GUI.
   persona: z.object({
-    name: z.string().min(1),                                                // PERS-01
-    backstory: z.string(),                                                  // PERS-02
-    tone: z.enum(['friendly', 'sarcastic', 'serious', 'curious']),          // PERS-03
+    name: z.string().min(1),
+    expanded: z.string(),
   }),
   anthropic: z.object({
     api_key: z.string().min(1),                                             // required; no default
@@ -60,24 +64,21 @@ export const ConfigSchema = z.object({
     max_hops: z.number().int().min(1).default(5),
     idle_fallback_ms: z.number().int().min(1000).default(60_000),
   }).default({}),
-  // Phase 3 D-59: full memory: block. Paths default to project root; budgets
-  // are byte-budgets (not token-budgets, per D-50). spawn_settle_delay_ms
-  // covers Pitfall 2 (bot.players populates a few ticks after spawn).
+  // PLAYER.md tracks the other player's identity (uuid, mc_username, names).
+  // MEMORY.md is the bot's append-only long-term memory written via
+  // remember()/forget() and shown in full to every loop.
   memory: z.object({
-    owner_md_path: z.string().default('./memory/OWNER.md'),
-    diary_md_path: z.string().default('./memory/DIARY.md'),
-    // Plan 03.1-04 (D-M-1): append-only affect log written by the noteToSelf
-    // tool and loaded in full into every Loop's seed user turn. Tiny by
-    // construction (one line per emission, kind-tagged), so no budget needed.
-    affect_md_path: z.string().default('./memory/AFFECT.md'),
+    player_md_path: z.string().default('./memory/PLAYER.md'),
+    memory_md_path: z.string().default('./memory/MEMORY.md'),
     iteration_cap: z.number().int().min(1).default(30),
-    loop_batch_loop_count_cap: z.number().int().min(1).default(10),
-    loop_batch_context_cap_bytes: z.number().int().min(1024).default(32768),
-    sessions_per_consolidation: z.number().int().min(1).default(4),
-    diary_size_cap_bytes: z.number().int().min(1024).default(204800),
-    seed_diary_budget_bytes: z.number().int().min(256).default(3072),
-    seed_owner_budget_bytes: z.number().int().min(256).default(1024),
+    seed_memory_budget_bytes: z.number().int().min(256).default(8192),
+    seed_player_budget_bytes: z.number().int().min(256).default(1024),
     spawn_settle_delay_ms: z.number().int().min(0).default(500),
+    // MEMORY.md compaction trigger: after a successful remember(), if the
+    // on-disk file exceeds this byte count, an async Haiku compaction is
+    // fired (single-flight). Default sits below seed_memory_budget_bytes so
+    // compaction runs before the seed-read truncation kicks in.
+    compaction_trigger_bytes: z.number().int().min(512).default(4096),
   }).default({}),
   adapter: AdapterSchema,
 })

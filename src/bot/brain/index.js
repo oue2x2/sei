@@ -14,9 +14,7 @@
 
 import { createOrchestrator } from './orchestrator.js'
 import { createSessionState } from './sessionState.js'
-import { createCompactor } from './compaction.js'
-import { createDiary } from './memory/diary.js'
-import { loadOwner, saveOwner, formatOwnerSeedBlock } from './memory/owner.js'
+import { loadPlayer, savePlayer, formatPlayerSeedBlock } from './memory/player.js'
 import { Priority, createPriorityQueue } from './fsm.js'
 
 const REQUIRED_ADAPTER_MEMBERS = [
@@ -54,12 +52,7 @@ export async function start({ config, adapter, logger = console }) {
   assertAdapter(adapter)
 
   // ── Memory layer ────────────────────────────────────────────────────
-  const ownerStore = { loadOwner, saveOwner, formatOwnerSeedBlock }
-  const diary = createDiary({
-    path: config.memory.diary_md_path,
-    seedDiaryBudgetBytes: config.memory.seed_diary_budget_bytes,
-    logger,
-  })
+  const playerStore = { loadPlayer, savePlayer, formatPlayerSeedBlock }
 
   // sessionState needs a `bot`-shaped object for player presence checks
   // (bot.players + bot.once('playerJoined', ...)). We hand it a thin shim
@@ -82,8 +75,7 @@ export async function start({ config, adapter, logger = console }) {
   let greetingFired = false
 
   const sessionState = await createSessionState({
-    ownerMdPath: config.memory.owner_md_path,
-    diary,
+    playerMdPath: config.memory.player_md_path,
     config,
     bot: sessionBotShim,
     logger,
@@ -112,6 +104,11 @@ export async function start({ config, adapter, logger = console }) {
         // P2_MOVEMENT enqueue dequeues first (sort by priority asc); the new
         // mid-loop iteration runs on the next processNext tick.
         case 'sei:action_complete': p = Priority.P2_ACTION_COMPLETE; break
+        // 260516-0yw: action_tick fires while a long-runner is in_flight to
+        // give the model a chance to comment / abort. Priority 2.3 sits
+        // between action_complete (2.1) and loop_end (2.5) so a same-batch
+        // settle drains FIRST and the tick is suppressed naturally.
+        case 'sei:action_tick':    p = Priority.P2_ACTION_TICK; break
         case 'sei:loop_end':       p = Priority.P2_5_LOOP_END; break
         case 'sei:idle':           p = Priority.P3_IDLE; break
         default:                   p = Priority.P2_MOVEMENT; break
@@ -132,47 +129,9 @@ export async function start({ config, adapter, logger = console }) {
   // ── Orchestrator ────────────────────────────────────────────────────
   const orchestrator = createOrchestrator({
     adapter, config, logger,
-    sessionState, ownerStore, diary,
+    sessionState, playerStore,
     reenqueue,
   })
-
-  // ── Compactor (Plan 3-03 / Pitfall 4 cache-hit guarantee) ──────────
-  const compactor = createCompactor({
-    anthropic: orchestrator._internal.anthropic,
-    cachedSystemBlocks: orchestrator._internal.cachedSystemBlocks,
-    diary,
-    config,
-    logger,
-  })
-  sessionState.setCompactor(compactor)
-
-  // ── Plan 03.1-08 (D-W-9): startup recompact for legacy purple entries ──
-  // Pre-Plan-04 diary entries were written under the old memoir-prose
-  // prompt and bias every subsequent loop's seed_diary toward purple
-  // language. The 80-word cap only applies to NEW writes, so legacy
-  // oversize entries persist until a consolidate pass folds them into a
-  // single denser `## Earlier (...)` block under the new declarative
-  // prompt. Run ONE consolidateOlderHalf pass when there are >5 total
-  // entries AND ≥1 entry exceeds the 80-word cap. Fire-and-forget — the
-  // bot can come up before the rewrite finishes; subsequent loops will
-  // pick up the new block once the Anthropic call returns.
-  // Single-flight is preserved by replaceOlderHalf's internal write lock
-  // (diary.js writeLock) — no separate guard needed here.
-  try {
-    const oversize = await diary.countOversizeEntries(80)
-    const all = await diary.readAll()
-    if (oversize > 0 && all.length > 5) {
-      logger.info?.(`[sei/brain] D-W-9 startup recompact: ${oversize} legacy oversize entries detected (total=${all.length})`)
-      compactor.consolidateOlderHalf({})
-        .then(success => logger.info?.(`[sei/brain] D-W-9 startup recompact ${success ? 'completed' : 'skipped (no-op)'}`))
-        .catch(err => logger.warn?.(`[sei/brain] D-W-9 startup recompact failed: ${err.message}`))
-      // intentionally NOT awaited — bot can come up while rewrite runs.
-    } else {
-      logger.debug?.(`[sei/brain] D-W-9 startup check: oversize=${oversize}, total=${all.length} — no recompact needed`)
-    }
-  } catch (err) {
-    logger.warn?.(`[sei/brain] D-W-9 startup recompact preflight failed: ${err.message}`)
-  }
 
   // ── Build the priority queue with the orchestrator's handleDispatch ─
   queue = createPriorityQueue({
@@ -204,22 +163,22 @@ export async function start({ config, adapter, logger = console }) {
       // normalized events).
       try { orchestrator.recordIncomingChat?.(evt.username, evt.text) } catch {}
       // Enqueue with the adapter-compatible payload shape (chat.js produced
-      // { username, message, addressed, ownerSpoke }; the priority queue's
-      // owner-chat preemption keys on `data.ownerSpoke === true`, so we
+      // { username, message, addressed, playerSpoke }; the priority queue's
+      // player-chat preemption keys on `data.playerSpoke === true`, so we
       // pass through both `text` and `message` for compatibility).
       queue.enqueue(Priority.P1_CHAT, 'sei:chat_received', {
         username: evt.username,
         message: evt.text,
         text: evt.text,
         addressed: evt.addressed,
-        ownerSpoke: evt.ownerSpoke,
+        playerSpoke: evt.playerSpoke,
       })
     },
     onAttacked: (evt) => {
       queue.enqueue(Priority.P0_SAFETY, 'sei:attacked', evt)
     },
     onSpawn: () => {
-      // D-57: deferred owner-presence check after spawn settles.
+      // D-57: deferred player-presence check after spawn settles.
       sessionState.onSpawn().catch(err =>
         logger.warn?.(`[sei/brain] sessionState.onSpawn failed: ${err.message}`))
       // Initial-greeting nudge moved here from a top-level setTimeout

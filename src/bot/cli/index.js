@@ -37,11 +37,11 @@ const __dirname = dirname(__filename)
 const PROJECT_ROOT = resolve(__dirname, '..', '..', '..')
 const CONFIG_PATH = resolve(PROJECT_ROOT, 'config.json')
 const MEMORY_DIR = resolve(PROJECT_ROOT, 'memory')
-const OWNER_MD_PATH = resolve(MEMORY_DIR, 'OWNER.md')
+const PLAYER_MD_PATH = resolve(MEMORY_DIR, 'PLAYER.md')
 const INDEX_PATH = resolve(PROJECT_ROOT, 'src', 'bot', 'index.js')
 
 const DEFAULT_CONFIG = {
-  owner_username: 'YourMinecraftName',
+  player_username: 'YourMinecraftName',
   // Adapter-specific fields nest under adapter.<kind>.* (Plan 03.1-02).
   // The loader's migrateLegacyAdapterFields hoists older flat configs
   // automatically, so this CLI writes the new shape directly.
@@ -57,10 +57,17 @@ const DEFAULT_CONFIG = {
       follow_range: 3,
     },
   },
+  // 260516-0yw: persona is now { name, source, expanded }. `source` is the
+  // user's short blurb; `expanded` is the LLM-generated long prompt produced
+  // by the GUI at character-save time. The CLI does NOT call the expansion
+  // API itself — it writes an empty `expanded` and the user must either run
+  // the GUI to populate it, or hand-fill the config.json before `sei start`.
+  // The bot's config.persona schema reads `expanded`; an empty value throws
+  // an explicit error at boot.
   persona: {
     name: 'Sui',
-    backstory: 'A curious companion who enjoys exploring blocky worlds alongside their friend.',
-    tone: 'friendly',
+    source: 'A curious companion who enjoys exploring blocky worlds alongside their friend.',
+    expanded: '',
   },
   anthropic: { api_key: '' },
   llm: { rate_limit_per_min: 30, debounce_ms: 500, max_hops: 5, idle_fallback_ms: 10000 },
@@ -118,16 +125,16 @@ function writeConfig(cfg) {
   writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8')
 }
 
-// Light-touch OWNER.md seed — only writes preferred_name if the file is
-// missing. Once OWNER.md exists, the runtime owns it (memory/owner.js).
-function seedOwnerMd(preferredName, ownerUsername) {
-  if (existsSync(OWNER_MD_PATH)) return
-  if (!preferredName && !ownerUsername) return
+// Light-touch PLAYER.md seed — only writes preferred_name if the file is
+// missing. Once PLAYER.md exists, the runtime owns it (memory/player.js).
+function seedPlayerMd(preferredName, playerUsername) {
+  if (existsSync(PLAYER_MD_PATH)) return
+  if (!preferredName && !playerUsername) return
   mkdirSync(MEMORY_DIR, { recursive: true })
   const front = [
     '---',
-    'owner_uuid:',
-    `owner_username: ${ownerUsername || ''}`,
+    'player_uuid:',
+    `player_username: ${playerUsername || ''}`,
     'first_seen:',
     'last_seen:',
     'total_sessions: 0',
@@ -138,7 +145,7 @@ function seedOwnerMd(preferredName, ownerUsername) {
     '',
     '',
   ].join('\n')
-  writeFileSync(OWNER_MD_PATH, front, 'utf8')
+  writeFileSync(PLAYER_MD_PATH, front, 'utf8')
 }
 
 // ─── Onboarding flow ─────────────────────────────────────────────────────
@@ -149,11 +156,11 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
   const prevPersona = existing.persona ?? {}
 
   const playerName = await ask(rl, 'your name (what should the persona call you?):', {
-    def: existing.owner_preferred_name ?? '',
+    def: existing.player_preferred_name ?? '',
   })
 
-  const ownerUsername = await ask(rl, 'your minecraft username:', {
-    def: existing.owner_username ?? '',
+  const playerUsername = await ask(rl, 'your minecraft username:', {
+    def: existing.player_username ?? '',
     validate: (v) => v.length === 0 ? 'required' : null,
   })
 
@@ -162,13 +169,15 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
     validate: (v) => v.length === 0 ? 'required' : null,
   })
 
-  const backstory = await ask(rl, "one-line backstory for the character:", {
-    def: prevPersona.backstory ?? 'A curious companion who enjoys exploring blocky worlds alongside their friend.',
+  // 260516-0yw: ask for a short PERSONA SOURCE blurb. The GUI's main-process
+  // Anthropic call expands this into the six-section persona prompt at
+  // character-save time. CLI users won't get the LLM expansion (no Electron
+  // safeStorage / IPC pipeline here), so `expanded` stays empty and the bot
+  // boot will refuse with a clear error until the GUI is used at least once
+  // OR `expanded` is hand-pasted into config.json.
+  const source = await ask(rl, "short persona blurb (who is this character?):", {
+    def: prevPersona.source ?? prevPersona.backstory ?? 'A curious companion who enjoys exploring blocky worlds alongside their friend.',
   })
-
-  const toneOpts = ['friendly', 'sarcastic', 'serious', 'curious']
-  const toneDef = Math.max(0, toneOpts.indexOf(prevPersona.tone ?? 'friendly'))
-  const tone = await pick(rl, 'tone:', toneOpts, toneDef)
 
   const chatModeOpts = ['chat', 'full']
   const prevChatMode = existing.chat_mode === 'full' ? 1 : 0
@@ -192,7 +201,7 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
     ...DEFAULT_CONFIG,
     ...existing,
     chat_mode: chatMode,
-    owner_username: ownerUsername,
+    player_username: playerUsername,
     adapter: {
       kind: 'minecraft',
       minecraft: {
@@ -213,8 +222,9 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
       ...DEFAULT_CONFIG.persona,
       ...(existing.persona ?? {}),
       name: characterName,
-      backstory,
-      tone,
+      source,
+      // Preserve existing expanded if present; CLI does NOT regenerate.
+      expanded: (existing.persona?.expanded ?? '').toString(),
     },
     anthropic: {
       ...DEFAULT_CONFIG.anthropic,
@@ -230,10 +240,10 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
   // Strip the legacy chat-mode field if a previous onboarding wrote it.
   // (the new field is `chat_mode`, distinct name, no collision)
   delete cfg.chat
-  if (playerName) cfg.owner_preferred_name = playerName
+  if (playerName) cfg.player_preferred_name = playerName
 
   writeConfig(cfg)
-  seedOwnerMd(playerName, ownerUsername)
+  seedPlayerMd(playerName, playerUsername)
 
   output.write('\n')
   output.write(`${green('✓')} wrote ${gray(CONFIG_PATH)}\n`)
