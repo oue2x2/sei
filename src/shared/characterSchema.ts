@@ -1,14 +1,39 @@
 import { z } from 'zod';
 
 /**
+ * 260516-0yw: persona is now an object with `source` (user's short blurb,
+ * required) and `expanded` (LLM-generated long prompt produced at
+ * character-save time by src/main/personaExpansion.ts). The legacy
+ * `description` and `persona_prompt` fields are DROPPED outright — no
+ * .optional(), no .default(''), no migration shim per CLAUDE.md
+ * ("no backwards-compat hacks"). Existing characters JSON whose shape
+ * does not include `persona.source` will fail Zod parsing explicitly so
+ * the user knows to re-save in the GUI.
+ *
+ * `expanded` defaults to '' so a newly-created character can round-trip
+ * through saveCharacter BEFORE the expansion call lands (the IPC path
+ * runs expansion in `expandAndSaveCharacter`, but the migration path
+ * writes raw `saveCharacter` with empty `expanded` so first-launch
+ * doesn't burn an API call on a freshly-cloned dev tree).
+ */
+export const PersonaSchema = z.object({
+  source: z.string().min(1),
+  expanded: z.string().default(''),
+});
+
+export type Persona = z.infer<typeof PersonaSchema>;
+
+/**
  * Character JSON shape stored at `<userData>/characters/<id>.json`.
  * Source: CONTEXT D-09, D-11, D-14 + PATTERNS §characterSchema.ts.
+ *
+ * 260516-0yw: `description` + `persona_prompt` replaced by `persona`
+ * object — see PersonaSchema docblock above.
  */
 export const CharacterSchema = z.object({
   id: z.string().min(1),                              // slug, kebab-case
   name: z.string().min(1),
-  description: z.string().default(''),                // shown to user (D-47)
-  persona_prompt: z.string().min(1),                  // sent to model (D-48)
+  persona: PersonaSchema,                             // 260516-0yw: replaces description + persona_prompt
   is_default: z.boolean().default(false),             // sui = true after migration (D-10)
   created: z.string(),                                // ISO timestamp, immutable (D-11)
   last_launched: z.string().nullable().default(null), // ISO or null (D-11)

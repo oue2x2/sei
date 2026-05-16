@@ -92,7 +92,10 @@ export interface RendererApi {
   // Character CRUD
   listCharacters(): Promise<Character[]>;
   getCharacter(id: string): Promise<Character | null>;
-  saveCharacter(character: Character): Promise<void>;
+  // 260516-0yw: saveCharacter now returns the persisted Character so the
+  // renderer can pick up the LLM-generated persona.expanded after main
+  // ran the expansion call.
+  saveCharacter(character: Character): Promise<Character>;
   deleteCharacter(id: string): Promise<void>;
   resetMemory(id: string): Promise<void>;
 

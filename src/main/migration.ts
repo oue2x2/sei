@@ -77,14 +77,24 @@ export async function runFirstLaunchMigration(
     return; // already migrated or never had a persona
   }
 
+  // 260516-0yw: emit the new persona shape { source, expanded:'' }. Migration
+  // uses RAW saveCharacter (NOT expandAndSaveCharacter) so first-launch does
+  // NOT burn an Anthropic API call on a freshly-cloned dev tree. The first
+  // time the user opens the migrated character in the GUI to summon, the bot
+  // will throw an explicit error ("persona expansion missing — re-save the
+  // character in the GUI to populate persona.expanded") prompting a re-save.
+  // The renderer can also show a "Generate expanded persona" CTA on the Edit
+  // modal when persona.expanded is empty.
   const p = parsed.persona;
   const character: Character = {
     id: 'sui',
     name: typeof p.name === 'string' && p.name.trim() ? p.name : 'Sui',
-    description: '',
-    persona_prompt: typeof p.backstory === 'string' && p.backstory.trim()
-      ? p.backstory
-      : `You are ${typeof p.name === 'string' ? p.name : 'Sui'}, a Minecraft companion.`,
+    persona: {
+      source: typeof p.backstory === 'string' && p.backstory.trim()
+        ? p.backstory
+        : 'A curious companion who enjoys exploring blocky worlds alongside their friend.',
+      expanded: '',
+    },
     is_default: true,
     created: new Date().toISOString(),
     last_launched: null,
@@ -94,7 +104,7 @@ export async function runFirstLaunchMigration(
 
   try {
     await saveCharacter(character);
-    logger.info(`migration: created characters/sui.json from legacy persona`);
+    logger.info(`migration: created characters/sui.json from legacy persona (persona.expanded empty — user must re-save in the GUI to populate the LLM-expanded prompt before first summon)`);
   } catch (err) {
     logger.warn(`migration: saveCharacter failed: ${(err as Error).message}`);
     return;

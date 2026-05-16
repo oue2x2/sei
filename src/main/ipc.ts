@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { IpcChannel } from '../shared/ipc';
 import { CharacterSchema, UserConfigSchema, type Character, type UserConfig } from '../shared/characterSchema';
 import { loadConfig, saveConfig } from './configStore';
-import { listCharacters, getCharacter, saveCharacter, deleteCharacter, resetMemoryForCharacter } from './characterStore';
+import { listCharacters, getCharacter, expandAndSaveCharacter, deleteCharacter, resetMemoryForCharacter } from './characterStore';
 import { saveApiKey, hasApiKey, backendKind } from './apiKeyStore';
 import type { BotSupervisor } from './botSupervisor';
 
@@ -41,9 +41,14 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const id = IdSchema.parse(idArg);
     return await getCharacter(id);
   });
-  ipcMain.handle(IpcChannel.chars.save, async (_event, charArg: unknown): Promise<void> => {
+  // 260516-0yw: chars.save now runs the LLM expansion call (main owns the
+  // Anthropic API key) and returns the persisted Character so the renderer
+  // can update its store with the new persona.expanded. Throws surface
+  // through the IPC layer as a rejected Promise; the renderer's
+  // EditCharacterModal / AddCharacterScreen catches and displays.
+  ipcMain.handle(IpcChannel.chars.save, async (_event, charArg: unknown): Promise<Character> => {
     const character = CharacterSchema.parse(charArg);
-    await saveCharacter(character);
+    return await expandAndSaveCharacter({ character });
   });
   ipcMain.handle(IpcChannel.chars.delete, async (_event, idArg: unknown): Promise<void> => {
     const id = IdSchema.parse(idArg);
