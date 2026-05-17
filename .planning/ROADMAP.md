@@ -270,5 +270,29 @@ Plans:
 - Mapped: 36 / 36
 - Orphans: 0
 
+### Phase 8: Windows cross-platform compatibility
+
+**Goal:** Verify and fix Sei to run on Windows. Currently only tested on macOS. Precondition for the custom-skin wizard (Phase 9), which depends on cross-platform path handling, OS-specific install detection, and JAR-exec patterns.
+**Requirements**: TBD
+**Depends on:** Phase 7
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 8 to break down)
+
+### Phase 9: Custom bot skins via CustomSkinLoader
+
+**Goal:** Bot's custom skin and username are visible to the host in their own LAN world, with zero manual config beyond clicking through Sei's first-launch wizard. User workflow: download Sei → setup wizard auto-installs Fabric Loader + CustomSkinLoader into their MC profile (mac & windows) → upload or search a skin in Sei's character page → preview in 3D → on next MC launch select the new "Sei (Fabric Loader)" profile → bot joins their world wearing the chosen skin under any chosen username. Works on vanilla MC and CurseForge instances (Pixelmon etc.).
+**Requirements**: TBD
+**Depends on:** Phase 8
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 9 to break down)
+
+**References:**
+- `.planning/phases/09-.../260517-frz-CONTEXT.md` — locked decisions from discussion phase
+- `.planning/phases/09-.../260517-frz-RESEARCH.md` — full research (vanilla LAN constraints, alternative approaches considered, why CustomSkinLoader won over proxy/Paper/flying-squid)
+
 ---
 *Last updated: 2026-05-07 — Phases 5/6/7 promoted from backlog 999.2 / 999.1 / 999.3 (debug log readability + scavenging redesign + pillar-up scaffolding).*
