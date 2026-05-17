@@ -2,13 +2,12 @@
 # Source: .planning/phases/04-electron-gui-packaging/04-RESEARCH.md §"Code Examples §3 + §4"
 #         + §"Resolved During Plan-Phase" Q1, Q2, Q3.
 #
-# BLOCKING: appId below is a PLACEHOLDER. Plan 04-10 task 2 is a [BLOCKING]
-# checkpoint that requires the user to lock the final reverse-DNS form
-# (e.g., gg.sei.app / studio.sei.app / bot.sei.app). Once shipped, changing
-# this strands all existing safeStorage Keychain entries.
+# appId is LOCKED for v1. Any future change strands every existing user's
+# safeStorage Keychain entry on macOS and Windows DPAPI scope on Windows —
+# treat as irrevocable. See Phase 8 Plan 01 HOTSPOTS row 12 + threat T-08-01.
 
-# TODO(lock-before-signing) — chosen by user in plan 04-10 task 2 BLOCKING checkpoint
-appId: app.sei.placeholder
+# Locked 2026-05-17 (Phase 8 Plan 01 Task 2 — resolves Phase 4 04-10 BLOCKING).
+appId: com.sei.app
 productName: Sei
 copyright: Copyright (c) 2026 Sei
 
