@@ -192,7 +192,7 @@ Each is unsequenced — promote to active milestone via `/gsd-review-backlog` wh
 **User quote (verbatim):** *"combine veined tallying for within chunk and smart_find for navigating to other chunks, i think we finally can make scavenging resources work."*
 **Why milestone-scope:** Snapshot composer rewrite + new tool registration + closed-world NL→item resolver — three coupled systems, not a single phase.
 **Requirements:** TBD
-**Plans:** TBD
+**Plans:** 4/8 plans executed
 
 Plans:
 - [x] TBD (recommended: `/gsd-new-milestone` after Phase 03.1 ships, then `/gsd-discuss-phase` to scope each subsystem) (completed 2026-05-07)
@@ -296,7 +296,7 @@ Plans:
 - [x] 09-01-PLAN.md — Shared contracts: CharacterSchema skin+username, IpcChannel.skin/wizard (incl. wizard:cancel + applySkin.username), 7 new ErrorClass entries, 3 bundled default skin PNGs
 - [x] 09-02-PLAN.md — Local 127.0.0.1 skin HTTP server + per-persona PNG storage + bot init wiring; characterId validated via strict IdSchema (BLOCKER 1); atomic skin+username write in single saveCharacter call (WARNING 5)
 - [x] 09-03-PLAN.md — Mojang username search pipeline (15s timeout) + legacy 64×32 → 64×64 normalization (WARNING 8) + native PNG file dialog + 2 new skin IPC handlers + tsx as devDep (INFO 9)
-- [ ] 09-04-PLAN.md — Wizard backend modules: cross-platform MC install scanner + bundled-Java probe (BLOCKER 3) + Fabric installer + CustomSkinLoader downloader + config writer with verified CustomSkinAPI loader type (WARNING 6) + idempotent state store
+- [x] 09-04-PLAN.md — Wizard backend modules: cross-platform MC install scanner + bundled-Java probe (BLOCKER 3) + Fabric installer + CustomSkinLoader downloader + config writer with verified CustomSkinAPI loader type (WARNING 6) + idempotent state store
 - [ ] 09-05-PLAN.md — Wizard orchestrator + IPC handlers (install + cancel via sessionId Map per BLOCKER 2) + main bootstrap port-drift detection (WARNING 7) + 2 verification scripts (split from prior Plan 04 per WARNING 4)
 - [ ] 09-06-PLAN.md — Skin editor UI on CharacterPage: SkinEditor + SkinPreview3d (lazy skinview3d) + SkinUploadZone + UsernameSearchField + StatusPill; single applySkin call writes skin+username atomically (WARNING 5); preview useEffect deps include character.username (INFO 10)
 - [ ] 09-07-PLAN.md — Setup wizard UI: SetupWizardModal (5 steps + 2 branches) + WizardStepShell + McInstallList/Row + InstallProgressList + Settings row + first-launch trigger; cancel button fires sei.wizardCancel(sessionId) — no renderer-local AbortController (BLOCKER 2)
