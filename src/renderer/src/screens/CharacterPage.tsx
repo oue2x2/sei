@@ -84,6 +84,8 @@ export interface CharacterPageProps {
   id: string;
 }
 
+type CharacterTab = 'details' | 'skin';
+
 export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
   const navigate = useUiStore((s) => s.navigate);
   const openModal = useUiStore((s) => s.openModal);
@@ -95,6 +97,7 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
 
   const character: Character | undefined = characters.find((c) => c.id === id);
   const [editing, setEditing] = useState<boolean>(false);
+  const [tab, setTab] = useState<CharacterTab>('details');
 
   // T-04-37: rehydrate the character from disk on mount if not in the store.
   useEffect(() => {
@@ -193,39 +196,64 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
           <div className={styles.eyebrow}>{isDefault ? 'DEFAULT' : 'CUSTOM'}</div>
           <h1 className={styles.title}>{character.name}</h1>
 
-          {/* 260516-0yw: description retired; show the persona source blurb instead.
-              The full LLM-expanded prompt lives behind the collapsible preview in
-              EditCharacterModal. */}
-          <div className={styles.card}>
-            <div className={styles.cardEyebrow}>
-              PERSONA SOURCE <span className={styles.tag}>For you</span>
-            </div>
-            <div className={styles.cardBody}>{character.persona.source || '—'}</div>
+          <div className={styles.tabs} role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'details'}
+              className={tab === 'details' ? styles.tabActive : styles.tab}
+              onClick={() => setTab('details')}
+            >
+              Details
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'skin'}
+              className={tab === 'skin' ? styles.tabActive : styles.tab}
+              onClick={() => setTab('skin')}
+            >
+              Skin
+            </button>
           </div>
 
-          <div className={styles.stats}>
-            <div className={styles.stat}>
-              <div className={styles.statEyebrow}>LAST LAUNCHED</div>
-              <div className={styles.statValue}>{fmtDate(character.last_launched)}</div>
-            </div>
-            <div className={styles.stat}>
-              <div className={styles.statEyebrow}>TOTAL PLAYTIME</div>
-              <div className={styles.statValue}>{fmtMs(character.playtime_ms)}</div>
-            </div>
-            <div className={styles.stat}>
-              <div className={styles.statEyebrow}>CREATED</div>
-              <div className={styles.statValue}>{fmtDate(character.created)}</div>
-            </div>
-          </div>
+          {tab === 'details' ? (
+            <>
+              {/* 260516-0yw: description retired; show the persona source blurb instead.
+                  The full LLM-expanded prompt lives behind the collapsible preview in
+                  EditCharacterModal. */}
+              <div className={styles.card}>
+                <div className={styles.cardEyebrow}>
+                  PERSONA SOURCE <span className={styles.tag}>For you</span>
+                </div>
+                <div className={styles.cardBody}>{character.persona.source || '—'}</div>
+              </div>
 
-          {/* Phase 9 (09-06): per-persona Skin & Username editor. Renders for
-              ALL personas — UI-SPEC §"Sui-gating" allows default personas to
-              edit skin + username (the persona-source/name editing gate
-              remains in EditCharacterModal). */}
-          <SkinEditor
-            character={character}
-            onChanged={() => void refreshCharacter(id)}
-          />
+              <div className={styles.stats}>
+                <div className={styles.stat}>
+                  <div className={styles.statEyebrow}>LAST LAUNCHED</div>
+                  <div className={styles.statValue}>{fmtDate(character.last_launched)}</div>
+                </div>
+                <div className={styles.stat}>
+                  <div className={styles.statEyebrow}>TOTAL PLAYTIME</div>
+                  <div className={styles.statValue}>{fmtMs(character.playtime_ms)}</div>
+                </div>
+                <div className={styles.stat}>
+                  <div className={styles.statEyebrow}>CREATED</div>
+                  <div className={styles.statValue}>{fmtDate(character.created)}</div>
+                </div>
+              </div>
+            </>
+          ) : (
+            /* Phase 9 (09-06): per-persona Skin & Username editor. Renders for
+               ALL personas — UI-SPEC §"Sui-gating" allows default personas to
+               edit skin + username (the persona-source/name editing gate
+               remains in EditCharacterModal). */
+            <SkinEditor
+              character={character}
+              onChanged={() => void refreshCharacter(id)}
+            />
+          )}
 
           <div className={styles.modelRow}>
             <span className={styles.modelDot} style={{ background: modelDotColor }} />
