@@ -36,6 +36,7 @@ import { useDataStore } from '../lib/stores/useDataStore';
 import { Button } from '../components/Button';
 import { PixelPortrait } from '../components/PixelPortrait';
 import { EditCharacterModal } from '../components/EditCharacterModal';
+import { SkinEditor } from '../components/SkinEditor';
 import { BackIcon, SparkleIcon } from '../components/icons';
 import { pickPalette } from '../lib/portraitPalettes';
 import { ERROR_COPY } from '../lib/errors';
@@ -216,6 +217,15 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
               <div className={styles.statValue}>{fmtDate(character.created)}</div>
             </div>
           </div>
+
+          {/* Phase 9 (09-06): per-persona Skin & Username editor. Renders for
+              ALL personas — UI-SPEC §"Sui-gating" allows default personas to
+              edit skin + username (the persona-source/name editing gate
+              remains in EditCharacterModal). */}
+          <SkinEditor
+            character={character}
+            onChanged={() => void refreshCharacter(id)}
+          />
 
           <div className={styles.modelRow}>
             <span className={styles.modelDot} style={{ background: modelDotColor }} />

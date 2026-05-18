@@ -221,6 +221,10 @@
 }
 
 .modelRow {
+  /* Phase 9 (09-06): margin-top gives breathing room after the new SkinEditor
+     section. The section already has its own margin-top: var(--space-xl), so
+     this token-aligned spacing keeps the page rhythm clean. */
+  margin-top: var(--space-xl);
   display: flex;
   align-items: center;
   gap: 12px;
