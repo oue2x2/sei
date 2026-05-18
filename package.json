@@ -18,7 +18,8 @@
     "postinstall": "electron-builder install-app-deps",
     "sei": "node src/bot/cli/index.js",
     "verify:phase2": "node scripts/verify-phase2.js",
-    "verify:phase3": "node scripts/verify-phase3.js"
+    "verify:phase3": "node scripts/verify-phase3.js",
+    "verify:phase9-skin-server": "node scripts/verify-skinServer.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",

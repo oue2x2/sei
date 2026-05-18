@@ -27,8 +27,47 @@ export interface IpcHandlerDeps {
   getSkinServerBaseUrl: () => string | null;
 }
 
-const IdSchema = z.string().min(1);
+/**
+ * Canonical persona-id validator. Used by every IPC handler that accepts a
+ * characterId — chars.* (Phase 4) AND skin.* (Phase 9 Plan 02).
+ *
+ * BLOCKER 1 (09-02-PLAN): previously `z.string().min(1)`. Tightened to a
+ * kebab-case slug regex now that Phase 9's skin:apply makes the persona id a
+ * filesystem path component (`<userData>/skins/<id>.png`). The regex forbids
+ * any character that could escape path.join — `.`, `/`, `\\`, null bytes,
+ * whitespace — so a renderer that synthesizes a malformed id (e.g. via a
+ * compromised contextBridge surface) is rejected at the IPC boundary BEFORE
+ * skinStore.applyPng builds a filesystem path. Defense-in-depth.
+ *
+ * Existing chars.* handlers keep working unchanged because their callers
+ * always pass an id that already conforms (the persona-create flow uses the
+ * same slug format upstream — sui, mochineko, clawd, plus user-created
+ * personas slugified at AddCharacterScreen.tsx).
+ */
+const IdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, {
+  message: 'characterId must be a lowercase slug (a-z, 0-9, hyphen), 1-63 chars, starting with a letter or digit',
+});
 const PlaintextSchema = z.string().min(1);
+
+/**
+ * Phase 9 (09-02): skin:apply request shape.
+ *
+ * `characterId` MUST go through IdSchema (BLOCKER 1) — the persona id becomes
+ * a filesystem path component inside skinStore.applyPng. The renderer's
+ * preload bindings never validate; main is the trust boundary.
+ *
+ * `username` is the per-persona MC in-game name (WARNING 5 / D-09 atomic
+ * skin+username write). Validation is delegated to CharacterSchema.parse()
+ * inside saveCharacter — that's where the `^[A-Za-z0-9_]+$` length 1-16
+ * regex lives. Empty string after trim = clear (null). Undefined/null = no change.
+ */
+const ApplySkinArgsSchema = z.object({
+  characterId: IdSchema,
+  pngBase64: z.string().min(1),
+  source: z.enum(['upload', 'username']),
+  mojangUsername: z.string().nullable().optional(),
+  username: z.string().nullable().optional(),
+});
 
 export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   // Bot supervision
@@ -74,6 +113,52 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
       throw new Error('Cannot reset memory of the currently summoned character. Stop first.');
     }
     await resetMemoryForCharacter(id);
+  });
+
+  // Phase 9 (09-02): skin pipeline. Plan 02 ships apply + remove +
+  // get-server-url; Plan 03 adds upload + mojang. Lazy-import the skinStore
+  // module inside the handler bodies so a future cyclic import (skinStore
+  // → characterStore → ipc → skinStore) cannot deadlock at module-init time.
+  ipcMain.handle(IpcChannel.skin.apply, async (_event, argsRaw: unknown) => {
+    const args = ApplySkinArgsSchema.parse(argsRaw);
+    const pngBytes = Buffer.from(args.pngBase64, 'base64');
+    // Refuse while bot is connected — bot would keep serving the OLD skin
+    // until disconnect, and the user's intuition is "skin shows up on next
+    // summon". UI also gates this; defense-in-depth.
+    if (deps.supervisor.getActiveId() === args.characterId) {
+      throw new Error('Stop the bot before changing skin. Skin applies on next summon.');
+    }
+    const { applyPng } = await import('./skinStore');
+    return await applyPng({
+      personaId: args.characterId,
+      pngBytes,
+      source: args.source,
+      mojangUsername: args.mojangUsername ?? null,
+      // undefined = leave existing username untouched (renderer didn't ship a value);
+      // empty string = explicit clear; any other string = explicit set.
+      username: args.username ?? undefined,
+    }); // { skin, username }
+  });
+
+  ipcMain.handle(IpcChannel.skin.remove, async (_event, idArg: unknown) => {
+    const id = IdSchema.parse(idArg); // BLOCKER 1 — same strict slug validator as skin:apply
+    if (deps.supervisor.getActiveId() === id) {
+      throw new Error('Stop the bot before changing skin. Skin applies on next summon.');
+    }
+    const { removePng } = await import('./skinStore');
+    const skin = await removePng(id);
+    return { skin };
+  });
+
+  ipcMain.handle(IpcChannel.skin.getServerUrl, async () => {
+    const baseUrl = deps.getSkinServerBaseUrl();
+    if (!baseUrl) {
+      // Skin server failed to bind on boot (SKIN_SERVER_PORT_TAKEN). Surface
+      // as a rejected promise — the renderer's SkinEditor maps the throw to
+      // ERROR_COPY[SKIN_SERVER_PORT_TAKEN] so the UI shows the relevant copy.
+      throw new Error("Sei couldn't reserve a local port for serving skins. Restart Sei and try again.");
+    }
+    return { baseUrl };
   });
 
   // User config

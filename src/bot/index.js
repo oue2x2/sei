@@ -233,6 +233,10 @@ async function bootstrapWithInit(initData) {
     userDataDir,
     mc_username,         // BLOCKER-4: Minecraft username collected in onboarding
     preferred_name,      // seeds player_username for player-recognition
+    skinServerBaseUrl,   // Phase 9 (09-02): logged for verification; the real consumer is
+                         // CustomSkinLoader on the host's MC client. The bot itself never
+                         // hits this URL — the wizard (Plan 04/05) stamps it into
+                         // customskinloader.json on the user's MC install.
   } = initData
 
   // Build a config shape that satisfies ConfigSchema.parse (see
@@ -271,7 +275,14 @@ async function bootstrapWithInit(initData) {
     const cleaned = String(s || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 16)
     return cleaned || 'Sei'
   }
-  const bot_mc_username = sanitizeMcName(character.name)
+  // Phase 9 (09-02): prefer per-persona character.username over the legacy
+  // sanitized name fallback. The username field (added in Plan 01) has regex
+  // /^[A-Za-z0-9_]+$/ + length cap 16 baked into CharacterSchema, so it's
+  // already MC-valid by the time it reaches this code. Null/empty falls back
+  // to the sanitized persona name — the same behavior as before Phase 9.
+  const bot_mc_username = (typeof character.username === 'string' && character.username.trim())
+    ? character.username.trim()
+    : sanitizeMcName(character.name)
 
   // player_username = how the bot recognizes the human player in in-game
   // chat. Matching happens against MC display names (mc_username), NOT the
@@ -355,6 +366,13 @@ async function bootstrapWithInit(initData) {
     `(mc_username=${config.adapter.minecraft.username}, ` +
     `player=${config.player_username}, version=${config.adapter.minecraft.version})`,
   )
+  // Phase 9 (09-02): log the skin-server URL so a developer running
+  // `npm run dev` can confirm the supervisor → bot init handover. The bot
+  // never fetches from this URL (CustomSkinLoader on the host's MC client is
+  // the actual consumer); this line exists purely for verification.
+  if (skinServerBaseUrl) {
+    logger.info(`[sei] skin server URL handed to bot: ${skinServerBaseUrl}`)
+  }
 
   // 260508-nkk root cause #2: previously `summon-ready` fired immediately
   // after `await start(config)` resolved, but start() resolves once
