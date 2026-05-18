@@ -18,11 +18,14 @@
 import React, { useEffect, useState } from 'react';
 import { sei } from '../lib/ipcClient';
 import { useUiStore } from '../lib/stores/useUiStore';
+import { useWizardStore } from '../lib/stores/useWizardStore';
 import { applyTheme, type ThemeMode } from '../lib/theme';
 import { Button } from '../components/Button';
 import { TextField } from '../components/TextField';
+import { StatusPill, type StatusPillTone } from '../components/StatusPill';
 import { BackIcon, SunIcon, MoonIcon } from '../components/icons';
 import type { UserConfig } from '@shared/characterSchema';
+import type { McInstall, WizardState } from '@shared/ipc';
 import styles from './SettingsScreen.module.css';
 
 const API_KEY_BULLET_LEN = 24;
@@ -210,6 +213,11 @@ export function SettingsScreen(): React.ReactElement {
       </section>
 
       <section className={styles.section}>
+        <div className={styles.sectionTitle}>MINECRAFT SKINS SETUP</div>
+        <SkinSetupRow />
+      </section>
+
+      <section className={styles.section}>
         <div className={styles.sectionTitle}>APPEARANCE</div>
         <div className={styles.row}>
           <span className={styles.rowLabel}>Theme</span>
@@ -223,6 +231,70 @@ export function SettingsScreen(): React.ReactElement {
           </Button>
         </div>
       </section>
+    </div>
+  );
+}
+
+/**
+ * SkinSetupRow — Phase 9 plan 07 settings row.
+ *
+ * Shows the current state of the Minecraft skin setup wizard:
+ *   - green pill + count when 1+ installs are enabled
+ *   - warn pill when any enabled install has version drift / missing mod
+ *   - muted "Not set up yet" when getWizardState().hasRunOnce === false
+ *
+ * "Re-run setup" button opens SetupWizardModal in re-entry mode (Back-to-settings
+ * button visible on welcome step).
+ */
+function SkinSetupRow(): React.ReactElement {
+  const openWizard = useWizardStore((s) => s.openWizard);
+  const [state, setState] = useState<WizardState | null>(null);
+  const [installs, setInstalls] = useState<McInstall[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void sei.getWizardState().then((s) => {
+      if (!cancelled) setState(s);
+    });
+    void sei
+      .detectMcInstalls()
+      .then((r) => {
+        if (!cancelled) setInstalls(r.installs);
+      })
+      .catch(() => {
+        /* detection failure is non-fatal here — row falls back to "Not set up yet". */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const enabledCount = state?.enabledInstallIds.length ?? 0;
+  // Mod-missing OR version-drift heuristic: an install Sei previously enabled
+  // that the current scan reports as csl_installed=false is broken; flag.
+  const driftCount = installs.filter(
+    (i) => i.sei_enabled && !i.csl_installed,
+  ).length;
+
+  const tone: StatusPillTone =
+    enabledCount > 0 ? (driftCount > 0 ? 'warn' : 'green') : 'muted';
+  const label =
+    enabledCount > 0
+      ? `Sei enabled on ${enabledCount} install${enabledCount === 1 ? '' : 's'}`
+      : 'Not set up yet';
+  const secondary =
+    driftCount > 0
+      ? `${driftCount} install${driftCount === 1 ? '' : 's'} need${driftCount === 1 ? 's' : ''} update`
+      : undefined;
+
+  return (
+    <div className={styles.row}>
+      <span className={styles.rowEditor} style={{ justifyContent: 'flex-start' }}>
+        <StatusPill tone={tone} label={label} secondary={secondary} />
+      </span>
+      <Button kind="quiet" size="md" onClick={() => openWizard(true)}>
+        Re-run setup
+      </Button>
     </div>
   );
 }

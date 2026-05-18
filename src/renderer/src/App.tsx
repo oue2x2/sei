@@ -38,10 +38,12 @@ import { ComingSoonScreen } from './screens/ComingSoonScreen';
 import { CharacterPage } from './screens/CharacterPage';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { LanModal } from './components/LanModal';
+import { SetupWizardModal } from './components/SetupWizardModal';
 import { LogsBar } from './components/LogsBar';
 import { SummonToast } from './components/SummonToast';
 import { Banner } from './components/Banner';
 import { ERROR_COPY } from './lib/errors';
+import { useWizardStore } from './lib/stores/useWizardStore';
 
 const LOADING_FLOOR_MS = 1600;
 
@@ -53,6 +55,7 @@ export function App(): React.ReactElement {
   const modal = useUiStore((s) => s.modal);
   const summon = useDataStore((s) => s.summon);
   const characters = useDataStore((s) => s.characters);
+  const openWizard = useWizardStore((s) => s.openWizard);
   const [bootStartedAt] = useState(() => Date.now());
   const [toast, setToast] = useState<{ id: string; name: string } | null>(null);
   const [lastToastedSummonId, setLastToastedSummonId] = useState<string | null>(null);
@@ -129,6 +132,34 @@ export function App(): React.ReactElement {
     };
   }, [bootStartedAt, navigate, setThemeMode]);
 
+  // ── First-launch skin-setup wizard trigger (Phase 9 plan 07) ──────────
+  // Auto-open SetupWizardModal when:
+  //   1. The user has finished onboarding (hasApiKey === true) — don't pop
+  //      the wizard during API-key entry,
+  //   2. wizardState.hasRunOnce === false — first launch, not dismissed before,
+  //   3. At least one Minecraft install is detected — no "We couldn't find
+  //      Minecraft" pop-up on every launch for users without MC.
+  // Re-running from Settings is handled by SettingsScreen's SkinSetupRow.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const hasKey = await sei.hasApiKey();
+      if (!hasKey || cancelled) return;
+      const state = await sei.getWizardState();
+      if (cancelled) return;
+      if (state.hasRunOnce) return;
+      const { installs } = await sei.detectMcInstalls();
+      if (cancelled) return;
+      if (installs.length === 0) return;
+      openWizard(false);
+    })().catch(() => {
+      // Silent — wizard not opening is non-fatal; user can always re-run from Settings.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [openWizard]);
+
   // ── Toast on summon transition (UI-SPEC §Summon flow) ─────────────────
   // Fire SummonToast when a new summon enters 'connecting' (request acked) or
   // 'online'. We track the last toasted character id so a single summon only
@@ -202,6 +233,7 @@ export function App(): React.ReactElement {
         </div>
       </MacosWindow>
       {modal?.kind === 'lan' ? <LanModal mode={modal.mode} /> : null}
+      <SetupWizardModal />
       {toast ? (
         <SummonToast
           characterId={toast.id}
