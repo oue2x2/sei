@@ -19,7 +19,8 @@
     "sei": "node src/bot/cli/index.js",
     "verify:phase2": "node scripts/verify-phase2.js",
     "verify:phase3": "node scripts/verify-phase3.js",
-    "verify:phase9-skin-server": "node scripts/verify-skinServer.mjs"
+    "verify:phase9-skin-server": "node scripts/verify-skinServer.mjs",
+    "verify:phase9-mojang": "tsx scripts/verify-mojangSkinLookup.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
@@ -42,6 +43,7 @@
     "electron": "42.0.0",
     "electron-builder": "26.8.1",
     "electron-vite": "5.0.0",
+    "tsx": "^4.22.1",
     "typescript": "^5.4.0",
     "vite": "^7.0.0"
   }
