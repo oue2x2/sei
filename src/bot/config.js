@@ -38,6 +38,10 @@ export const ConfigSchema = z.object({
   // on the prior behavior.
   chat_mode: z.enum(['chat', 'full']).default('chat'),
   player_username: z.string(),
+  // Friendly name the LLM addresses the player by. Substituted in chat events
+  // and convo memory in place of the raw MC username so the bot never speaks
+  // the player's gamertag. Falls back to player_username when empty.
+  player_display_name: z.string().default(''),
   // 260516-0yw: `backstory` retired in favor of `expanded` — the LLM-generated
   // long-form persona prompt produced at character-save time by
   // src/main/personaExpansion.ts. No backwards-compat shim (per CLAUDE.md

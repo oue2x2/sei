@@ -27,11 +27,19 @@ export interface QuestionShellProps {
   nextKind?: 'primary' | 'accent';
   nextDisabled?: boolean;
   backDisabled?: boolean;
+  /** Optional secondary action shown between Back and Next (e.g. "Skip"). */
+  secondaryLabel?: string;
+  onSecondary?: () => void;
+  /** Widen the column for content that needs more room (e.g. SkinEditor). */
+  wide?: boolean;
 }
 
 export function QuestionShell(p: QuestionShellProps): React.ReactElement {
   return (
-    <div className={styles.root}>
+    <div
+      className={styles.root}
+      style={p.wide ? { maxWidth: 820 } : undefined}
+    >
       <div className={styles.body}>
         {p.eyebrow ? <div className={styles.eyebrow}>{p.eyebrow}</div> : null}
         <h1 className={styles.title}>{p.title}</h1>
@@ -50,6 +58,11 @@ export function QuestionShell(p: QuestionShellProps): React.ReactElement {
           Back
         </Button>
         <StepDots count={p.stepCount} current={p.currentStep} />
+        {p.secondaryLabel ? (
+          <Button kind="quiet" size="md" onClick={p.onSecondary}>
+            {p.secondaryLabel}
+          </Button>
+        ) : null}
         <Button
           kind={p.nextKind ?? 'primary'}
           size="md"

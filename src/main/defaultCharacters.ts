@@ -1,7 +1,7 @@
 /**
  * 260516-x62: Shipped default personas.
  *
- * Three characters come with the app: Sui, Mochineko, Clawd. They are seeded
+ * Three characters come with the app: Sui, Lyra, Clawd. They are seeded
  * into the user's `<userData>/characters/` on first launch (and on any
  * launch where the id is not yet recorded in the `defaults-seeded.json`
  * tracker — but recorded ids are never re-seeded, so user deletions persist).
@@ -15,7 +15,7 @@
  * subtle badge.
  */
 import sui from '../../resources/default-characters/sui.json' with { type: 'json' };
-import mochineko from '../../resources/default-characters/mochineko.json' with { type: 'json' };
+import lyra from '../../resources/default-characters/lyra.json' with { type: 'json' };
 import clawd from '../../resources/default-characters/clawd.json' with { type: 'json' };
 import { readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -32,7 +32,7 @@ const logger = {
 
 export const DEFAULT_CHARACTERS: readonly Character[] = Object.freeze([
   CharacterSchema.parse(sui),
-  CharacterSchema.parse(mochineko),
+  CharacterSchema.parse(lyra),
   CharacterSchema.parse(clawd),
 ]);
 

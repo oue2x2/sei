@@ -13,14 +13,11 @@ import React from 'react';
 import styles from './IconRail.module.css';
 import {
   HomeIcon,
-  MCBlock,
   PlusIcon,
   SettingsIcon,
-  SunIcon,
-  MoonIcon,
 } from './icons';
 import { useUiStore } from '../lib/stores/useUiStore';
-import { applyTheme } from '../lib/theme';
+const minecraftIcon = './img/minecraft.png';
 
 interface RailButtonProps {
   active?: boolean;
@@ -58,23 +55,9 @@ function RailButton({
 export function IconRail(): React.ReactElement {
   const view = useUiStore((s) => s.view);
   const navigate = useUiStore((s) => s.navigate);
-  const themeMode = useUiStore((s) => s.themeMode);
-  const setThemeMode = useUiStore((s) => s.setThemeMode);
-
-  // Resolve the *currently displayed* light/dark mode for the toggle icon
-  // (themeMode='system' resolves via prefers-color-scheme).
-  const resolvedDark =
-    themeMode === 'dark' ||
-    (themeMode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   const homeActive =
     view.kind === 'home' || view.kind === 'character' || view.kind === 'add-character';
-
-  const toggleTheme = () => {
-    const next = resolvedDark ? 'light' : 'dark';
-    setThemeMode(next);
-    applyTheme(next);
-  };
 
   return (
     <nav className={styles.rail} aria-label="Primary">
@@ -93,7 +76,13 @@ export function IconRail(): React.ReactElement {
       <div className={styles.cluster}>
         {/* Minecraft — always active (only registered game). */}
         <RailButton active title="Minecraft">
-          <MCBlock size={34} />
+          <img
+            src={minecraftIcon}
+            alt="Minecraft"
+            width={34}
+            height={34}
+            style={{ imageRendering: 'pixelated', display: 'block' }}
+          />
         </RailButton>
         <RailButton
           muted
@@ -107,12 +96,6 @@ export function IconRail(): React.ReactElement {
       <div className={styles.spacer} />
 
       <div className={styles.cluster}>
-        <RailButton
-          onClick={toggleTheme}
-          title={`Switch to ${resolvedDark ? 'light' : 'dark'} mode`}
-        >
-          {resolvedDark ? <SunIcon size={26} /> : <MoonIcon size={26} />}
-        </RailButton>
         <RailButton
           active={view.kind === 'settings'}
           onClick={() => navigate({ kind: 'settings' })}

@@ -115,7 +115,7 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
     );
   }
 
-  const isDefault = character.id === 'sui';
+  const isDefault = character.is_default;
   const themeAttr = document.documentElement.getAttribute('data-theme');
   const theme: 'light' | 'dark' = themeAttr === 'dark' ? 'dark' : 'light';
   const palette = pickPalette(character.id + character.name, theme);

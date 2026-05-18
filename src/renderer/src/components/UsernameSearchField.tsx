@@ -31,6 +31,8 @@ export interface UsernameSearchFieldProps {
   onResolved: (result: { pngBase64: string; sha256: string; resolvedUsername: string }) => void;
   onError: (message: string) => void;
   disabled?: boolean;
+  /** Pre-fill the input (e.g. the persisted mojang_username from a prior apply). */
+  initialValue?: string;
 }
 
 type FieldState =
@@ -86,8 +88,9 @@ export function UsernameSearchField({
   onResolved,
   onError,
   disabled,
+  initialValue,
 }: UsernameSearchFieldProps): React.ReactElement {
-  const [input, setInput] = useState<string>('');
+  const [input, setInput] = useState<string>(() => initialValue ?? '');
   const [state, setState] = useState<FieldState>({ kind: 'idle' });
 
   const trimmed = input.trim();

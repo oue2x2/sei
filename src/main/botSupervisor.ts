@@ -25,7 +25,7 @@ import type {
   ErrorClass,
 } from '../shared/ipc';
 import type { Character } from '../shared/characterSchema';
-import { getCharacter } from './characterStore';
+import { getCharacter, saveCharacter } from './characterStore';
 import { loadApiKey } from './apiKeyStore';
 import { loadConfig as loadUserConfig } from './configStore'; // BLOCKER-4: UserConfig (mc_username, preferred_name) for bot init
 import { paths } from './paths';
@@ -332,6 +332,16 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       if (data.type === 'summon-ready' && !summonResolved) {
         summonResolved = true;
         clearTimeout(summonTimer);
+        // Stamp last_launched on successful connect — never-launched personas
+        // still show '—' until they reach summon-ready at least once.
+        void (async () => {
+          try {
+            const c = await getCharacter(characterId);
+            if (c) await saveCharacter({ ...c, last_launched: new Date().toISOString() });
+          } catch (err) {
+            logger.warn(`failed to stamp last_launched for ${characterId}: ${(err as Error).message}`);
+          }
+        })();
         summonResolve();
       }
       // 260508-nkk: lifecycle 'error' is terminal for the summon promise.
@@ -396,6 +406,26 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     );
 
     child.on('exit', (code) => {
+      // Accumulate playtime regardless of exit reason (clean stop or crash).
+      // We only count time between summon-ready and exit; if the bot never
+      // reached summon-ready (summonResolved still true via reject path),
+      // duration may still reflect connect-attempt time — that's fine.
+      const sessionMs = Date.now() - startedAtMs;
+      if (sessionMs > 0) {
+        void (async () => {
+          try {
+            const c = await getCharacter(characterId);
+            if (c) {
+              await saveCharacter({
+                ...c,
+                playtime_ms: (c.playtime_ms ?? 0) + sessionMs,
+              });
+            }
+          } catch (err) {
+            logger.warn(`failed to accumulate playtime for ${characterId}: ${(err as Error).message}`);
+          }
+        })();
+      }
       if (!summonResolved) {
         summonResolved = true;
         clearTimeout(summonTimer);

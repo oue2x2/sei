@@ -30,14 +30,13 @@ import { useUiStore } from '../lib/stores/useUiStore';
 import { QuestionShell } from '../components/QuestionShell';
 import { TextField } from '../components/TextField';
 import { ProviderTiles, type Provider } from '../components/ProviderTiles';
-import { SeiPixelMark } from '../components/SeiPixelMark';
 import type { UserConfig } from '@shared/characterSchema';
 
 export interface OnboardingScreenProps {
   isReonboard: boolean;
 }
 
-const STEPS = 5;
+const STEPS = 4;
 
 export function OnboardingScreen({ isReonboard }: OnboardingScreenProps): React.ReactElement {
   const navigate = useUiStore((s) => s.navigate);
@@ -111,44 +110,22 @@ export function OnboardingScreen({ isReonboard }: OnboardingScreenProps): React.
   };
 
   const validate = (): boolean => {
-    if (step === 0) return true;
-    if (step === 1) return mc.trim() !== '';
-    if (step === 2) return pref.trim() !== '';
-    if (step === 3) return true;
-    if (step === 4) return apiKey.trim() !== '' && !submitting;
+    if (step === 0) return mc.trim() !== '';
+    if (step === 1) return pref.trim() !== '';
+    if (step === 2) return true;
+    if (step === 3) return apiKey.trim() !== '' && !submitting;
     return false;
   };
 
-  // ── Step 0 — Welcome ────────────────────────────────────────────────────
+  // ── Step 0 — Minecraft username ─────────────────────────────────────────
   if (step === 0) {
-    return (
-      <QuestionShell
-        title={
-          <>
-            Welcome to <SeiPixelMark height={22} />.
-          </>
-        }
-        stepCount={STEPS}
-        currentStep={step}
-        onBack={isReonboard ? back : undefined}
-        backDisabled={!isReonboard}
-        onNext={next}
-        nextLabel="Begin"
-        nextKind="accent"
-      >
-        <span />
-      </QuestionShell>
-    );
-  }
-
-  // ── Step 1 — Minecraft username ─────────────────────────────────────────
-  if (step === 1) {
     return (
       <QuestionShell
         title="What's your Minecraft username?"
         stepCount={STEPS}
         currentStep={step}
-        onBack={back}
+        onBack={isReonboard ? back : undefined}
+        backDisabled={!isReonboard}
         onNext={next}
         nextDisabled={!validate()}
       >
@@ -164,8 +141,8 @@ export function OnboardingScreen({ isReonboard }: OnboardingScreenProps): React.
     );
   }
 
-  // ── Step 2 — Preferred name ─────────────────────────────────────────────
-  if (step === 2) {
+  // ── Step 1 — Preferred name ─────────────────────────────────────────────
+  if (step === 1) {
     return (
       <QuestionShell
         title="What should they call you?"
@@ -186,8 +163,8 @@ export function OnboardingScreen({ isReonboard }: OnboardingScreenProps): React.
     );
   }
 
-  // ── Step 3 — Provider tiles ─────────────────────────────────────────────
-  if (step === 3) {
+  // ── Step 2 — Provider tiles ─────────────────────────────────────────────
+  if (step === 2) {
     return (
       <QuestionShell
         title="Which model provider?"
@@ -201,7 +178,7 @@ export function OnboardingScreen({ isReonboard }: OnboardingScreenProps): React.
     );
   }
 
-  // ── Step 4 — API key ────────────────────────────────────────────────────
+  // ── Step 3 — API key ────────────────────────────────────────────────────
   const providerLabel = provider === 'anthropic' ? 'Anthropic' : 'Local';
   return (
     <QuestionShell

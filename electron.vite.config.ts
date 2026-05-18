@@ -28,6 +28,9 @@ export default defineConfig({
   },
   renderer: {
     root: path.resolve('src/renderer'),
+    // file:// in packaged builds needs relative asset URLs; without this,
+    // url('/img/...') in CSS resolves to filesystem root → ERR_FILE_NOT_FOUND.
+    base: './',
     build: {
       outDir: path.resolve('dist/renderer'),
       emptyOutDir: true,

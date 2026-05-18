@@ -399,6 +399,17 @@ export async function writeCustomSkinLoaderConfig(
   // already, but defensive trim costs nothing.
   const base = skinServerBaseUrl.replace(/\/+$/, '');
 
+  // Sei's SeiLocal entry — prepended to whatever loadlist already exists
+  // (legacy default places Mojang at priority 1, which beats our entry and
+  // serves Steve+cape for any username that resolves on Mojang).
+  const SEI_ENTRY = {
+    name: 'SeiLocal',
+    type: 'Legacy',
+    skin: `${base}/skins/{USERNAME}.png`,
+    checkPNG: true,
+    model: 'auto',
+  };
+
   // ── Schema (per upstream config classes — see file header) ────────────
   //
   //  Loadlist entry fields used:
@@ -426,30 +437,53 @@ export async function writeCustomSkinLoaderConfig(
   //  rewrites them to the current installed version on first launch — no
   //  benefit to hardcoding a stale value here, and a stale value triggers
   //  CSL's "config out of date" log spam.
-  const cfg = {
-    loadlist: [
-      {
-        // Schema verified via Task 2A research step.
-        // Loader type is `Legacy` per upstream LegacyLoader.java (literal
-        // `{USERNAME}` substitution → PNG bytes). The Task 2A script
-        // verifies this against the upstream Java source on every run.
-        name: 'SeiLocal',
-        type: 'Legacy',
-        skin: `${base}/skins/{USERNAME}.png`,
-        checkPNG: true,
-        model: 'auto',
-      },
-    ],
-    enableTransparentSkin: true,
-    enableUpdateSkull: true,
-    enableLocalProfileCache: false,
-    enableCacheAutoClean: true,
+  // CSL 14.x (verified against installed Fabric build) reads from
+  //   <install>/CustomSkinLoader/CustomSkinLoader.json   (root location)
+  // NOT the modern <install>/config/CustomSkinLoader/CustomSkinLoader.json
+  // that the original plan assumed. Write to BOTH so we cover any CSL build
+  // that reads either path. The root path is the one that actually matters
+  // on the user's current install — without it, CSL silently uses its own
+  // default loadlist (Mojang at priority 1 → Steve+cape skins).
+  const writeOne = async (configPath: string): Promise<void> => {
+    // Preserve any existing loadlist + settings the user already had; just
+    // ensure SeiLocal sits at index 0 so our local skins win over Mojang and
+    // the other default endpoints. Falls back to a minimal fresh config when
+    // there's nothing on disk.
+    let existing: Record<string, unknown> | null = null;
+    try {
+      const raw = await fs.readFile(configPath, 'utf-8');
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object') existing = parsed;
+    } catch {
+      // ENOENT / parse error → write a fresh config.
+    }
+
+    let cfg: Record<string, unknown>;
+    if (existing) {
+      const existingList = Array.isArray(existing.loadlist) ? existing.loadlist : [];
+      // Drop any prior SeiLocal entry (e.g. one we wrote with a stale port)
+      // before prepending the fresh one.
+      const filtered = existingList.filter(
+        (e) => !(e && typeof e === 'object' && (e as { name?: unknown }).name === 'SeiLocal'),
+      );
+      cfg = { ...existing, loadlist: [SEI_ENTRY, ...filtered] };
+    } else {
+      cfg = {
+        loadlist: [SEI_ENTRY],
+        enableTransparentSkin: true,
+        enableUpdateSkull: true,
+        enableLocalProfileCache: false,
+        enableCacheAutoClean: true,
+      };
+    }
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await atomicWrite(configPath, JSON.stringify(cfg, null, 2) + '\n');
+    logger.info(`customSkinLoader: wrote ${configPath}`);
   };
 
-  const configDir = path.join(mcInstallDir, 'config', 'CustomSkinLoader');
-  await fs.mkdir(configDir, { recursive: true });
-  const configPath = path.join(configDir, 'CustomSkinLoader.json');
-  await atomicWrite(configPath, JSON.stringify(cfg, null, 2) + '\n');
-  logger.info(`customSkinLoader: wrote ${configPath}`);
-  return { configPath };
+  const rootPath = path.join(mcInstallDir, 'CustomSkinLoader', 'CustomSkinLoader.json');
+  const modernPath = path.join(mcInstallDir, 'config', 'CustomSkinLoader', 'CustomSkinLoader.json');
+  await writeOne(rootPath);
+  await writeOne(modernPath);
+  return { configPath: rootPath };
 }

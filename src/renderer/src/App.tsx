@@ -41,6 +41,7 @@ import { LanModal } from './components/LanModal';
 import { SetupWizardModal } from './components/SetupWizardModal';
 import { LogsBar } from './components/LogsBar';
 import { SummonToast } from './components/SummonToast';
+import { UpdateToast } from './components/UpdateToast';
 import { Banner } from './components/Banner';
 import { ERROR_COPY } from './lib/errors';
 import { useWizardStore } from './lib/stores/useWizardStore';
@@ -59,6 +60,11 @@ export function App(): React.ReactElement {
   const [bootStartedAt] = useState(() => Date.now());
   const [toast, setToast] = useState<{ id: string; name: string } | null>(null);
   const [lastToastedSummonId, setLastToastedSummonId] = useState<string | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<{
+    currentVersion: string;
+    latestVersion: string;
+    downloadUrl: string;
+  } | null>(null);
   // RESEARCH §Pitfall 3 — Linux-only basic_text safeStorage warning. Main
   // computes this from `apiKeyStore.backendKind()` and exposes it via the
   // app:warnings IPC. Dismissed for the rest of the session on first click.
@@ -78,6 +84,17 @@ export function App(): React.ReactElement {
   useEffect(() => {
     const teardown = subscribeIpc();
     return teardown;
+  }, []);
+
+  // ── Update-available toast subscription (fires once at startup if newer). ──
+  useEffect(() => {
+    return sei.onUpdateAvailable((info) => {
+      setUpdateInfo({
+        currentVersion: info.currentVersion,
+        latestVersion: info.latestVersion,
+        downloadUrl: info.downloadUrl,
+      });
+    });
   }, []);
 
   // ── Initial bootstrap: config → characters → first view (with floor) ──
@@ -141,6 +158,11 @@ export function App(): React.ReactElement {
   //      Minecraft" pop-up on every launch for users without MC.
   // Re-running from Settings is handled by SettingsScreen's SkinSetupRow.
   useEffect(() => {
+    // Only consider auto-opening once the user has actually landed on home —
+    // before that, hasApiKey may still be false (mid-onboarding) and the
+    // effect would no-op. Re-running on view change covers the
+    // onboarding → home transition.
+    if (view.kind !== 'home') return;
     let cancelled = false;
     (async () => {
       const hasKey = await sei.hasApiKey();
@@ -148,9 +170,6 @@ export function App(): React.ReactElement {
       const state = await sei.getWizardState();
       if (cancelled) return;
       if (state.hasRunOnce) return;
-      const { installs } = await sei.detectMcInstalls();
-      if (cancelled) return;
-      if (installs.length === 0) return;
       openWizard(false);
     })().catch(() => {
       // Silent — wizard not opening is non-fatal; user can always re-run from Settings.
@@ -158,7 +177,7 @@ export function App(): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [openWizard]);
+  }, [openWizard, view.kind]);
 
   // ── Toast on summon transition (UI-SPEC §Summon flow) ─────────────────
   // Fire SummonToast when a new summon enters 'connecting' (request acked) or
@@ -239,6 +258,14 @@ export function App(): React.ReactElement {
           characterId={toast.id}
           characterName={toast.name}
           onDone={() => setToast(null)}
+        />
+      ) : null}
+      {updateInfo ? (
+        <UpdateToast
+          currentVersion={updateInfo.currentVersion}
+          latestVersion={updateInfo.latestVersion}
+          downloadUrl={updateInfo.downloadUrl}
+          onDismiss={() => setUpdateInfo(null)}
         />
       ) : null}
     </>

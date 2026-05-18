@@ -385,6 +385,29 @@ export async function installFabricLoader(
   // Cleanup installer JAR (best-effort — leaving it is harmless but noisy).
   await fs.unlink(installerJarPath).catch(() => {});
 
+  // Rename the profile entry the Fabric installer added to launcher_profiles.json
+  // ("fabric-loader-1.21.1" → "Sei") so it's obvious in the launcher dropdown
+  // which profile is the Sei one. Best-effort: any failure here doesn't fail
+  // the install (the user can rename it themselves from the launcher).
+  try {
+    const profilesPath = path.join(mcInstall.path, 'launcher_profiles.json');
+    const raw = await fs.readFile(profilesPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { profiles?: Record<string, { name?: string }> };
+    if (parsed.profiles) {
+      for (const [key, prof] of Object.entries(parsed.profiles)) {
+        if (
+          (key.startsWith('fabric-loader-') ||
+            (typeof prof.name === 'string' && prof.name.startsWith('fabric-loader-')))
+        ) {
+          prof.name = 'Sei';
+        }
+      }
+      await fs.writeFile(profilesPath, JSON.stringify(parsed, null, 2));
+    }
+  } catch (err) {
+    logger.warn(`fabricInstaller: rename profile failed: ${(err as Error).message}`);
+  }
+
   onProgress?.(100);
   return { loaderVersion };
 }

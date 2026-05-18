@@ -26,13 +26,7 @@ export function MacosWindow({ subtitle, children }: MacosWindowProps): React.Rea
     <div className={styles.window}>
       <div className={styles.titleBar}>
         <div className={styles.titleCenter}>
-          <span>Sei</span>
-          {subtitle ? (
-            <>
-              <span className={styles.dot}>·</span>
-              <span className={styles.subtitle}>{subtitle}</span>
-            </>
-          ) : null}
+          <span>Sei Launcher v0.1</span>
         </div>
       </div>
       <div className={styles.body}>{children}</div>

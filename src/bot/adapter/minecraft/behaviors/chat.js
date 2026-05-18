@@ -22,9 +22,17 @@ export function startChat(bot, config, orchestrator = null) {
   bot.on('chat', (username, message) => {
     if (username === bot.username) return
     logChatIn(username, message)
-    try { orchestrator?.recordIncomingChat?.(username, message) } catch {}
 
     const playerSpoke = username === config.player_username
+    // Substitute the MC username with the preferred display name before
+    // anything the LLM reads (chat events, convo memory). The bot must never
+    // surface the player's raw gamertag in prompts or responses.
+    const displayName =
+      playerSpoke && config.player_display_name
+        ? config.player_display_name
+        : username
+
+    try { orchestrator?.recordIncomingChat?.(displayName, message) } catch {}
 
     // Stop-verb fast path: cancel the body immediately so dig/pathfind/etc.
     // release before the LLM turn fires. Falls through to normal dispatch
@@ -49,9 +57,9 @@ export function startChat(bot, config, orchestrator = null) {
     }
 
     if (playerSpoke || addressed || nearby) {
-      const payload = { username, message, addressed, playerSpoke }
+      const payload = { username: displayName, message, addressed, playerSpoke }
       if (bot._seiDebouncer) {
-        bot._seiDebouncer.debounce(`chat:${username}`, payload, (p) => bot.emit('sei:chat_received', p))
+        bot._seiDebouncer.debounce(`chat:${displayName}`, payload, (p) => bot.emit('sei:chat_received', p))
       } else {
         bot.emit('sei:chat_received', payload)
       }

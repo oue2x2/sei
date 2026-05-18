@@ -92,7 +92,7 @@ export function SkinEditor({
   onChanged,
 }: SkinEditorProps): React.ReactElement {
   // ── Source-of-skin switch + staged PNG bytes ─────────────────────────────
-  const [tab, setTab] = useState<'upload' | 'search'>('upload');
+  const [tab, setTab] = useState<'upload' | 'search'>('search');
   const [stagedPng, setStagedPng] = useState<StagedPng | null>(null);
 
   // ── In-game username field ───────────────────────────────────────────────
@@ -159,14 +159,10 @@ export function SkinEditor({
       setPreviewUrl(null);
       return;
     }
-    if (character.skin.source === 'none') {
-      setPreviewUrl(null);
-      return;
-    }
-    // The skin server routes /skins/<username>.png by what the bot would
-    // connect as — which is character.username (if set) or sanitizeMcName
-    // of the persona name. We mirror that exact resolution here so the
-    // preview shows what the bot actually serves.
+    // Even when skin.source==='none' (newly-created persona), show the 3D
+    // preview by hitting the local skin server with the bot's effective
+    // username. The server returns a transparent PNG for unknown personas;
+    // skinview3d still renders it (Steve-shaped silhouette).
     const serverName = usernameDraft.trim() || character.username || sanitizeMcName(character.name);
     const cacheBust = character.skin.png_sha256 ?? String(Date.now());
     setPreviewUrl(`${baseUrl}/skins/${encodeURIComponent(serverName)}.png?sha=${cacheBust}`);
@@ -261,6 +257,31 @@ export function SkinEditor({
   const showDefaultBadge =
     character.skin.source === 'bundled' && !stagedPng;
 
+  // Skins are locked on default personas — show the 3D preview but hide
+  // every edit affordance. Users who want a different skin create their
+  // own persona.
+  if (character.is_default) {
+    return (
+      <section className={styles.section}>
+        <div className={styles.header}>
+          <div className={styles.eyebrow}>SKIN &amp; USERNAME</div>
+          <span className={styles.defaultBadge}>Default skin</span>
+        </div>
+        <div className={styles.cols}>
+          <div className={styles.left}>
+            <SkinPreview3d pngDataUrl={previewUrl} personaName={character.name} />
+          </div>
+          <div className={styles.right}>
+            <p className={styles.hint}>
+              Default personas keep their bundled skin and username. Create a
+              custom persona to use your own skin.
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className={styles.section}>
       <div className={styles.header}>
@@ -331,6 +352,7 @@ export function SkinEditor({
             />
           ) : (
             <UsernameSearchField
+              initialValue={character.skin.mojang_username ?? ''}
               onResolved={(r) => {
                 setStagedPng({
                   pngBase64: r.pngBase64,

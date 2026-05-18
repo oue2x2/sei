@@ -29,8 +29,8 @@ export function SeiPixelMark(props: SeiPixelMarkProps): React.ReactElement {
         height,
         width: height * 5, // logo aspect ~5:1 (sei-logo-small.svg)
         backgroundColor: color,
-        WebkitMaskImage: "url('/img/sei-logo-small.svg')",
-        maskImage: "url('/img/sei-logo-small.svg')",
+        WebkitMaskImage: "url('./img/sei-logo-small.svg')",
+        maskImage: "url('./img/sei-logo-small.svg')",
         WebkitMaskRepeat: 'no-repeat',
         maskRepeat: 'no-repeat',
         WebkitMaskSize: 'contain',

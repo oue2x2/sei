@@ -75,17 +75,21 @@ export function SkinPreview3d({
     let cancelled = false;
 
     (async () => {
+      // Split WebGL-init failures (fall back to 2D) from per-skin load
+      // failures (keep the live viewer, ignore the bad skin). A loadSkin
+      // failure on a server URL after Apply must NOT collapse the 3D
+      // canvas — the WebGL context is still healthy.
+      let mod: Skinview3dModule;
       try {
-        // Lazy-import keeps skinview3d (and its three.js dep) out of the initial
-        // renderer chunk. Vite/electron-vite emit a separate async chunk for it.
-        const mod = (await import('skinview3d')) as unknown as Skinview3dModule;
-        if (cancelled) return;
+        mod = (await import('skinview3d')) as unknown as Skinview3dModule;
+      } catch {
+        if (!cancelled) setFallback(true);
+        return;
+      }
+      if (cancelled) return;
 
-        // First-time viewer instantiation creates a WebGLRenderingContext. If
-        // the environment can't allocate one (no GPU, headless test, software
-        // rendering disabled), the SkinViewer constructor throws — we catch
-        // below and drop to the 2D fallback.
-        if (!viewerRef.current) {
+      if (!viewerRef.current) {
+        try {
           const viewer = new mod.SkinViewer({
             canvas,
             width: 240,
@@ -93,14 +97,19 @@ export function SkinPreview3d({
             skin: pngDataUrl,
           });
           viewerRef.current = viewer;
-        } else {
-          await viewerRef.current.loadSkin(pngDataUrl);
+          setReady(true);
+        } catch {
+          if (!cancelled) setFallback(true);
         }
+        return;
+      }
+
+      try {
+        await viewerRef.current.loadSkin(pngDataUrl);
         setReady(true);
       } catch {
-        // WebGL unavailable, bundle missing, or skin load failed — degrade to
-        // a 2D <img src=pngDataUrl> with the UI-SPEC fallback hint copy.
-        if (!cancelled) setFallback(true);
+        // Transient skin-load failure — keep the existing 3D model
+        // visible. Do NOT flip to the 2D fallback.
       }
     })();
 

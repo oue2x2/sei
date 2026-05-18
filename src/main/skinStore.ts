@@ -12,7 +12,7 @@
  *     a request URL into bytes (honors `skin.source`).
  *   - readSkinPng: pure helper from username → character lookup → resolveSkinPng.
  *
- * Bundled PNGs ship under `resources/skins/<id>.png` (sui/mochineko/clawd from
+ * Bundled PNGs ship under `resources/skins/<id>.png` (sui/lyra/clawd from
  * Plan 01 Task 2). The asarUnpack entry in electron-builder.yml exposes them at
  * `<process.resourcesPath>/app.asar.unpacked/resources/skins/` in packaged builds.
  *

@@ -65,3 +65,19 @@
   flex-direction: column;
   min-height: 0;
 }
+
+.resizeHandle {
+  height: 6px;
+  margin-top: -3px;
+  cursor: ns-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.resizeHandle:hover,
+.resizeHandle:active {
+  background: var(--accent, var(--border));
+  opacity: 0.5;
+}

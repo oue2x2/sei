@@ -41,6 +41,7 @@ import { useUiStore } from '../lib/stores/useUiStore';
 import { Button } from './Button';
 import { TextField } from './TextField';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
+import { PortraitImagePicker } from './PortraitImagePicker';
 import type { Character } from '@shared/characterSchema';
 import styles from './EditCharacterModal.module.css';
 
@@ -58,6 +59,7 @@ export function EditCharacterModal({
   const [name, setName] = useState<string>(character.name);
   const [personaSource, setPersonaSource] = useState<string>(character.persona.source ?? '');
   const [personaExpanded, setPersonaExpanded] = useState<string>(character.persona.expanded ?? '');
+  const [portraitImage, setPortraitImage] = useState<string | null>(character.portrait_image);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<boolean>(false);
   const [regenerating, setRegenerating] = useState<boolean>(false);
@@ -76,7 +78,7 @@ export function EditCharacterModal({
   const removeCharacter = useDataStore((s) => s.removeCharacter);
   const navigate = useUiStore((s) => s.navigate);
 
-  const isDefault = character.id === 'sui';
+  const isDefault = character.is_default;
 
   // ESC closes (matches LanModal/DeleteConfirmModal behavior).
   useEffect(() => {
@@ -115,6 +117,7 @@ export function EditCharacterModal({
         // exactly what gets persisted.
         expanded: personaExpanded,
       },
+      portrait_image: portraitImage,
     };
     try {
       const persisted = await sei.saveCharacter(draft, { skipExpansion });
@@ -234,6 +237,11 @@ export function EditCharacterModal({
               autoFocus
               aria-label="Character name"
             />
+          </div>
+
+          <div className={styles.field}>
+            <label className={styles.label}>CARD IMAGE</label>
+            <PortraitImagePicker value={portraitImage} onChange={setPortraitImage} />
           </div>
 
           <div className={styles.field}>

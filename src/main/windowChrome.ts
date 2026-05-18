@@ -2,7 +2,8 @@
  * Platform-branched BrowserWindow chrome.
  * Sources: UI-SPEC §MacosWindow/AppWindow, CONTEXT D-32, RESEARCH Pitfall 9, D-15.
  */
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, app, nativeImage } from 'electron';
+import path from 'node:path';
 
 export interface CreateMainWindowOptions {
   preloadPath: string;
@@ -24,12 +25,18 @@ export function createMainWindow(opts: CreateMainWindowOptions): BrowserWindow {
           }
         : { frame: false };
 
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.png')
+    : path.join(app.getAppPath(), 'build', 'icon.png');
+
   const win = new BrowserWindow({
     width: 1180,
     height: 760,
     minWidth: 1180,
     minHeight: 760,
     show: false,
+    title: 'Sei Launcher',
+    icon: nativeImage.createFromPath(iconPath),
     backgroundColor: '#FDFEFF',
     webPreferences: {
       preload: opts.preloadPath,
@@ -42,7 +49,7 @@ export function createMainWindow(opts: CreateMainWindowOptions): BrowserWindow {
 
   win.once('ready-to-show', () => {
     win.show();
-    if (!process.env.ELECTRON_PROD && !process.env.NODE_ENV?.startsWith('prod')) {
+    if (!app.isPackaged) {
       win.webContents.openDevTools({ mode: 'detach' });
     }
   });

@@ -8,22 +8,64 @@
 
 # Locked 2026-05-17 (Phase 8 Plan 01 Task 2 — resolves Phase 4 04-10 BLOCKING).
 appId: com.sei.app
-productName: Sei
+productName: Sei Launcher
 copyright: Copyright (c) 2026 Sei
 
 directories:
   output: release
   buildResources: build
 
+# Inclusive: pack the whole repo, then carve out planning docs, dev-only
+# tooling, build outputs, personal/user state, and gitignored items.
 files:
-  - dist/**/*
-  - package.json
-  - "!**/node_modules/*/{test,tests,__tests__,*.md,*.markdown,LICENSE*,license*}"
+  - "**/*"
+  # build outputs that get regenerated
+  - "!release/**"
+  - "!out/**"
+  # planning + docs (project history, not shipped)
+  - "!.planning/**"
+  - "!docs/**"
+  - "!ARCHITECTURE.md"
+  - "!RELEASE-NOTES.md"
+  - "!README.md"
+  - "!CLAUDE.md"
+  # tooling / CI / git
+  - "!.github/**"
+  - "!.git/**"
+  - "!.gitignore"
+  - "!.claude/**"
+  - "!test/**"
+  - "!scripts/**"
+  - "!tsconfig*.json"
+  - "!electron.vite.config.ts"
+  - "!electron-builder.yml"
+  # local logs / personal state
+  - "!logs/**"
+  - "!memory/**"
+  - "!config.json"
+  - "!config.example.json"
+  - "!.env*"
+  # sibling working copies / forks
+  - "!mineflayer/**"
+  # source maps + node_modules trim
   - "!**/*.map"
+  - "!**/node_modules/*/{test,tests,__tests__,*.md,*.markdown,LICENSE*,license*}"
+
+# Stable filenames so https://github.com/oue2x2/sei/releases/latest/download/<name>
+# resolves correctly from sei.gg regardless of version bump.
+artifactName: Sei-${os}-${arch}.${ext}
 
 asar: true
+extraResources:
+  - from: build/icon.png
+    to: icon.png
+
 asarUnpack:
   - "src/bot/**/*"
+  # node_modules must be unpacked so the bot (running from app.asar.unpacked
+  # via utilityProcess.fork) can resolve its deps (zod, mineflayer, etc.) —
+  # Node ESM resolution from an unpacked file cannot cross back into the asar.
+  - "node_modules/**/*"
   # Phase 9 (09-01): bundled default skin PNGs must survive packaging so the
   # local skin HTTP server (Plan 03) can resolve `source: 'bundled'` personas
   # via fs.readFile under process.resourcesPath in the packaged build.
@@ -31,14 +73,20 @@ asarUnpack:
 
 mac:
   category: public.app-category.games
+  # Separate arm64 + x64 dmgs (not universal): the universal merge step in
+  # @electron/asar bails with "pattern is too long" when asarUnpack covers
+  # node_modules/**/*. Two dmgs ship cleanly with no per-arch reconciliation.
   target:
     - target: dmg
-      arch: [universal]
+      arch: [arm64, x64]
   hardenedRuntime: true
   gatekeeperAssess: false
-  # TODO(lock-before-signing) — set to user's actual Apple Developer identity:
+  # v0.1 ships unsigned. Flip identity + notarize on once the Developer ID
+  # Application cert exists and APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD env vars
+  # are wired into CI. See docs/APPLE-SIGNING.md.
   # identity: "Developer ID Application: <Name> (TEAM_ID)"
-  notarize: true            # electron-builder ≥26 uses notarytool natively when APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD env vars are set
+  identity: null
+  notarize: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
 

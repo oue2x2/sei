@@ -15,6 +15,7 @@ import {
   type LanState,
   type LogBatch,
   type WizardProgressEvent,
+  type UpdateAvailableEvent,
 } from '../shared/ipc';
 
 const api: RendererApi = {
@@ -66,6 +67,11 @@ const api: RendererApi = {
     const handler = (_e: Electron.IpcRendererEvent, ev: WizardProgressEvent) => cb(ev);
     ipcRenderer.on(IpcChannel.wizard.progress, handler);
     return () => ipcRenderer.off(IpcChannel.wizard.progress, handler);
+  },
+  onUpdateAvailable(cb: (info: UpdateAvailableEvent) => void) {
+    const handler = (_e: Electron.IpcRendererEvent, info: UpdateAvailableEvent) => cb(info);
+    ipcRenderer.on(IpcChannel.app.updateAvailable, handler);
+    return () => ipcRenderer.off(IpcChannel.app.updateAvailable, handler);
   },
 };
 

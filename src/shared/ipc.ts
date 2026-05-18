@@ -210,6 +210,16 @@ export interface RendererApi {
   onLan(cb: (state: LanState) => void): Unsubscribe;
   /** Subscribe to per-install progress events during runWizardInstall. */
   onWizardProgress(cb: (ev: WizardProgressEvent) => void): Unsubscribe;
+  /** Fires once at startup (delayed) if sei.gg/version.json reports a newer version. */
+  onUpdateAvailable(cb: (info: UpdateAvailableEvent) => void): Unsubscribe;
+}
+
+/** Payload pushed by main when an update is detected on sei.gg. */
+export interface UpdateAvailableEvent {
+  latestVersion: string;
+  currentVersion: string;
+  downloadUrl: string;
+  notes?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -242,6 +252,7 @@ export const IpcChannel = {
   app: {
     ready: 'app:ready',
     warnings: 'app:warnings',
+    updateAvailable: 'app:update-available',
   },
   // Phase 9 (09-01) — skin pipeline. Handlers register in Plan 02/03.
   skin: {

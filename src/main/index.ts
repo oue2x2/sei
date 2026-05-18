@@ -22,12 +22,21 @@ import { createMainWindow } from './windowChrome';
 import { registerIpcHandlers } from './ipc';
 import { watchLan } from './lanWatcher';
 import { createBotSupervisor } from './botSupervisor';
+import { checkForUpdate } from './updateChecker';
 import { createSkinServer } from './skinServer';
 import { runFirstLaunchMigration } from './migration';
 import { seedDefaultCharacters } from './defaultCharacters';
 import { backendKind } from './apiKeyStore';
 import { loadWizardState, saveWizardState } from './wizardStateStore';
 import { IpcChannel, type LanState, type BotStatus, type LogBatch, type WizardProgressEvent } from '../shared/ipc';
+
+// Lock the productName early so app.getPath('userData') resolves to
+// "Sei" (packaged) or "Sei Dev" (electron-vite dev) — keeping dev state
+// (your private personas) out of the shipped build.
+app.setName(app.isPackaged ? 'Sei Launcher' : 'Sei Launcher Dev');
+if (!app.isPackaged) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'Sei Launcher Dev'));
+}
 
 const logger = {
   info: (m: string) => console.log(`[sei] ${m}`),
@@ -97,7 +106,7 @@ async function bootstrap(): Promise<void> {
   try { await runFirstLaunchMigration(); }
   catch (err) { logger.warn(`migration failed: ${(err as Error).message}`); }
 
-  // 1b. Seed shipped default characters (sui/mochineko/clawd). Idempotent
+  // 1b. Seed shipped default characters (sui/lyra/clawd). Idempotent
   // via defaults-seeded.json so user deletions persist. Runs after the
   // migration so a CLI-cloned `sui` wins over the shipped default if
   // both paths fire.
@@ -223,6 +232,16 @@ async function bootstrap(): Promise<void> {
     // wizard:progress push channel.
     sendWizardProgress: broadcastWizardProgress,
   });
+
+  // Update check — best-effort, 8s after window opens so we don't compete with bootstrap I/O.
+  setTimeout(() => {
+    checkForUpdate().then((info) => {
+      if (info && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IpcChannel.app.updateAvailable, info);
+        logger.info(`update available: ${info.currentVersion} -> ${info.latestVersion}`);
+      }
+    }).catch(() => { /* swallow — update notification is best-effort */ });
+  }, 8000);
 
   // 6. Linux fallback warning (RESEARCH Pitfall 3)
   if (process.platform === 'linux' && backendKind() === 'basic_text') {

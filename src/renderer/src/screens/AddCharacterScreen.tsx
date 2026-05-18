@@ -1,21 +1,15 @@
 /**
- * AddCharacterScreen — 2-step new character flow (260516-0yw).
+ * AddCharacterScreen — 4-step new character flow.
  *
  * Steps:
- *  0. Name (sans).
- *  1. Persona source — eyebrow "Shown to the model after expansion",
- *     short blurb (4 rows). Save triggers the main-process LLM expansion
- *     (typical 3–8s); the renderer shows a "Generating persona…" status
- *     and only navigates after the call resolves.
+ *  0. Name.
+ *  1. Persona source (Save creates the character; main expands persona via LLM).
+ *  2. Card image (skippable) — uploads a portrait override.
+ *  3. Skin (skippable) — search MC username or upload PNG, applies via SkinEditor.
  *
- * On Create:
- *  - Compute id via slugify(name, existingIds) — collision-safe -2/-3 suffix.
- *  - Build Character JSON with persona { source, expanded:'' }. Main
- *    runs the expansion in expandAndSaveCharacter and returns the
- *    persisted Character (with persona.expanded populated).
- *  - addCharacter(persisted) to local store; navigate to CharacterPage.
- *
- * Source: 04-07 Task 3; 260516-0yw plan §Task 3.
+ * The character is created at the end of step 1 (we need a persisted id before
+ * apply-skin / portrait save can run). Steps 2 & 3 mutate the already-saved
+ * record. "Skip" on either jumps straight to the character page.
  */
 
 import React, { useState } from 'react';
@@ -24,40 +18,46 @@ import { useUiStore } from '../lib/stores/useUiStore';
 import { useDataStore } from '../lib/stores/useDataStore';
 import { QuestionShell } from '../components/QuestionShell';
 import { TextField } from '../components/TextField';
+import { PortraitImagePicker } from '../components/PortraitImagePicker';
+import { SkinEditor } from '../components/SkinEditor';
 import { slugify } from '../lib/slug';
 import type { Character } from '@shared/characterSchema';
 
-const STEPS = 2;
+const STEPS = 4;
 
 export function AddCharacterScreen(): React.ReactElement {
   const navigate = useUiStore((s) => s.navigate);
   const characters = useDataStore((s) => s.characters);
   const addCharacter = useDataStore((s) => s.addCharacter);
+  const refreshCharacter = useDataStore((s) => s.refreshCharacter);
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
   const [personaSource, setPersonaSource] = useState('');
+  const [portraitImage, setPortraitImage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [created, setCreated] = useState<Character | null>(null);
 
   const back = () => {
     if (step === 0) {
       navigate({ kind: 'home' });
       return;
     }
+    // Once the character is created (step >= 2), block back-navigation past
+    // the creation point — the record exists and editing happens on the
+    // character page now.
+    if (created && step <= 2) return;
     setStep((s) => s - 1);
   };
 
   const validate = (): boolean => {
+    if (submitting) return false;
     if (step === 0) return name.trim() !== '';
-    if (step === 1) return personaSource.trim() !== '' && !submitting;
-    return false;
+    if (step === 1) return personaSource.trim() !== '';
+    return true; // 2 & 3 always allow next (skippable)
   };
 
-  const next = async () => {
-    if (step < STEPS - 1) {
-      setStep((s) => s + 1);
-      return;
-    }
+  const persistCreate = async (): Promise<Character | null> => {
     setError(null);
     setSubmitting(true);
     try {
@@ -66,32 +66,74 @@ export function AddCharacterScreen(): React.ReactElement {
       const draft: Character = {
         id,
         name: name.trim(),
-        persona: {
-          source: personaSource.trim(),
-          expanded: '',
-        },
+        persona: { source: personaSource.trim(), expanded: '' },
         is_default: false,
         created: new Date().toISOString(),
         last_launched: null,
         playtime_ms: 0,
-        portrait_image: null,
-        // Phase 9 (09-01): user-created personas start with no skin and no
-        // override username (bot.username falls back to sanitized persona name
-        // via src/bot/index.js:270-280 until Plan 02 wires the override).
+        portrait_image: portraitImage,
         skin: { source: 'none', mojang_username: null, png_sha256: null, applied_at: null },
         username: null,
       };
-      // 260516-0yw: sei.saveCharacter now returns the persisted Character
-      // (with persona.expanded populated by the main-process LLM call).
-      // Insert the returned object — not the draft — so the local store
-      // mirrors what's actually on disk.
       const persisted = await sei.saveCharacter(draft);
       addCharacter(persisted);
-      navigate({ kind: 'character', id: persisted.id });
+      setCreated(persisted);
+      return persisted;
     } catch (err) {
       setError((err as Error).message);
+      return null;
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const persistPortrait = async (): Promise<void> => {
+    if (!created) return;
+    if (created.portrait_image === portraitImage) return;
+    try {
+      await sei.saveCharacter(
+        { ...created, portrait_image: portraitImage },
+        { skipExpansion: true },
+      );
+      await refreshCharacter(created.id);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const finish = (id: string): void => {
+    navigate({ kind: 'character', id });
+  };
+
+  const next = async (): Promise<void> => {
+    if (step === 0) {
+      setStep(1);
+      return;
+    }
+    if (step === 1) {
+      const persisted = await persistCreate();
+      if (persisted) setStep(2);
+      return;
+    }
+    if (step === 2) {
+      await persistPortrait();
+      setStep(3);
+      return;
+    }
+    if (step === 3) {
+      if (created) finish(created.id);
+      return;
+    }
+  };
+
+  const skip = async (): Promise<void> => {
+    if (step === 2) {
+      // Skip image — keep whatever was already there (likely null) and move on.
+      setStep(3);
+      return;
+    }
+    if (step === 3 && created) {
+      finish(created.id);
     }
   };
 
@@ -103,53 +145,106 @@ export function AddCharacterScreen(): React.ReactElement {
         stepCount={STEPS}
         currentStep={step}
         onBack={back}
-        onNext={next}
+        onNext={() => void next()}
         nextDisabled={!validate()}
       >
         <TextField
           value={name}
           onChange={setName}
           autoFocus
-          onEnter={next}
+          onEnter={() => void next()}
           aria-label="Character name"
         />
       </QuestionShell>
     );
   }
 
-  // ── Step 1 — Persona source ─────────────────────────────────────────────
+  // ── Step 1 — Persona source (commits create) ────────────────────────────
+  if (step === 1) {
+    return (
+      <QuestionShell
+        eyebrow="Shown to the model after expansion"
+        title="Write a short persona blurb."
+        hint="A short description of who this character is. The model expands this into the full prompt when you save."
+        stepCount={STEPS}
+        currentStep={step}
+        onBack={back}
+        onNext={() => void next()}
+        nextLabel={submitting ? 'Generating…' : 'Create'}
+        nextKind="accent"
+        nextDisabled={!validate()}
+      >
+        <TextField
+          value={personaSource}
+          onChange={setPersonaSource}
+          multiline
+          rows={4}
+          aria-label="Persona source"
+        />
+        {error ? <ErrorRow message={error} /> : null}
+      </QuestionShell>
+    );
+  }
+
+  // ── Step 2 — Card image (skippable) ─────────────────────────────────────
+  if (step === 2) {
+    return (
+      <QuestionShell
+        title="Add a card image?"
+        hint="Optional. Shown on the character card on Home."
+        stepCount={STEPS}
+        currentStep={step}
+        onBack={back}
+        onNext={() => void next()}
+        nextLabel="Next"
+        nextDisabled={!validate()}
+        secondaryLabel="Skip"
+        onSecondary={() => void skip()}
+      >
+        <PortraitImagePicker value={portraitImage} onChange={setPortraitImage} />
+        {error ? <ErrorRow message={error} /> : null}
+      </QuestionShell>
+    );
+  }
+
+  // ── Step 3 — Skin (skippable) ───────────────────────────────────────────
   return (
     <QuestionShell
-      eyebrow="Shown to the model after expansion"
-      title="Write a short persona blurb."
-      hint="A short description of who this character is. The model expands this into the full prompt when you save."
+      title="Pick a skin?"
+      hint="Optional. Search a Minecraft username or upload a PNG. You can change this later."
       stepCount={STEPS}
       currentStep={step}
+      wide
       onBack={back}
-      onNext={next}
-      nextLabel={submitting ? 'Generating…' : 'Create'}
+      onNext={() => void next()}
+      nextLabel="Done"
       nextKind="accent"
-      nextDisabled={!validate()}
+      secondaryLabel="Skip"
+      onSecondary={() => void skip()}
     >
-      <TextField
-        value={personaSource}
-        onChange={setPersonaSource}
-        multiline
-        rows={4}
-        aria-label="Persona source"
-      />
-      {error ? (
-        <div
-          style={{
-            marginTop: 12,
-            color: 'var(--red)',
-            fontFamily: 'var(--mono)',
-            fontSize: 13,
+      {created ? (
+        <SkinEditor
+          character={created}
+          onChanged={() => {
+            if (created) void refreshCharacter(created.id);
           }}
-        >
-          {error}
-        </div>
+        />
       ) : null}
     </QuestionShell>
+  );
+}
+
+function ErrorRow({ message }: { message: string }): React.ReactElement {
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        color: 'var(--red)',
+        fontFamily: 'var(--mono)',
+        fontSize: 13,
+      }}
+    >
+      {message}
+    </div>
   );
 }

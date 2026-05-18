@@ -305,9 +305,14 @@ async function bootstrapWithInit(initData) {
     })
     return
   }
+  // preferred_name is what the LLM should call the player. Empty falls back
+  // to the MC username inside chat.js's substitution.
+  const playerDisplayName = (typeof preferred_name === 'string' && preferred_name.trim()) || ''
+
   const rawConfig = {
     chat_mode: 'chat',  // default for v1; renderer can flip in a later phase
     player_username: playerName,
+    player_display_name: playerDisplayName,
     persona: {
       // persona.name is the MC-safe sanitized name so the bot's in-chat
       // identity and login username always match.

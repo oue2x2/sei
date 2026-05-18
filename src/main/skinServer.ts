@@ -69,26 +69,31 @@ export async function createSkinServer(args: { port?: number } = {}): Promise<Sk
       // Strict URL shape. Anything else 404s with text/plain (no PNG body —
       // path-traversal attempts shouldn't get a valid image content-type back).
       const m = url.match(/^\/skins\/([A-Za-z0-9_]{1,16})\.png(\?.*)?$/);
+      // CORS: the renderer (file://app:// origin) fetches these PNGs via
+      // skinview3d's three.js texture loader. Without ACAO=* the canvas
+      // texture upload taints / fails silently and the 3D preview shows a
+      // blank model. CSL (Java side) ignores CORS — opening this header up
+      // costs nothing on a loopback-only listener.
+      const corsHeaders = {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET',
+      };
       if (req.method !== 'GET' || !m) {
-        res.writeHead(404, { 'content-type': 'text/plain' });
+        res.writeHead(404, { ...corsHeaders, 'content-type': 'text/plain' });
         res.end('Not Found');
         return;
       }
       const username = m[1];
       const png = await readSkinPng({ username, listCharacters });
       if (!png) {
-        // Per CustomSkinLoader's behavior: a transparent PNG short-circuits
-        // retries better than a text/plain 404 body. Status is still 404 so
-        // the client (or a proxy) can tell "skin not found" from "skin OK".
-        res.writeHead(404, { 'content-type': 'image/png' });
+        res.writeHead(404, { ...corsHeaders, 'content-type': 'image/png' });
         res.end(NOT_FOUND_PNG_TRANSPARENT);
         return;
       }
       res.writeHead(200, {
+        ...corsHeaders,
         'content-type': 'image/png',
         'content-length': String(png.length),
-        // The user's MC client should refetch on every skin change. No ETag —
-        // simpler than maintaining sha256 → ETag plumbing on every applyPng.
         'cache-control': 'no-store',
       });
       res.end(png);
