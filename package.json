@@ -30,6 +30,7 @@
     "mineflayer-pvp": "^1.3.2",
     "react": "19.2.6",
     "react-dom": "19.2.6",
+    "skinview3d": "3.4.2",
     "zod": "^3.22.4",
     "zod-to-json-schema": "^3.25.2",
     "zustand": "5.0.13"
