@@ -428,79 +428,122 @@ export async function scanMcInstalls(opts?: ScanOpts): Promise<McInstall[]> {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Mojang's bundled-JRE component names, NEWEST FIRST. Each MC version pins
+ * a specific component; the launcher installs one (or more) of these under
+ * `<mcDir>/runtime/`:
+ *   - `java-runtime-epsilon`  Java 21 (current — MC 1.21+)
+ *   - `java-runtime-delta`    Java 21 (MC 1.20.5+ replacement for gamma)
+ *   - `java-runtime-gamma`    Java 17 (MC 1.20.5+ original)
+ *   - `java-runtime-beta`     Java 17 (MC 1.18 – 1.20.4)
+ *   - `java-runtime-alpha`    Java 16 (MC 1.17)
+ *   - `jre-legacy`            Java 8 (pre-1.17 — NOT sufficient for Fabric;
+ *                              Fabric Loader requires Java 17. Listed last
+ *                              for diagnostic completeness, but if a user's
+ *                              MC is pre-1.17 we'll find nothing newer and
+ *                              the system-PATH fallback in fabricInstaller
+ *                              will surface the right error.)
+ *
+ * Probed in newest-first order so the wizard ALWAYS picks the freshest
+ * available JRE (which satisfies any Fabric Loader version we'd install).
+ */
+const BUNDLED_JRE_COMPONENTS = [
+  'java-runtime-epsilon',
+  'java-runtime-delta',
+  'java-runtime-gamma',
+  'java-runtime-beta',
+  'java-runtime-alpha',
+  'jre-legacy',
+] as const;
+
+/**
  * Locate the Java runtime that Minecraft bundles inside its game directory.
  * Returns the absolute path to a runnable `java` / `javaw` executable, or
  * null if not present.
  *
  * Probed BEFORE system PATH per BLOCKER 3 — Minecraft installs its own JRE
- * under `<mcDir>/runtime/java-runtime-gamma/<platform-tag>/...`, and we
- * should use that to honor the "zero manual config" goal. If the user has
+ * under `<mcDir>/runtime/<component>/<platform-tag>/...`, and we should
+ * use that to honor the "zero manual config" goal. If the user has
  * launched the vanilla profile even once, the bundled Java exists and the
  * wizard works WITHOUT requiring `java` on system PATH.
  *
- * Platform/arch mapping (verified against Mojang's launcher payloads):
- *   - darwin x64:   `<mcDir>/runtime/java-runtime-gamma/mac-os/java-runtime-gamma/jre.bundle/Contents/Home/bin/java`
- *   - darwin arm64: `<mcDir>/runtime/java-runtime-gamma/mac-os-arm64/java-runtime-gamma/jre.bundle/Contents/Home/bin/java`
- *   - win32 x64:    `<mcDir>\runtime\java-runtime-gamma\windows-x64\java-runtime-gamma\bin\javaw.exe` (fallback `java.exe`)
- *   - win32 arm64:  `<mcDir>\runtime\java-runtime-gamma\windows-arm64\java-runtime-gamma\bin\javaw.exe` (fallback `java.exe`)
- *   - linux:        `<mcDir>/runtime/java-runtime-gamma/linux/java-runtime-gamma/bin/java`
+ * Rule 1 deviation from PLAN: the plan hardcoded `java-runtime-gamma` as
+ * the only component name. Real-world MC installs use `delta` (1.20.5+)
+ * and `epsilon` (1.21+) — gamma is older and isn't present on modern
+ * installs. We now probe all known components newest-first (see
+ * BUNDLED_JRE_COMPONENTS) and return the first executable we find. The
+ * `gamma`-only probe was empirically verified to MISS the developer's
+ * local install (which has `delta` + `epsilon` but not `gamma`). See
+ * 09-04-SUMMARY.md §"Deviations from Plan" for the smoke-test evidence.
  *
- * Returns null on unsupported OS (e.g. freebsd) or when the bundled JRE
- * directory simply isn't there (user has the launcher installed but never
- * launched a vanilla profile — common for CurseForge-only users).
+ * Platform/arch mapping (verified against Mojang's launcher payloads):
+ *   - darwin x64:   `<mcDir>/runtime/<component>/mac-os/<component>/jre.bundle/Contents/Home/bin/java`
+ *   - darwin arm64: `<mcDir>/runtime/<component>/mac-os-arm64/<component>/jre.bundle/Contents/Home/bin/java`
+ *   - win32 x64:    `<mcDir>\runtime\<component>\windows-x64\<component>\bin\javaw.exe` (fallback `java.exe`)
+ *   - win32 arm64:  `<mcDir>\runtime\<component>\windows-arm64\<component>\bin\javaw.exe` (fallback `java.exe`)
+ *   - linux:        `<mcDir>/runtime/<component>/linux/<component>/bin/java`
+ *
+ * Returns null on unsupported OS (e.g. freebsd) or when no bundled JRE
+ * component is present (user has the launcher installed but never launched
+ * a vanilla profile — common for CurseForge-only users).
  */
 export async function findBundledJava(mcInstall: McInstall): Promise<string | null> {
   const arch = process.arch; // 'x64' | 'arm64' on mac/win; 'x64' on Linux
   const mcDir = mcInstall.path;
-  const runtimeRoot = path.join(mcDir, 'runtime', 'java-runtime-gamma');
+  const runtimeBase = path.join(mcDir, 'runtime');
 
-  if (process.platform === 'darwin') {
-    const archTag = arch === 'arm64' ? 'mac-os-arm64' : 'mac-os';
-    const abs = path.join(
-      runtimeRoot,
-      archTag,
-      'java-runtime-gamma',
-      'jre.bundle',
-      'Contents',
-      'Home',
-      'bin',
-      'java',
-    );
-    try {
-      await fs.access(abs, fsConstants.X_OK);
-      return abs;
-    } catch {
-      return null;
-    }
-  }
+  // Walk components newest-first and return the first runnable exe found.
+  for (const component of BUNDLED_JRE_COMPONENTS) {
+    const componentRoot = path.join(runtimeBase, component);
 
-  if (process.platform === 'win32') {
-    const archTag = arch === 'arm64' ? 'windows-arm64' : 'windows-x64';
-    // Prefer `javaw.exe` (no console window on Windows) over `java.exe`. The
-    // Fabric installer is fully headless via the -client mode args, so the
-    // console window from java.exe is just noise.
-    const javaw = path.join(runtimeRoot, archTag, 'java-runtime-gamma', 'bin', 'javaw.exe');
-    try {
-      await fs.access(javaw, fsConstants.X_OK);
-      return javaw;
-    } catch {
-      // fall through to java.exe
-    }
-    const javaExe = path.join(runtimeRoot, archTag, 'java-runtime-gamma', 'bin', 'java.exe');
-    try {
-      await fs.access(javaExe, fsConstants.X_OK);
-      return javaExe;
-    } catch {
-      return null;
-    }
-  }
-
-  if (process.platform === 'linux') {
-    const abs = path.join(runtimeRoot, 'linux', 'java-runtime-gamma', 'bin', 'java');
-    try {
-      await fs.access(abs, fsConstants.X_OK);
-      return abs;
-    } catch {
+    if (process.platform === 'darwin') {
+      const archTag = arch === 'arm64' ? 'mac-os-arm64' : 'mac-os';
+      // <runtime>/<component>/<archTag>/<component>/jre.bundle/Contents/Home/bin/java
+      // java-runtime-gamma path layout still applies — only the component name varies.
+      const abs = path.join(
+        componentRoot,
+        archTag,
+        component,
+        'jre.bundle',
+        'Contents',
+        'Home',
+        'bin',
+        'java',
+      );
+      try {
+        await fs.access(abs, fsConstants.X_OK);
+        return abs;
+      } catch {
+        continue;
+      }
+    } else if (process.platform === 'win32') {
+      const archTag = arch === 'arm64' ? 'windows-arm64' : 'windows-x64';
+      // Prefer `javaw.exe` (no console window on Windows) over `java.exe`.
+      // The Fabric installer is fully headless via -client mode args, so the
+      // console window from java.exe is just noise.
+      const javaw = path.join(componentRoot, archTag, component, 'bin', 'javaw.exe');
+      try {
+        await fs.access(javaw, fsConstants.X_OK);
+        return javaw;
+      } catch {
+        // fall through to java.exe under this component
+      }
+      const javaExe = path.join(componentRoot, archTag, component, 'bin', 'java.exe');
+      try {
+        await fs.access(javaExe, fsConstants.X_OK);
+        return javaExe;
+      } catch {
+        continue;
+      }
+    } else if (process.platform === 'linux') {
+      const abs = path.join(componentRoot, 'linux', component, 'bin', 'java');
+      try {
+        await fs.access(abs, fsConstants.X_OK);
+        return abs;
+      } catch {
+        continue;
+      }
+    } else {
+      // Unsupported OS (e.g. freebsd) — bail immediately, don't loop further.
       return null;
     }
   }
