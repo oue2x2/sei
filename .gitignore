@@ -20,3 +20,6 @@ out/
 
 # Prompt-verification harness — not for source control
 scripts/verify-prompts.mjs
+
+# Internal architecture notes — not for public README
+ARCHITECTURE.md
