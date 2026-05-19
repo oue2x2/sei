@@ -36,6 +36,9 @@ A Minecraft companion that feels like a real character — it remembers you, rea
 - [x] Electron GUI onboarding: API key input, personality config (v0.1.1)
 - [x] Bundled executable distribution: signed/notarized macOS .dmg + Windows .exe (v0.1.1)
 - [x] Custom bot skins via CustomSkinLoader + Fabric auto-install wizard (v0.1.1)
+- [x] Isolated Sei launcher profile (own `gameDir` + selective mod linking) so user's existing mixed-version mods don't crash the Sei profile (v0.1.1 quick/260518-o1k)
+- [x] Mod jar scanner with Fabric/Forge metadata parsing (`src/main/modScanner.ts`) (v0.1.1 quick/260518-o1k — foundation for v1.0 MOD-02)
+- [x] Lunar Client install detection with limited-compatibility marker (v0.1.1 quick/260518-o1k)
 
 ### Active
 

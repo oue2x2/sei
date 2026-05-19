@@ -93,7 +93,7 @@
 ### Mod & Version Adapter (MOD)
 
 - [ ] **MOD-01**: User can drop a mods folder (or point at one) and trigger a one-time ingestion run, similar to the v0.1.1 character-prompt-from-description flow
-- [ ] **MOD-02**: Ingestion scans `.jar` files via `adm-zip`; detects Fabric vs Forge via `fabric.mod.json` / `META-INF/mods.toml`; extracts item registries, lang strings (`en_us.json`), keybinds, and recipes where present
+- [ ] **MOD-02**: Ingestion scans `.jar` files (existing `src/main/modScanner.ts` already parses `fabric.mod.json` + `META-INF/mods.toml` via in-house ZIP central-directory reader — extend rather than rewrite); extracts item registries, lang strings (`en_us.json`), keybinds, and recipes
 - [ ] **MOD-03**: Modded items are diffed against the bundled vanilla baseline (`minecraft-data`) to isolate the new content
 - [ ] **MOD-04**: A "filter" LLM call drops irrelevant keybinds (minimap, waypoint, FOV toggle, etc.) and surfaces only gameplay-relevant actions
 - [ ] **MOD-05**: A "recipe writer" LLM call emits, for each surviving action, a declarative mapping to existing closed-registry handlers — output is DATA (handler name + arg recipe), never code
