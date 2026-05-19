@@ -82,12 +82,21 @@ export type BotLifecycle =
 /**
  * A detected Minecraft installation surfaced to the wizard.
  * Source: CONTEXT.md §decisions "Cross-platform paths" + "First-launch wizard scope".
+ *
+ * Zod-schema asymmetry (260518-o1k T2): the `kind` and `compatibility`
+ * fields below ride the main→renderer push channel as plain TS objects;
+ * inbound IPC zod-validation in `src/main/ipc.ts` only gates
+ * `runWizardInstall` args (sessionId/installIds/skinServerBaseUrl) and
+ * `wizardCancel` args (sessionId). The widened McInstall / Wizard*Event
+ * unions therefore require NO zod schema changes — they are pure TS
+ * contracts. Documented here so a future security pass doesn't conclude
+ * the validation step was skipped.
  */
 export interface McInstall {
   /** Stable hash of `${kind}:${absolutePath}` — durable across re-detects on the same machine. */
   id: string;
-  kind: 'vanilla' | 'curseforge';
-  /** e.g. "Vanilla Launcher" or "Pixelmon · 1.20.1" */
+  kind: 'vanilla' | 'curseforge' | 'lunar';
+  /** e.g. "Vanilla Launcher" or "Pixelmon · 1.20.1" or "Lunar Client" */
   label: string;
   /** Absolute on-disk path — game dir for vanilla, instance dir for CurseForge. */
   path: string;
@@ -98,6 +107,15 @@ export interface McInstall {
   csl_version: string | null;
   /** True when persisted wizard state previously enabled Sei here. */
   sei_enabled: boolean;
+  /**
+   * Functional compatibility marker (260518-o1k D3).
+   *   - `full`    — wizard can install Fabric + CSL here (vanilla, curseforge).
+   *   - `limited` — read-only listing; wizard does NOT install (Lunar Client
+   *                 has no user-accessible mods/ — surfaced for UX
+   *                 transparency only).
+   * Required field; scanners set it on every emission.
+   */
+  compatibility: 'full' | 'limited';
 }
 
 /** Per-install install result returned from runWizardInstall. */
@@ -108,6 +126,21 @@ export interface WizardInstallResult {
   message?: string;
   installedFabricVersion?: string;
   installedCslVersion?: string;
+  /**
+   * Vanilla-only (260518-o1k T6). Summary of the mod-link pass that ran
+   * between the Fabric install and the CSL config write. Absent for
+   * curseforge / lunar installs.
+   */
+  modLinkSummary?: {
+    linked: number;
+    excluded: number;
+    linkedJars: { sourceName: string; strategy: 'link' | 'symlink' | 'copy' }[];
+    excludedJars: {
+      name: string;
+      reason: 'mc-version-mismatch' | 'unparseable' | 'no-metadata' | 'read-error';
+      declaredMc?: string;
+    }[];
+  };
 }
 
 /** Persisted wizard state at <userData>/skin-setup-state.json. */
@@ -124,6 +157,20 @@ export type WizardProgressEvent =
   | { installId: string; stage: 'queued' }
   | { installId: string; stage: 'fabric-downloading'; pct: number }
   | { installId: string; stage: 'fabric-installing' }
+  /**
+   * 260518-o1k T2: vanilla-only stage that runs between Fabric install and
+   * CSL download. `totalEstimate` is null until the orchestrator has
+   * `readdir`'d the source mods/ directory; after that it's the count of
+   * candidate JARs. `scanned/linked/excluded` are monotonic running counts.
+   */
+  | {
+      installId: string;
+      stage: 'mods-linking';
+      scanned: number;
+      linked: number;
+      excluded: number;
+      totalEstimate: number | null;
+    }
   | { installId: string; stage: 'mod-downloading'; pct: number }
   | { installId: string; stage: 'mod-placing' }
   | { installId: string; stage: 'config-writing' }

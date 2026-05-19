@@ -367,6 +367,7 @@ export async function scanMcInstalls(opts?: ScanOpts): Promise<McInstall[]> {
         csl_installed: csl.installed,
         csl_version: csl.version,
         sei_enabled: enabledSet.has(id),
+        compatibility: 'full',
       });
     } catch (err) {
       logger.warn(`mcInstallScan: vanilla scan at ${vp} failed: ${(err as Error).message}`);
@@ -413,6 +414,7 @@ export async function scanMcInstalls(opts?: ScanOpts): Promise<McInstall[]> {
           csl_installed: csl.installed,
           csl_version: csl.version,
           sei_enabled: enabledSet.has(id),
+          compatibility: 'full',
         });
       } catch (err) {
         logger.warn(`mcInstallScan: cf scan at ${instanceDir} failed: ${(err as Error).message}`);
