@@ -425,6 +425,25 @@ async function processOneInstall(
     }
   }
 
+  // ── Compute target placement directory (260518-o1k T5) ────────────────
+  //
+  // Vanilla installs get isolated under <.minecraft>/sei/ so the Fabric
+  // gameDir on the Sei profile (set in T4) and the CSL JAR + config all
+  // live together inside the isolated directory. CurseForge instances
+  // pass their own instance dir (unchanged behavior — instances are
+  // already isolated per-instance and version-coherent by design).
+  //
+  // For vanilla we expect seiGameDir to be defined (T4's
+  // installFabricLoader return value); fall back to install.path with a
+  // warn if somehow not.
+  const targetDir = install.kind === 'vanilla'
+    ? (seiGameDir ?? install.path)
+    : install.path;
+  if (install.kind === 'vanilla' && !seiGameDir) {
+    logger.warn(`wizard: seiGameDir missing for vanilla install ${installId}; falling back to ${install.path}`);
+  }
+  const modsDir = path.join(targetDir, 'mods');
+
   // ── CSL download step ─────────────────────────────────────────────────
   let installedCslVersion: string;
   onProgress({ installId, stage: 'mod-downloading', pct: 0 });
@@ -432,7 +451,7 @@ async function processOneInstall(
     const cslRes = await downloadCustomSkinLoader({
       loaderKind,
       mcVersion,
-      modsDir: path.join(install.path, 'mods'),
+      modsDir,
       signal,
       onProgress: (pct) => onProgress({ installId, stage: 'mod-downloading', pct }),
     });
@@ -468,7 +487,7 @@ async function processOneInstall(
   onProgress({ installId, stage: 'config-writing' });
   try {
     await writeCustomSkinLoaderConfig({
-      mcInstallDir: install.path,
+      targetDir,
       loaderKind,
       skinServerBaseUrl,
     });
