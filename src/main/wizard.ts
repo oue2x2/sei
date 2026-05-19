@@ -45,11 +45,19 @@
  *   - CONTEXT.md §"First-launch wizard scope" (5 steps the orchestrator implements)
  *   - 09-01-PLAN BLOCKER 2 (IPC-crossing abort via Map<sessionId, AbortController>)
  */
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { scanMcInstalls } from './mcInstallScan';
 import { installFabricLoader } from './fabricInstaller';
 import { downloadCustomSkinLoader, writeCustomSkinLoaderConfig } from './customSkinLoader';
-import { loadWizardState, saveWizardState } from './wizardStateStore';
+import { scanModJar } from './modScanner';
+import {
+  loadWizardState,
+  saveWizardState,
+  type LinkManifest,
+  type LinkManifestEntry,
+  type LinkManifestExclusion,
+} from './wizardStateStore';
 import type { McInstall, WizardInstallResult, WizardProgressEvent } from '../shared/ipc';
 
 const logger = {
@@ -444,6 +452,47 @@ async function processOneInstall(
   }
   const modsDir = path.join(targetDir, 'mods');
 
+  // ── Mod-link stage (vanilla only, 260518-o1k T6) ──────────────────────
+  // Scan <.minecraft>/mods/, parse each non-CSL JAR's metadata via T1,
+  // and hardlink (with symlink/copy fallback) the compatible ones into
+  // <sei gameDir>/mods/. Reconciles against the persisted manifest so
+  // re-runs are idempotent and removed mods get unlinked.
+  let modLinkSummary: WizardInstallResult['modLinkSummary'] | undefined;
+  let newLinkManifest: LinkManifest | null = null;
+  if (install.kind === 'vanilla' && seiGameDir) {
+    const priorState = await loadWizardState().catch(() => null);
+    const priorManifest = priorState?.linkManifests?.[installId] ?? null;
+    try {
+      const stageResult = await runModLinkStage({
+        install,
+        seiGameDir,
+        targetMc: mcVersion,
+        signal,
+        onProgress,
+        priorManifest,
+      });
+      modLinkSummary = stageResult.summary;
+      newLinkManifest = stageResult.manifest;
+    } catch (err) {
+      if (isCancellationError(err, signal)) {
+        onProgress({ installId, stage: 'cancelled' });
+        results.push({
+          installId,
+          ok: false,
+          error: 'MOD_DOWNLOAD_FAILED',
+          message: 'Cancelled.',
+        });
+        throw err;
+      }
+      // Non-cancellation failure during mod-linking is NOT fatal to the
+      // install — we'd rather get CSL placed (skin loading still works)
+      // than fail the whole row over a permission glitch on a single
+      // user mod. Log + continue; the manifest stays unchanged.
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`wizard: mod-link stage failed for ${installId}: ${msg}`);
+    }
+  }
+
   // ── CSL download step ─────────────────────────────────────────────────
   let installedCslVersion: string;
   onProgress({ installId, stage: 'mod-downloading', pct: 0 });
@@ -515,6 +564,28 @@ async function processOneInstall(
     return;
   }
 
+  // ── Persist link manifest (260518-o1k T6) ─────────────────────────────
+  // After CSL placement succeeded for a vanilla install, persist the new
+  // manifest so the next wizard run can reconcile. Manifest is part of
+  // the extended wizard state; we merge into linkManifests keyed by
+  // installId so other installs' manifests aren't touched.
+  if (install.kind === 'vanilla' && newLinkManifest) {
+    try {
+      const current = await loadWizardState();
+      await saveWizardState({
+        ...current,
+        linkManifests: {
+          ...(current.linkManifests ?? {}),
+          [installId]: newLinkManifest,
+        },
+      });
+    } catch (err) {
+      // Persistence failure is non-fatal; the on-disk links still work,
+      // we just lose the reconciliation guide for the next run.
+      logger.warn(`wizard: persist link manifest for ${installId} failed: ${(err as Error).message}`);
+    }
+  }
+
   // ── Done ───────────────────────────────────────────────────────────────
   onProgress({ installId, stage: 'done' });
   results.push({
@@ -522,5 +593,276 @@ async function processOneInstall(
     ok: true,
     installedFabricVersion,
     installedCslVersion,
+    ...(modLinkSummary ? { modLinkSummary } : {}),
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Public: runModLinkStage (260518-o1k T6)                                    */
+/* -------------------------------------------------------------------------- */
+
+/** CSL filename regex — borrowed from customSkinLoader.ts / mcInstallScan.ts.
+ *  JARs matching this regex are NEVER linked into the Sei gameDir; Sei always
+ *  ships its own CSL build. Centralized here so future scan paths share it. */
+const CSL_JAR_REGEX = /^CustomSkinLoader[_-].*\.jar$/i;
+
+export interface RunModLinkStageArgs {
+  install: McInstall;
+  /** Absolute path to the Sei gameDir (T4's installFabricLoader return value). */
+  seiGameDir: string;
+  /** Concrete MC version to resolve each JAR's range against. */
+  targetMc: string;
+  /** Threaded from the wizard session's AbortController. */
+  signal: AbortSignal;
+  /** Progress callback — same surface as processOneInstall. */
+  onProgress: (ev: WizardProgressEvent) => void;
+  /** Previous run's manifest (loaded from wizardStateStore), if any. */
+  priorManifest: LinkManifest | null;
+}
+
+/**
+ * Mod-link stage. For each non-CSL JAR in `<.minecraft>/mods/`:
+ *   1. Parse metadata via scanModJar(targetMc).
+ *   2. If compatible: hardlink into `<sei gameDir>/mods/`. On any of
+ *      EXDEV/EPERM/EACCES/ENOTSUP/EOPNOTSUPP (cross-FS or permission),
+ *      fall back to symlink; on its failure, fall back to copyFile.
+ *      Each fallback level logs the errno at warn.
+ *   3. If incompatible: record an exclusion with the scanner's reason.
+ *
+ * After scanning all source JARs, reconcile against `priorManifest`:
+ *   - For each entry whose `sourceName` is no longer in the current
+ *     scan (the user removed the source mod), `fs.unlink` the target
+ *     and drop it from the manifest.
+ *
+ * Returns the new manifest + a renderer-friendly summary suitable for
+ * attaching to WizardInstallResult.modLinkSummary.
+ *
+ * Cancellation: checks `signal.aborted` before each JAR scan; throws
+ * `MOD_DOWNLOAD_FAILED: cancelled` on abort so the caller's isCancellationError
+ * branch unwinds cleanly.
+ */
+export async function runModLinkStage(args: RunModLinkStageArgs): Promise<{
+  manifest: LinkManifest;
+  summary: WizardInstallResult['modLinkSummary'];
+}> {
+  const { install, seiGameDir, targetMc, signal, onProgress, priorManifest } = args;
+  const installId = install.id;
+  const sourceModsDir = path.join(install.path, 'mods');
+  const targetModsDir = path.join(seiGameDir, 'mods');
+
+  // Initial event with totalEstimate=null (we haven't readdir'd yet).
+  onProgress({
+    installId,
+    stage: 'mods-linking',
+    scanned: 0,
+    linked: 0,
+    excluded: 0,
+    totalEstimate: null,
+  });
+
+  await fs.mkdir(targetModsDir, { recursive: true });
+
+  // List the source mods/ dir. ENOENT (user has no mods/) → treat as empty
+  // and run the reconciliation pass against whatever the prior manifest had.
+  let allEntries: string[];
+  try {
+    allEntries = await fs.readdir(sourceModsDir);
+  } catch (err) {
+    if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      allEntries = [];
+    } else {
+      throw err;
+    }
+  }
+
+  // Candidate set: only .jar files, never the CSL JAR.
+  const candidates = allEntries.filter(
+    (n) => n.toLowerCase().endsWith('.jar') && !CSL_JAR_REGEX.test(n),
+  );
+
+  // Emit again with total now known.
+  onProgress({
+    installId,
+    stage: 'mods-linking',
+    scanned: 0,
+    linked: 0,
+    excluded: 0,
+    totalEstimate: candidates.length,
+  });
+
+  const newEntries: LinkManifestEntry[] = [];
+  const newExclusions: LinkManifestExclusion[] = [];
+  const linkedJars: NonNullable<WizardInstallResult['modLinkSummary']>['linkedJars'] = [];
+  const excludedJars: NonNullable<WizardInstallResult['modLinkSummary']>['excludedJars'] = [];
+
+  let scanned = 0;
+  let linked = 0;
+  let excluded = 0;
+
+  for (const sourceName of candidates) {
+    if (signal.aborted) {
+      throw new Error('MOD_DOWNLOAD_FAILED: cancelled');
+    }
+
+    const sourcePath = path.join(sourceModsDir, sourceName);
+    const targetPath = path.join(targetModsDir, sourceName);
+
+    const result = await scanModJar(sourcePath, targetMc);
+    scanned++;
+
+    if (result.compatible) {
+      // ── If target already points at the right source, skip linking ──
+      // Re-runs without changes should be cheap. fs.lstat tells us whether
+      // a link exists; fs.realpath resolves any symlink. If both resolve
+      // to the same source, we treat the link as already-present and
+      // record its strategy without re-doing the OS call.
+      let alreadyLinked: 'link' | 'symlink' | null = null;
+      try {
+        const lst = await fs.lstat(targetPath);
+        if (lst.isSymbolicLink()) {
+          const rp = await fs.realpath(targetPath);
+          if (rp === sourcePath) alreadyLinked = 'symlink';
+        } else if (lst.isFile()) {
+          // Could be a hardlink (same inode) or a copy. Compare inode
+          // against the source — same inode means we hardlinked it.
+          try {
+            const srcSt = await fs.stat(sourcePath);
+            if (srcSt.ino === lst.ino && srcSt.ino !== 0) alreadyLinked = 'link';
+          } catch {
+            // ignore — we'll just re-link below.
+          }
+        }
+      } catch {
+        // ENOENT → no existing target; fall through to fresh link.
+      }
+
+      if (alreadyLinked) {
+        const entry: LinkManifestEntry = {
+          sourceName,
+          sourcePath,
+          targetPath,
+          strategy: alreadyLinked,
+          linkedAt: new Date().toISOString(),
+        };
+        newEntries.push(entry);
+        linkedJars.push({ sourceName, strategy: alreadyLinked });
+        linked++;
+      } else {
+        // No usable existing target. Try fs.link → fs.symlink → fs.copyFile.
+        // Each step has its own try/catch and logs the errno on failure.
+        // If a stale file is in the way we unlink it first.
+        try {
+          await fs.unlink(targetPath);
+        } catch {
+          /* ENOENT is the expected case here */
+        }
+        let strategy: 'link' | 'symlink' | 'copy' | null = null;
+        try {
+          await fs.link(sourcePath, targetPath);
+          strategy = 'link';
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code ?? 'unknown';
+          logger.warn(`wizard: fs.link ${sourceName} failed (${code}); trying symlink`);
+          try {
+            await fs.symlink(sourcePath, targetPath);
+            strategy = 'symlink';
+          } catch (err2) {
+            const code2 = (err2 as NodeJS.ErrnoException).code ?? 'unknown';
+            logger.warn(`wizard: fs.symlink ${sourceName} failed (${code2}); falling back to copyFile`);
+            try {
+              await fs.copyFile(sourcePath, targetPath);
+              strategy = 'copy';
+            } catch (err3) {
+              const code3 = (err3 as NodeJS.ErrnoException).code ?? 'unknown';
+              logger.warn(`wizard: fs.copyFile ${sourceName} failed (${code3}); skipping`);
+            }
+          }
+        }
+        if (strategy) {
+          const entry: LinkManifestEntry = {
+            sourceName,
+            sourcePath,
+            targetPath,
+            strategy,
+            linkedAt: new Date().toISOString(),
+          };
+          newEntries.push(entry);
+          linkedJars.push({ sourceName, strategy });
+          linked++;
+        }
+      }
+    } else if (result.loader === 'fabric' || result.loader === 'forge') {
+      // mc-version-mismatch (loader recognized but range didn't match).
+      const exclusion: LinkManifestExclusion = {
+        name: sourceName,
+        reason: 'mc-version-mismatch',
+        declaredMc: result.declaredMc,
+      };
+      newExclusions.push(exclusion);
+      excludedJars.push({ name: sourceName, reason: exclusion.reason, declaredMc: exclusion.declaredMc });
+      excluded++;
+    } else {
+      // unparseable / no-metadata / read-error.
+      const exclusion: LinkManifestExclusion = {
+        name: sourceName,
+        reason: result.reason,
+      };
+      newExclusions.push(exclusion);
+      excludedJars.push({ name: sourceName, reason: exclusion.reason });
+      excluded++;
+    }
+
+    // Live event per-JAR so the renderer's progress counters tick smoothly.
+    onProgress({
+      installId,
+      stage: 'mods-linking',
+      scanned,
+      linked,
+      excluded,
+      totalEstimate: candidates.length,
+    });
+  }
+
+  // ── Reconciliation pass ────────────────────────────────────────────────
+  // For each entry the prior manifest had that DOES NOT appear in the new
+  // entries (by sourceName), unlink the target. ENOENT is fine — means
+  // someone (or the link's source file going away) already cleaned up.
+  // Never touches the CSL JAR (the candidates filter excluded it, and the
+  // CSL_JAR_REGEX check below is belt-and-braces).
+  if (priorManifest) {
+    const newNames = new Set(newEntries.map((e) => e.sourceName));
+    for (const oldEntry of priorManifest.entries) {
+      if (newNames.has(oldEntry.sourceName)) continue;
+      if (CSL_JAR_REGEX.test(oldEntry.sourceName)) continue;
+      // Only unlink if the target still resides under our target mods/
+      // dir — defensive against a manifest that somehow points elsewhere.
+      if (!oldEntry.targetPath.startsWith(targetModsDir + path.sep) &&
+          oldEntry.targetPath !== targetModsDir) {
+        continue;
+      }
+      try {
+        await fs.unlink(oldEntry.targetPath);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code ?? 'unknown';
+        if (code !== 'ENOENT') {
+          logger.warn(`wizard: reconcile unlink ${oldEntry.targetPath} failed (${code})`);
+        }
+      }
+    }
+  }
+
+  const manifest: LinkManifest = {
+    targetMc,
+    entries: newEntries,
+    excluded: newExclusions,
+  };
+
+  const summary: WizardInstallResult['modLinkSummary'] = {
+    linked,
+    excluded,
+    linkedJars,
+    excludedJars,
+  };
+
+  return { manifest, summary };
 }
