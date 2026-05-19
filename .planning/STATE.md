@@ -6,7 +6,7 @@ status: planning
 last_updated: "2026-05-19T07:41:41.349Z"
 last_activity: 2026-05-19
 progress:
-  total_phases: 0
+  total_phases: 7
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -18,11 +18,58 @@ progress:
 ## Project Reference
 
 - **Core Value:** A Minecraft companion that feels like a real character — it remembers you, reacts to the world, and acts with personality, not like a scripted bot.
-- **Current Focus:** None — v0.1.1 shipped 2026-05-18. Awaiting next milestone.
+- **Current Focus:** v1.0 Commercializable MVP — promote v0.1.1 local prototype to cloud accounts, shared character library, hosted AI billing, broader model support, in-game vision, and universal mod compatibility.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 18 (Auth Foundation) — not started
 Plan: —
-Status: Defining requirements
-Last activity: 2026-05-19 — Milestone v1.0 started
+Status: Roadmap drafted; awaiting user approval to begin planning Phase 18
+Last activity: 2026-05-19 — ROADMAP.md written, 67/67 requirements mapped across Phases 18–24
+
+## Phase Progress
+
+| Phase | Status |
+|-------|--------|
+| 18. Auth Foundation | Not started |
+| 19. Cloud Character Library | Not started |
+| 20. Character Sharing UI + Moderation | Not started |
+| 21. AI Proxy + Billing + Usage UI | Not started |
+| 22. Multi-Provider Model Abstraction | Not started |
+| 23. In-Game Vision via prismarine-viewer | Not started |
+| 24. Mod & Version Adapter Pipeline | Not started |
+
+## Accumulated Context
+
+### Locked Decisions (from research + user)
+
+1. Vision = bot-POV via `prismarine-viewer` headless render. No OS capture. No Fabric mod for vision.
+2. Mod adapters = keybind-scan → LLM filter → LLM recipe writer → declarative recipes only. No code execution.
+3. Payments = Lemon Squeezy as Merchant of Record. No LLC for v1.0.
+4. Cloud sync = character definition only. Runtime memory stays local.
+5. Modded textures live in Phase 24 (Mod Adapter), not Phase 23 (Vision).
+6. Proxy ships first as `baseURL` override before full multi-provider refactor.
+
+### Phase 21 Two-Sub-Delivery Pattern
+
+Phase 21 plans TWO sub-deliveries explicitly:
+- (a) Proxy as `baseURL` + `Authorization` header override to existing `anthropicClient.js` (~10 lines) — ships before Phase 22
+- (b) Re-touch as `LlmProvider` variant after Phase 22 lands
+
+### Decisions To Log
+
+None yet.
+
+### Open Todos
+
+- User approval of ROADMAP.md → run `/gsd-plan-phase 18`
+
+### Blockers
+
+None.
+
+## Session Continuity
+
+Last action: Roadmap creation for v1.0 milestone — 7 phases (18–24), 67 requirements, 100% coverage.
+
+Next action: User approves roadmap → `/gsd-plan-phase 18` (Auth Foundation).

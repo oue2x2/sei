@@ -146,7 +146,73 @@ Filled in by the roadmapper after phase decomposition. Each requirement maps to 
 
 | REQ-ID | Phase |
 |--------|-------|
-| _to be filled by roadmapper_ | |
+| AUTH-01 | Phase 18 |
+| AUTH-02 | Phase 18 |
+| AUTH-03 | Phase 18 |
+| AUTH-04 | Phase 18 |
+| AUTH-05 | Phase 18 |
+| AUTH-06 | Phase 18 |
+| AUTH-07 | Phase 18 |
+| LIB-01 | Phase 19 |
+| LIB-02 | Phase 19 |
+| LIB-03 | Phase 19 |
+| LIB-04 | Phase 19 |
+| LIB-05 | Phase 19 |
+| LIB-06 | Phase 19 |
+| LIB-07 | Phase 19 |
+| SHARE-01 | Phase 20 |
+| SHARE-02 | Phase 20 |
+| SHARE-03 | Phase 20 |
+| SHARE-04 | Phase 20 |
+| SHARE-05 | Phase 20 |
+| SHARE-06 | Phase 20 |
+| SHARE-07 | Phase 20 |
+| SHARE-08 | Phase 20 |
+| SHARE-09 | Phase 20 |
+| SHARE-10 | Phase 20 |
+| PROXY-01 | Phase 21 |
+| PROXY-02 | Phase 21 |
+| PROXY-03 | Phase 21 |
+| PROXY-04 | Phase 21 |
+| PROXY-05 | Phase 21 |
+| PROXY-06 | Phase 21 |
+| PROXY-07 | Phase 21 |
+| PROXY-08 | Phase 21 |
+| PROXY-09 | Phase 21 |
+| PROXY-10 | Phase 21 |
+| PROXY-11 | Phase 21 |
+| PROXY-12 | Phase 21 |
+| PROXY-13 | Phase 21 |
+| PROV-01 | Phase 22 |
+| PROV-02 | Phase 22 |
+| PROV-03 | Phase 22 |
+| PROV-04 | Phase 22 |
+| PROV-05 | Phase 22 |
+| PROV-06 | Phase 22 |
+| PROV-07 | Phase 22 |
+| PROV-08 | Phase 22 |
+| PROV-09 | Phase 22 |
+| PROV-10 | Phase 22 |
+| VIS-01 | Phase 23 |
+| VIS-02 | Phase 23 |
+| VIS-03 | Phase 23 |
+| VIS-04 | Phase 23 |
+| VIS-05 | Phase 23 |
+| VIS-06 | Phase 23 |
+| VIS-07 | Phase 23 |
+| VIS-08 | Phase 23 |
+| MOD-01 | Phase 24 |
+| MOD-02 | Phase 24 |
+| MOD-03 | Phase 24 |
+| MOD-04 | Phase 24 |
+| MOD-05 | Phase 24 |
+| MOD-06 | Phase 24 |
+| MOD-07 | Phase 24 |
+| MOD-08 | Phase 24 |
+| MOD-09 | Phase 24 |
+| MOD-10 | Phase 24 |
+| MOD-11 | Phase 24 |
+| MOD-12 | Phase 24 |
 
 ---
 
