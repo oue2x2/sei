@@ -1,483 +1,767 @@
-# Architecture Patterns
+# Architecture Research — v1.0 Integration
 
-**Domain:** Minecraft AI companion (two-layer LLM + mineflayer + Electron)
-**Researched:** 2026-04-24
-**Overall confidence:** MEDIUM-HIGH (patterns verified across multiple real projects: Voyager, Mindcraft, AIRI; Electron/mineflayer specifics verified against official docs)
+**Domain:** Electron + mineflayer + Haiku — subsequent-milestone integration
+**Researched:** 2026-05-19
+**Confidence:** HIGH (read directly from source; not extrapolating from training data)
+
+> Scope: this document does NOT redesign Sei. It maps each v1.0 capability onto
+> the existing three-process Electron + utilityProcess + Haiku stack and names
+> integration points by file path. The roadmapper consumes this to decide
+> phase boundaries and dependencies. Every recommendation preserves the
+> two invariants the codebase already enforces:
+>   1. mineflayer + the brain loop run in **utilityProcess only**
+>   2. the **closed action registry** — the LLM may only call Zod-typed
+>      actions that were explicitly registered.
 
 ---
 
-## 1. High-Level Recommended Architecture
-
-Sei fits the well-established **Planner–Executor (P-t-E)** pattern, with the twist that the planner also owns personality/conversation and runs as a long-lived event loop rather than a one-shot planner.
+## 1. Existing Architecture (as-built, not as-planned)
 
 ```
-┌──────────────────────────── Electron App ───────────────────────────────┐
-│                                                                         │
-│   ┌─────────────────┐  IPC   ┌─────────────────────┐                    │
-│   │ Renderer (GUI)  │ <────> │ Main Process         │                   │
-│   │ React/Vite      │ Message│ - Window mgmt        │                   │
-│   │ - API key form  │ Ports  │ - Config persistence │                   │
-│   │ - Personality   │        │ - Ollama lifecycle   │                   │
-│   │ - Logs/Status   │        │ - Screenshot capture │                   │
-│   └─────────────────┘        └──────────┬───────────┘                   │
-│                                          │ MessagePort                  │
-│                                          │ (utilityProcess.fork)        │
-│                              ┌──────────▼───────────────────────────┐   │
-│                              │ Bot UtilityProcess (Node)            │   │
-│                              │                                      │   │
-│                              │  ┌─────────────────────────────┐    │   │
-│                              │  │  Orchestrator / Event Bus    │   │   │
-│                              │  │  - Event queue (priority)    │   │   │
-│                              │  │  - State machine (IDLE/      │   │   │
-│                              │  │    THINKING/ACTING/CHATTING) │   │   │
-│                              │  └────┬────────────┬───────────┘    │   │
-│                              │       │            │                 │   │
-│                              │  ┌────▼──────┐  ┌──▼───────────┐    │   │
-│                              │  │Personality│  │ Movement LLM  │    │   │
-│                              │  │LLM Client │→ │ Client        │    │   │
-│                              │  │(Haiku 3)  │  │ (Ollama Qwen) │    │   │
-│                              │  └────┬──────┘  └──┬────────────┘    │   │
-│                              │       │            │                  │   │
-│                              │  ┌────▼──────┐  ┌──▼──────────┐      │   │
-│                              │  │ Memory    │  │ Skill/Action│      │   │
-│                              │  │ Store     │  │ Registry    │      │   │
-│                              │  │(SQLite +  │  │(mineflayer  │      │   │
-│                              │  │ vector)   │  │ wrappers)   │      │   │
-│                              │  └───────────┘  └──┬──────────┘      │   │
-│                              │                     │                  │   │
-│                              │                ┌────▼──────────────┐  │   │
-│                              │                │ Mineflayer Bot    │  │   │
-│                              │                │ (tick loop,       │  │   │
-│                              │                │  events)          │  │   │
-│                              │                └────┬──────────────┘  │   │
-│                              └─────────────────────┼─────────────────┘   │
-└────────────────────────────────────────────────────┼─────────────────────┘
-                                                     │
-                                                     ▼
-                                             Minecraft Server
+┌─────────────────────────────────────────────────────────────────┐
+│  RENDERER  (src/renderer/, contextIsolation, no Node)           │
+│   React 19 · Zustand · screens/ + components/                   │
+│   talks only to window.sei (preload bridge)                     │
+└────────────┬────────────────────────────────────────────────────┘
+             │ contextBridge ('sei')   ← src/preload/index.ts
+             │ ipcMain.handle channels ← src/shared/ipc.ts IpcChannel
+┌────────────▼────────────────────────────────────────────────────┐
+│  MAIN  (src/main/, Node, Electron APIs)                         │
+│   • index.ts — app lifecycle, BrowserWindow                     │
+│   • ipc.ts — every ipcMain.handle (single registration site)    │
+│   • botSupervisor.ts — utilityProcess.fork lifecycle, owns ONE  │
+│     bot at a time, MessageChannelMain port to child             │
+│   • apiKeyStore.ts — safeStorage encrypt/decrypt at             │
+│     <userData>/api-key.bin                                      │
+│   • characterStore.ts — <userData>/characters/<id>.json + index │
+│   • configStore.ts — UserConfig (mc_username, preferred_name)   │
+│   • skinServer.ts + skinStore.ts + customSkinLoader.ts +        │
+│     fabricInstaller.ts + mcInstallScan.ts + wizard.ts —         │
+│     skin pipeline for the HOST MC client                        │
+│   • personaExpansion.ts — main-side Anthropic call to expand    │
+│     persona.source → persona.expanded                           │
+│   • lanWatcher.ts — LAN discovery, cached port handed to child  │
+│   • paths.ts — single source for <userData>/* layout            │
+└────────────┬────────────────────────────────────────────────────┘
+             │ utilityProcess.fork + MessagePortMain
+             │ init payload: { character, apiKey, lanPort, ... }
+┌────────────▼────────────────────────────────────────────────────┐
+│  UTILITYPROCESS  (src/bot/, Node, mineflayer)                   │
+│   • index.js — dual-mode entry (parentPort vs CLI)              │
+│   • config.js — ConfigSchema (Zod) for the runtime config       │
+│   • registry.js — generic createRegistry() factory              │
+│   • adapter/minecraft/ — mineflayer wiring                      │
+│       - registry.js: createDefaultRegistry() — 19 Zod actions   │
+│       - connect.js, behaviors/*, observers/*                    │
+│       - prompts.js (capability paragraph, world primer, rules)  │
+│   • brain/ — game-agnostic LLM loop                             │
+│       - anthropicClient.js: SDK wrapper, cache_control stamping │
+│       - orchestrator.js (102KB): event-sourced FSM, P0..P3      │
+│         priority queue, single outstanding action token,        │
+│         AbortController, iteration_cap, memory compaction       │
+│       - loop.js: canonical messages[] + buildAnthropicPayload   │
+│       - memory/{player,compactor,memoryLog}.js                  │
+│       - storage/{atomicWrite,fileLock}.js                       │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Component Boundaries
+**Key existing primitives the integration plan reuses:**
 
-| Component | Responsibility | Communicates With |
-|-----------|---------------|-------------------|
-| Renderer (GUI) | Config form, live status display, log viewer | Main (via contextBridge IPC) |
-| Main Process | Window lifecycle, config persistence (electron-store), Ollama spawn/health, screenshot capture via `desktopCapturer` | Renderer (IPC), Bot (MessagePort) |
-| Bot UtilityProcess | Hosts mineflayer + orchestrator + LLMs; isolated from UI crashes | Main (MessagePort), Minecraft server, Anthropic API, Ollama HTTP |
-| Orchestrator | Event queue, state machine, owns the "turn" of the agent | Personality LLM, Movement LLM, Memory, Mineflayer events |
-| Personality LLM Client | Sends context snapshot, parses NL instruction + chat output | Orchestrator, Memory |
-| Movement LLM Client | Receives NL instruction, emits function calls | Action Registry |
-| Action Registry | Validated mineflayer wrappers (Zod-schema'd, interruptible) | Mineflayer |
-| Memory Store | Identity, relationships, summarized history, episodic vector store | Personality LLM (retrieval + write) |
-| Mineflayer Bot | Low-level protocol, world state, tick loop | Minecraft, Action Registry, Orchestrator (events) |
-
-**Rule of thumb:** the orchestrator is the *only* component that owns control flow. LLM clients are stateless functions. Mineflayer is a passive substrate.
-
----
-
-## 2. LLM Orchestration: Event Loop & State Machine
-
-This is the most critical design area. Naive loops deadlock, double-fire, or let LLMs talk over themselves.
-
-### Recommended: Event-sourced loop with a finite state machine
-
-Borrow from StateFlow / XState agent patterns and the "event log, not mutable state" model (boundaryml / 12-factor-agents). The orchestrator is a **synchronous state machine driven by an async event queue**.
-
-**States:**
-- `IDLE` — nothing pending; 10s timer armed for ambient behavior
-- `PERCEIVING` — gathering snapshot (world state + screenshot + recent events)
-- `THINKING` — personality LLM call in flight
-- `ACTING` — movement LLM call in flight *or* mineflayer action executing
-- `SPEAKING` — emitting chat message to server
-- `INTERRUPTED` — high-priority event arrived mid-flight; cancel + re-plan
-
-**Events that enter the queue (with priority):**
-
-| Priority | Event | Source |
-|----------|-------|--------|
-| P0 (preempt) | `attacked`, `health_critical`, `owner_direct_message` | mineflayer |
-| P1 | `chat_message`, `player_joined`, `significant_world_event` (mob spawn, inv change, block break nearby) | mineflayer |
-| P2 | `movement_llm_completed` (small model finished; report back) | movement LLM |
-| P3 | `idle_timeout` (10s fallback) | timer |
-
-### The loop
-
-```
-while (running) {
-  event = await queue.dequeue();      // blocks; priority-ordered
-  if (state == THINKING && event.priority <= P1) {
-    abortController.abort();           // preempt personality LLM
-    state = INTERRUPTED;
-  }
-  state = PERCEIVING;
-  context = buildContext(event);       // §3
-  state = THINKING;
-  response = await personalityLLM(context, abortController.signal);
-  if (response.chat) { state = SPEAKING; bot.chat(response.chat); }
-  if (response.instruction) {
-    state = ACTING;
-    // fire-and-forget to movement LLM; its completion becomes a P2 event
-    movementLLM(response.instruction).then(r => queue.enqueue({type:'movement_llm_completed', r}, P2));
-  }
-  state = IDLE;
-  armIdleTimer(10_000);
-}
-```
-
-### How personality and movement LLMs avoid stepping on each other
-
-1. **Strict hand-off direction:** personality → movement only, never reverse. Movement LLM never decides what to do next; it only executes.
-2. **One outstanding instruction at a time:** movement LLM call is tracked by an `actionToken`. New P0/P1 events cancel the current action via `bot.pathfinder.stop()` / `AbortController` on the Ollama call, and the stale completion event is dropped by token mismatch.
-3. **Movement LLM completion is itself an event**, not a blocking return. This lets the personality LLM react to "I finished chopping the tree" on its next turn rather than sitting blocked.
-4. **Chat is non-blocking.** Personality LLM emits chat + instruction in the same turn; chat sends immediately, instruction goes to the movement queue.
-
-### Debouncing
-
-Minecraft emits dozens of events per tick (block updates, entity moves). Collapse them:
-- Window world-event aggregator (e.g., 500ms) emits one `world_changed` event with a diff summary, not one per block.
-- Chat is never debounced — each message enqueues individually.
-
-Confidence: HIGH (pattern corroborated by Mindcraft's Brain, AIRI's CognitiveEngine with TaskExecutor + EventBus, and StateFlow paper).
+- `src/bot/registry.js` — `createRegistry()` factory. Already supports late
+  registration (no build-time freeze beyond `actions.has(name)` collision
+  check). Hot-loadable IF guards are added.
+- `src/bot/brain/anthropicClient.js` — the **only** Anthropic call site for
+  the bot loop. Returns `{ toolUses, text, content, usage, stopReason }`. The
+  `usage` field already exists and is logged but not surfaced to renderer.
+- `src/bot/brain/orchestrator.js:266` — `createAnthropicClient(config)` is
+  constructed once and threaded through `_anthropicOverride` for tests. This
+  is the dependency-injection seam for the multi-provider abstraction.
+- `src/main/botSupervisor.ts:374` — init payload is the ONE place where main
+  hands the bot what it needs. New fields (auth token, proxy URL, provider
+  config) get added here.
+- `src/main/skinServer.ts` — proves the pattern of "main owns a localhost
+  HTTP server, hands `baseUrl` to the bot via init payload, the OUT-OF-PROCESS
+  consumer (here the host MC client) talks to it directly." This is the
+  template for player-POV screenshot ingest.
+- `src/main/wizard.ts` + `src/main/fabricInstaller.ts` + `mcInstallScan.ts` —
+  prove the pattern of "main process inspects and mutates the host MC
+  install." Mod-compatibility ingestion lives in this layer.
 
 ---
 
-## 3. Lessons from Voyager / Mindcraft / AIRI
+## 2. Feature-by-feature Integration
 
-### Voyager (GPT-4, MineDojo)
-- **Skill library** indexed by embedding of description — learned skills become retrievable. Sei doesn't need full skill synthesis for v1, but the *pattern* of a vector-indexed action library is directly useful for few-shot examples in the personality LLM prompt.
-- **Iterative prompting with environment feedback** — execution errors are fed back as prompt context. Sei should do this: when movement LLM fails (e.g., "path not found"), the error string becomes part of the next personality LLM turn.
-- **Applicable to Sei:** feedback loop yes, curriculum/auto-exploration no (Sei is reactive, not task-maximizing).
+### 2.1 User Auth (email/pw + Google)
 
-### Mindcraft (mindcraft-bots/mindcraft)
-- Generates high-level JS code from LLM and executes it. **Too risky for Sei's v1** — a local 9B model generating arbitrary JS is a footgun. Prefer a fixed action registry (pattern below).
-- **Context boundaries** — conversation history must be truncated or summarized. Confirms §4 approach.
-- **Embedding-retrieved in-context examples** improve quality dramatically.
+**Where state lives:**
 
-### AIRI (moeru-ai/airi)
-- **Three-layer action system:** action definitions (with Zod schema) → ActionRegistry → TaskExecutor. This is exactly the right shape for Sei's movement LLM target.
-- **Prismarine-viewer on port 3007** is free debug value — consider bundling it behind a dev flag.
-- **CognitiveEngine as a mineflayer plugin** — wraps Brain + TaskExecutor + EventBus. Clean pattern: orchestrator attaches to bot as a plugin.
+- **Main process** owns the auth state. Reason: tokens go through safeStorage
+  (already in `apiKeyStore.ts`); refresh + token expiry are background work
+  that shouldn't restart the bot; renderer must not have Node APIs.
+- Renderer holds a derived, read-only `AuthSession` (email, displayName,
+  isPro, expiresAt) — never the raw token. Pushed via a new `auth:state`
+  channel.
+- UtilityProcess (bot) receives the **current access token** in its init
+  payload and on refresh. The bot only ever uses the token as a Bearer for
+  proxy-mode LLM calls; it does no auth I/O.
 
-### Key lesson across all three
-Do **not** let the LLM emit raw code. Define a **closed action set** with typed schemas, and make the movement LLM a function-caller over that set. This is what Qwen is actually good at, and it's what keeps the system debuggable.
+**Token storage:** reuse Electron `safeStorage` exactly as `apiKeyStore.ts`
+does. Add `src/main/authStore.ts` that encrypts/persists a small JSON blob
+`{ refreshToken, accessToken, expiresAt, provider }` at
+`<userData>/auth.bin`. Do **not** introduce keytar — safeStorage is already
+proven, signed/notarized, and works without an extra native module.
 
----
+**Google OAuth:** use the standard Electron pattern — open the system
+browser via `shell.openExternal` to an auth URL, run a one-shot localhost
+loopback HTTP listener on a free port (mirror `skinServer.ts` lifecycle),
+catch the code redirect, exchange server-side. Avoid embedding a
+`BrowserWindow` for Google because Google blocks WebView/embedded auth.
 
-## 4. Context Window Management (Personality LLM)
+**New files:**
+- `src/main/authStore.ts` — safeStorage-backed token persistence (sibling of
+  `apiKeyStore.ts`).
+- `src/main/authService.ts` — sign-in, sign-out, refresh, OAuth loopback
+  handler; emits `auth:state` to renderer.
+- `src/shared/authSchema.ts` — `AuthSession`, `AuthState` Zod schemas.
 
-Haiku 3 has a 200K context window, so you're unlikely to run out of tokens mechanically. The real problem is **signal-to-noise**: stuffing 150K of junk makes Haiku dumb and expensive.
+**Modified files:**
+- `src/shared/ipc.ts` — add `IpcChannel.auth.{signIn,signOut,getState,state}`.
+- `src/main/ipc.ts` — register `auth:*` handlers (mirror `config:*` shape).
+- `src/main/botSupervisor.ts:374` — extend init payload with
+  `authToken?: string | null` and a token-refresh push over the existing
+  MessagePort.
+- `src/preload/index.ts` — expose `auth.*` on `window.sei`.
+- `src/renderer/src/lib/stores/` — add `authStore` (Zustand) mirroring
+  pattern of existing stores.
 
-### Recommended layered context structure
-
-Each turn, assemble a prompt with these slots (rough budget in tokens):
-
-| Slot | Budget | Content | Source |
-|------|--------|---------|--------|
-| System prompt | 500 | Identity, personality, rules | Config (immutable per session) |
-| Long-term memory | 1K–2K | Retrieved relevant facts via vector search on current event | SQLite + embeddings |
-| Running summary | 500–1K | Rolling summary of session (LLM-generated, updated every N turns) | Summarizer |
-| Recent chat (raw) | 1K–2K | Last ~20 messages verbatim | Ring buffer |
-| World snapshot | 500 | Position, health, hunger, time, nearby entities (top 10), inventory summary | mineflayer current state |
-| Recent events | 500 | Last ~10 world events (diffed, not raw) | Event log |
-| Screenshot | ~1.5K (image tokens) | Optional, only when visually relevant (e.g., looking-around turn), not every turn | desktopCapturer |
-| Trigger event | 200 | What caused this turn | Event queue |
-| **Total** | **~5–8K** | Well under Haiku's limits, keeps cost predictable | |
-
-### Summarization strategy
-
-Use the **ConversationSummaryBufferMemory** hybrid pattern (LangChain-origin, but roll your own — don't pull in LangChain):
-
-1. Keep a raw ring buffer of last N turns (N=20).
-2. When turn N+1 arrives, the oldest turn is asynchronously fed to a summarizer (can be Haiku itself with a "compress this turn into the running summary" prompt, or cheaper: a separate tiny call).
-3. Running summary is updated; raw oldest turn is discarded.
-4. Long-term memory (facts about players, world progression) is extracted on a separate cadence — every ~10 turns, ask Haiku "any durable facts worth remembering?" and upsert to the memory store.
-
-### Screenshot economics
-
-Images cost ~1.5K tokens each. Don't send every turn. Gate screenshot inclusion on:
-- Trigger event type (e.g., "player pointed at something", "idle look-around")
-- Novelty (hash-compare to last sent; skip if unchanged)
-- Explicit trigger from previous turn's reasoning ("I should look around")
-
-Confidence: HIGH (pattern standard across LLM chatbots; Mindcraft and Vellum/LangChain guides align).
+**Offline behavior:** auth is **optional** for local-only API mode. The
+existing `apiKeyStore.ts` keeps working untouched; the renderer's onboarding
+flow picks the branch (sign-in OR enter API key). Both branches converge on
+"bot can fork."
 
 ---
 
-## 5. Process Architecture in Electron
+### 2.2 Cloud Character Library
 
-### Recommendation: three processes
+**Boundary — definition vs runtime memory:**
 
-1. **Main process** — Electron default; owns windows, config persistence, Ollama subprocess lifecycle, screenshot capture (only the main process can use `desktopCapturer`).
-2. **Renderer process** — Vite + React GUI. `contextIsolation: true`, `nodeIntegration: false`, communicates via a typed preload bridge.
-3. **Bot UtilityProcess** — Spawned via `utilityProcess.fork()` from main. Runs mineflayer + orchestrator + LLM clients.
+| Slice                          | Today              | After v1.0                          |
+|--------------------------------|--------------------|-------------------------------------|
+| `Character.persona.source`     | local JSON         | **cloud-authoritative**, cached locally |
+| `Character.persona.expanded`   | local JSON (LLM-generated) | **cloud-authoritative**, cached locally |
+| `Character.skin` + PNG bytes   | local              | **cloud-authoritative**, cached locally |
+| `Character.portrait_image`     | local              | **cloud-authoritative**, cached locally |
+| `Character.is_default`, `created`, `last_launched`, `playtime_ms` | local | **stays local** — these are per-user runtime stats |
+| `<userData>/memory/<id>/MEMORY.md` (DIARY) | local | **stays local** — runtime memory NEVER syncs |
+| `<userData>/memory/<id>/PLAYER.md` (OWNER) | local | **stays local** — per-user, never shared |
 
-### Why utilityProcess over child_process.fork
+Sharing only ever exposes the **definition** slice (persona + skin +
+portrait). Runtime memory files are untouched and continue to live under
+`paths.memoryDir(id)`.
 
-Per Electron's official docs (verified):
-- `utilityProcess` provides **MessagePort-based IPC** that can be handed directly to the renderer, enabling structured, typed communication.
-- Emits proper `child-process-gone` events for crash handling (raw `child_process` does not).
-- Chromium Services-backed; integrates with Electron's crash reporter.
-- Electron team explicitly recommends it over `child_process.fork` for forked child work.
+**Sync model: cache-on-demand, not background sync.**
 
-### Why not run mineflayer in the main process
+- On sign-in, fetch the user's library index (`/api/characters?owner=me`)
+  and write a lightweight `<userData>/cloud-index.json`.
+- On "add to mine" or first launch of a character, download the definition
+  and skin PNG into the **existing local format**: `characters/<id>.json` +
+  `skins/<id>.png`. This means `characterStore.ts`, `skinStore.ts`,
+  `skinServer.ts`, and `botSupervisor.ts` keep working with zero changes.
+- On edit/publish, push the local JSON + PNG to the API.
+- Offline: anything already pulled launches normally; cloud-only characters
+  show a "not cached — needs network" state in the renderer.
 
-- Mineflayer's packet parsing + pathfinder are CPU-hot; blocking the main process freezes the UI.
-- A mineflayer crash (malformed packet, plugin bug) takes down the whole app.
-- Isolation also makes "restart bot without restarting app" trivial.
+**New files:**
+- `src/main/cloudApi.ts` — typed fetch wrapper (Bearer auth from
+  `authStore`, 15s timeout, retries via existing backoff patterns).
+- `src/main/cloudCharacterSync.ts` — pull/push functions that translate
+  between the cloud schema and local `CharacterSchema`.
+- `src/shared/cloudCharacterSchema.ts` — Zod schemas for the API surface
+  (Character DTO, ListResponse, SearchResponse).
 
-### Why not run mineflayer in the renderer
+**Modified files:**
+- `src/shared/ipc.ts` — add `IpcChannel.cloudChars.{listMine,browse,search,
+  publish,unpublish,pullToLocal,update}`.
+- `src/main/ipc.ts` — register handlers, all gated on signed-in.
+- `src/renderer/src/screens/` — add `BrowseScreen.tsx`, refactor
+  `HomeScreen.tsx` into "Home (mine + recent)" + "Browse (cloud)" tabs.
+- `src/main/characterStore.ts` — **no breaking changes**. The local store
+  stays the canonical store at runtime. Sync sits *above* it.
 
-- Renderer has Chromium sandbox restrictions, no raw TCP. Cannot connect to Minecraft servers cleanly.
-- Security: you want the minecraft network socket and API keys *nowhere near* arbitrary web content.
+**Why this design:** keeps the bot completely cloud-agnostic. The
+utilityProcess never makes a sync call. If cloud goes down, summon still
+works for any cached character.
 
-### IPC shape
+---
 
-```
-Renderer  <─(contextBridge IPC)─>  Main  <─(MessagePort)─>  Bot UtilityProcess
+### 2.3 AI Proxy + Usage Indicator
+
+**Where the proxy client runs:** in the **utilityProcess**, same place as
+the existing Anthropic SDK. Reason: the bot's `messages[]` is large and
+hot-path; round-tripping through renderer would (a) cross IPC twice per
+turn, (b) defeat prompt cache locality, (c) expose chat content to the
+renderer process unnecessarily.
+
+**Mechanism:** add a "proxy mode" alongside "personal-key mode" in the
+existing `anthropicClient.js`. Both modes produce the same
+`{ toolUses, text, content, usage, stopReason }` return shape. The only
+difference is `baseURL` and the `Authorization` header (Bearer user-auth
+token instead of `x-api-key`).
+
+Anthropic's SDK supports custom `baseURL`; **no new client library needed.**
+
+```js
+// src/bot/brain/anthropicClient.js (modified)
+const sdk = new Anthropic({
+  apiKey: config.anthropic.api_key,         // ignored by proxy
+  baseURL: config.anthropic.base_url,       // 'https://api.anthropic.com' or 'https://proxy.sei.gg/anthropic'
+  defaultHeaders: config.anthropic.auth_header
+    ? { Authorization: config.anthropic.auth_header } // 'Bearer <accessToken>'
+    : undefined,
+})
 ```
 
-Typed messages (use a shared TS types package). Examples:
+**Usage telemetry → renderer:**
 
-- `main → bot`: `{type:'start', config}`, `{type:'stop'}`, `{type:'screenshot', png}`
-- `bot → main`: `{type:'log', level, msg}`, `{type:'status', state}`, `{type:'request_screenshot'}`, `{type:'chat', text}`
-- `main → renderer`: forwards bot status + logs
-- `renderer → main`: config changes, start/stop commands
-
-### Ollama
-
-Spawn as a child of the main process (not the bot process) — then the bot restarting doesn't kill Ollama (model re-load is slow). Health-check via `GET http://127.0.0.1:11434/api/tags` before telling the bot it's ready.
-
-Confidence: HIGH (verified against Electron official docs).
-
----
-
-## 6. State Management: Who Owns What
-
-A frequent source of bugs in multi-process LLM apps is duplicated state. Single-owner rule:
-
-| State | Owner | Notes |
-|-------|-------|-------|
-| User config (API key, personality, model source) | Main (electron-store on disk) | Bot gets a copy at start; re-sent on change |
-| Bot runtime state (connected, health, position) | Mineflayer (inside bot process) | Bot forwards summaries to main for display |
-| Orchestrator state machine | Bot process, in memory | Not persisted; rebuilt on restart |
-| Event log / recent events | Bot process, in memory ring buffer | Ephemeral |
-| Conversation history (raw + summary) | Bot process, mirrored to SQLite | Survives restarts |
-| Long-term memory (identity, relationships, facts) | SQLite + vector store on disk | Single source of truth |
-| API keys | Main (secure storage via OS keychain via `keytar` or `safeStorage`) | Never log, never send to renderer after initial entry |
-| UI state (current view, form values) | Renderer only | Doesn't need persistence |
-
-**Rule:** the renderer is a *view*, the main process is a *config store + process supervisor*, the bot process is *the agent*. Treat it like a 3-tier app.
-
----
-
-## 7. Data Flow — End-to-End Example
-
-User types "hey sei, come here" in Minecraft chat:
-
-1. Mineflayer `chat` event fires in bot process.
-2. Orchestrator enqueues `{type:'chat_message', from:'player', text:'hey sei, come here'}` at P1.
-3. Orchestrator dequeues → state `PERCEIVING`. Builds context (§4): system prompt + summary + last 20 chat turns + world snapshot + recent events + this event.
-4. Maybe requests screenshot: sends `{type:'request_screenshot'}` to main via MessagePort; main captures via `desktopCapturer`, returns PNG bytes; bot includes in Haiku prompt.
-5. State `THINKING`. Call Haiku with `AbortController`. Haiku returns `{chat: "on my way!", instruction: "walk to the player named ouen"}`.
-6. State `SPEAKING`. `bot.chat("on my way!")`. Fire-and-forget; Minecraft server sees it.
-7. State `ACTING`. Movement LLM (Qwen via Ollama `/api/chat` with tools) receives instruction + available function schemas. Returns `pathfinder.goto({playerName:'ouen'})`.
-8. Action Registry validates args with Zod, invokes mineflayer pathfinder. Pathfinder runs async.
-9. Meanwhile Sei's position-update events are debounced and dropped (P2-or-lower; state machine ignores).
-10. Pathfinder `goal_reached` event → enqueued as `{type:'movement_llm_completed', result:'arrived'}` at P2.
-11. Orchestrator handles: personality LLM turn → "I'm here!" chat, no new instruction.
-12. State `IDLE`, idle timer armed.
-
----
-
-## 8. Patterns to Follow
-
-### Pattern 1: Action Registry with Zod Schemas
-**What:** every mineflayer capability exposed to the movement LLM is a registered action with a Zod-validated argument schema and an interruptible executor.
-**When:** always — single entry point for all movement LLM function calls.
-**Example:**
-```typescript
-const goToPlayer = defineAction({
-  name: 'goto_player',
-  description: 'Walk to a named player',
-  schema: z.object({ playerName: z.string() }),
-  perform: (bot) => async ({ playerName }, signal) => {
-    const target = bot.players[playerName]?.entity;
-    if (!target) throw new Error(`player ${playerName} not visible`);
-    signal.addEventListener('abort', () => bot.pathfinder.stop());
-    await bot.pathfinder.goto(new GoalFollow(target, 2));
-  },
-});
-```
-
-### Pattern 2: Event Queue + FSM
-**What:** single priority queue drives a pure FSM; async work returns via new events.
-**When:** always.
-
-### Pattern 3: Plugin-shaped Orchestrator
-**What:** expose the orchestrator as a mineflayer plugin (`bot.loadPlugin(orchestrator(...))`). Mirrors AIRI's CognitiveEngine.
-**When:** always — gives clean attach/detach, standard mineflayer idioms.
-
-### Pattern 4: Typed MessagePort IPC
-**What:** shared TS type definitions for every message between main/renderer/bot.
-**When:** always.
-
----
-
-## 9. Anti-Patterns to Avoid
-
-### Anti-Pattern 1: LLM-generated JavaScript
-**What:** letting the movement LLM emit raw JS to be `eval`'d (Voyager/Mindcraft style).
-**Why bad:** 9B local model will hallucinate APIs; debugging is impossible; security nightmare.
-**Instead:** closed action registry with schemas.
-
-### Anti-Pattern 2: Blocking Turn Loop
-**What:** `await personalityLLM(); await movementLLM(); await mineflayerAction();` in a single synchronous chain.
-**Why bad:** a 5-second pathfind blocks all chat responses; the bot feels dead.
-**Instead:** each long operation returns via a queue event; loop is event-driven.
-
-### Anti-Pattern 3: Stateful LLM Clients
-**What:** LLM client holds conversation state internally.
-**Why bad:** retries/restarts lose it; hard to test; conflicts with explicit context management.
-**Instead:** LLM clients are pure `(context, signal) → response` functions. Orchestrator owns state.
-
-### Anti-Pattern 4: Mineflayer in the Renderer or Main Process
-**What:** running the bot in-process with the UI or the main process.
-**Why bad:** UI jank, cascading crashes, sandbox conflicts.
-**Instead:** `utilityProcess.fork`.
-
-### Anti-Pattern 5: Raw Event Firehose to LLM
-**What:** forwarding every mineflayer event into the personality LLM.
-**Why bad:** token explosion, noise, rate-limit your own loop.
-**Instead:** debounced aggregator + explicit "significant event" filter.
-
-### Anti-Pattern 6: One Big Prompt with Everything
-**What:** appending all history raw.
-**Why bad:** cost, latency, attention dilution.
-**Instead:** layered context with summary + recent + retrieved memory.
-
----
-
-## 10. Scalability & Robustness Considerations
-
-Sei is single-user, single-bot — "scale" here means session duration and failure modes.
-
-| Concern | 1-hour session | 8-hour session | Multi-day |
-|---------|----------------|----------------|-----------|
-| Conversation history | Raw buffer fine | Summarize every ~20 turns | Summary-of-summaries; episodic memory in vector store |
-| Memory store | SQLite in-process | SQLite + WAL | SQLite + scheduled compaction |
-| LLM cost | Negligible | Monitor; consider caching system prompt via Anthropic prompt caching | Prompt caching essential |
-| Ollama model memory | ~9GB VRAM steady | Same | Same; add auto-restart on OOM |
-| Mineflayer reconnect | Manual | Exponential backoff reconnect | Same + persist "where was I" state |
-| Log volume | Fine | Rotating file log in bot process | Same |
-
-**Prompt caching:** Anthropic supports prompt caching on Haiku — pin the system prompt + long-term memory block for massive cost wins on long sessions. Design context slots so the *prefix* is stable (system + identity + running summary), with volatile content (world snapshot, trigger) at the end.
-
----
-
-## 11. Build Order & Hard Dependencies
-
-The dependency graph dictates a specific critical path:
+- Anthropic responses already include `usage: {input_tokens, output_tokens,
+  cache_creation_input_tokens, cache_read_input_tokens}`. The SDK call site
+  at `anthropicClient.js:59` already captures this.
+- For **personal-key mode**, the bot has no quota to report — renderer shows
+  the simple "personal key" badge, no % bar.
+- For **proxy mode**, the proxy server is the source of truth (it bills
+  against your personal Anthropic key, so it's the only honest tally). The
+  proxy returns a `x-sei-usage-pct` header on every response, OR an
+  embedded `{ remaining_pct, plan }` JSON field on a wrapper envelope.
+- The bot forwards each `usage_update` over the existing MessagePort to
+  main, which fans it out via a new `usage:state` channel to renderer.
 
 ```
-┌─ A: Mineflayer bot connects to server (hello-world)
-│       │
-│       ▼
-│  B: Action Registry (5–10 core actions: goto_player, goto_block,
-│      chat, mine_block, place_block, follow, stop, look_at)
-│       │
-│       ▼
-│  C: Event Queue + basic FSM (no LLM yet; scripted behavior)
-│       │
-│       ├───────────────────────────────────────────┐
-│       ▼                                           ▼
-│  D: Movement LLM (Ollama + Qwen              E: Personality LLM client
-│     tool-calling over Action Registry)          (Haiku, no loop, just
-│                                                 request/response)
-│       │                                           │
-│       └──────────────┬────────────────────────────┘
-│                      ▼
-│         F: Two-layer loop wired (minimal context: just chat history
-│            + world snapshot). Real companion behavior emerges here.
-│                      │
-│                      ▼
-│         G: Memory layer (SQLite + summaries + vector search)
-│                      │
-│                      ▼
-│         H: Screenshot integration (desktopCapturer → Haiku)
-│                      │
-│                      ▼
-│         I: Electron GUI shell (config, start/stop, log viewer)
-│                      │
-│                      ▼
-│         J: Bot→UtilityProcess migration (if not done earlier)
-│                      │
-│                      ▼
-│         K: electron-builder packaging (.exe / .app)
+Bot turn → Anthropic proxy → response includes usage_pct
+   │
+   ├──► continue loop (existing path)
+   └──► port.postMessage({ type: 'usage_update', remaining_pct, plan })
+            │
+            └──► main (botSupervisor.ts:330 port.on('message'))
+                    │
+                    └──► webContents.send('usage:state', payload)
+                            │
+                            └──► renderer Zustand store ── % bar above settings icon
 ```
 
-### Rationale
-- **A→B→C** before any LLM. You want to verify the substrate works and actions are interruptible *without* the noise of LLM debugging. Script a dummy "walk to player, say hi" behavior first.
-- **D and E parallelizable** once C exists; they're independent clients.
-- **F is the integration moment** where the system first feels alive. Keep context minimal here — the payoff is seeing the loop work end-to-end, not perfect memory.
-- **G (memory) before H (screenshots)** — memory has higher value per effort and screenshots compound complexity (image tokens, OS permissions, multi-monitor).
-- **I (GUI) late** — headless-first means faster iteration. A CLI + config file is sufficient through F/G/H. Only build the Electron shell once the bot is actually fun.
-- **J can be earlier** if you hit stability issues in dev; the IPC surface between bot and host is small enough that migration from standalone node to utilityProcess is mechanical.
-- **K last** — packaging is annoying; do it once everything else is stable.
+**Why server-driven percentage (not client-tallied tokens):** matches the
+"friendly % bar, no token counts" requirement, lets the server adjust quota
+mid-month without an app update, and is robust to abort/retry double-counts
+that a client-side tally cannot resolve.
 
-### Hard dependencies (cannot reorder)
-- Action Registry before any LLM function calling.
-- Event Queue/FSM before two-layer loop (otherwise the loop deadlocks on first concurrent event).
-- Two-layer loop before memory (memory is useless if the loop doesn't run).
-- Everything else before packaging.
+**Billing flow (in-app checkout):** main process opens the system browser
+to a Stripe Checkout URL; webhook hits the proxy server; on next bot turn
+the new entitlement reflects in `remaining_pct`. No special UI plumbing
+needed beyond a "Manage subscription" button in `SettingsScreen.tsx`.
 
-### Soft dependencies (can reorder with small cost)
-- GUI can come earlier for demo value; headless-first is a preference not a constraint.
-- Screenshot can come before memory if visual debugging is valuable.
-- UtilityProcess migration can happen any time after A.
+**New files:**
+- `src/main/billingService.ts` — open Stripe Checkout via `shell.openExternal`,
+  poll `/api/me/billing` on focus to refresh `isPro`.
 
-### Early de-risking recommendations
-1. Prototype the movement LLM loop against Ollama Qwen **in week 1** against 3 canned actions. This is the highest-risk subsystem — if the local 9B isn't reliably tool-calling, you need to know before building the rest.
-2. Prototype screenshot → Haiku vision in parallel. OS window capture is brittle on macOS (ScreenCaptureKit permissions) and Windows (DWM quirks); knowing it works before depending on it saves weeks.
-3. Stub personality LLM with a scripted responder during A–D to keep iteration fast and free.
-
----
-
-## 12. Open Questions / Flags for Phase Research
-
-- **Qwen 9B tool-calling reliability** — needs empirical validation; if weak, fallback options (Qwen2.5-Coder, Llama 3.1 with function-calling fine-tunes, or route tool-calls to Haiku at higher cost).
-- **Screenshot capture on all OSes** — Electron `desktopCapturer` works cross-platform but macOS requires screen recording permission prompt; first-run UX needs design.
-- **Anthropic prompt caching specifics** — verify cache-control placement for Haiku 3 in current SDK; cache-hit economics change the context budgeting in §4.
-- **Chat interrupt UX** — if the bot is mid-action and the player says "stop", does the movement action cancel instantly or finish the current step? Design call, not pure architecture.
-- **Memory privacy** — multi-player aware bot remembers things about non-owners; policy for what's remembered and how to forget.
+**Modified files:**
+- `src/bot/brain/anthropicClient.js` — accept `base_url` + `auth_header` from
+  config; forward usage to parentPort.
+- `src/bot/index.js` — extend init payload handling to include
+  `proxyConfig: { baseUrl, authToken } | null`.
+- `src/main/botSupervisor.ts:374` — populate `proxyConfig` from `authStore`
+  + user preference (`useProxy` flag in `UserConfig`).
+- `src/shared/characterSchema.ts:UserConfigSchema` — add
+  `use_proxy: z.boolean().default(false)`.
+- `src/shared/ipc.ts` — add `usage:state` push channel.
 
 ---
 
-## Sources
+### 2.4 Multi-Provider LLM Abstraction
 
-- [Voyager: An Open-Ended Embodied Agent with LLMs (paper)](https://arxiv.org/abs/2305.16291) — skill library, iterative prompting
-- [Voyager GitHub (MineDojo)](https://github.com/MineDojo/Voyager) — reference implementation
-- [Mindcraft (mindcraft-bots/mindcraft)](https://github.com/mindcraft-bots/mindcraft) — LLM + mineflayer patterns
-- [AIRI Minecraft Agent (DeepWiki)](https://deepwiki.com/moeru-ai/airi/4.1-minecraft-agent) — action registry + cognitive engine plugin pattern
-- [Mineflayer (PrismarineJS)](https://github.com/PrismarineJS/mineflayer) — bot API, plugin model
-- [Electron utilityProcess docs](https://www.electronjs.org/docs/latest/api/utility-process) — preferred forking API
-- [Electron Process Model](https://www.electronjs.org/docs/latest/tutorial/process-model) — main/renderer/utility boundaries
-- [StateFlow: State-Driven LLM Workflows](https://arxiv.org/html/2403.11322v1) — state machine formalization for LLM tasks
-- [Stately Agent (XState)](https://github.com/statelyai/agent) — practical FSM-driven LLM agents
-- [12-factor-agents: Agentic Loop](https://deepwiki.com/humanlayer/12-factor-agents/2.1-the-agentic-loop) — event-sourced loop discipline
-- [boundaryml: Event-driven agentic loops](https://boundaryml.com/podcast/2025-11-05-event-driven-agents) — event log over mutable state
-- [Vellum: LLM Memory Management](https://www.vellum.ai/blog/how-should-i-manage-memory-for-my-llm-chatbot) — summary buffer patterns
-- [Planner–Executor Framework](https://www.emergentmind.com/topics/planner-executor-framework) — two-layer agent formalization
-- [Redis: AI Agent Architecture Patterns](https://redis.io/blog/ai-agent-architecture-patterns/) — planner/executor tradeoffs
+**The invariant to preserve:** `orchestrator.js` calls
+`anthropic.call({ systemBlocks, tools, messages, signal, timeoutMs, maxTokens })`
+and gets `{ toolUses, text, content, usage, stopReason }`. As long as we
+keep that contract, every other invariant (closed action registry,
+event-sourced FSM, iteration_cap, AbortController) holds untouched.
 
-### Confidence by claim
+**Design: a `LlmProvider` interface, dependency-injected.**
 
-| Claim | Confidence | Basis |
-|-------|------------|-------|
-| utilityProcess over child_process.fork | HIGH | Electron official docs explicit |
-| Event-queue FSM beats ad-hoc async | HIGH | Multiple papers + production frameworks |
-| Closed action registry beats eval'd code | HIGH | AIRI, common wisdom; Voyager shows the opposite is hard |
-| Summary-buffer hybrid memory | HIGH | Industry standard |
-| Three-process Electron layout | HIGH | Matches Electron best-practices |
-| 10s idle fallback is the right interval | LOW | Heuristic; needs playtesting |
-| Prompt caching ROI at Sei's scale | MEDIUM | Anthropic docs support it; actual savings depend on session length |
-| Qwen 9B tool-calling works reliably | LOW | Needs empirical test in phase 1 |
+```js
+// src/bot/brain/llm/provider.js  (NEW)
+/**
+ * @typedef {Object} LlmProvider
+ * @property {(req) => Promise<LlmResponse>} call
+ * @property {(staticBlocks: string[], tools: Tool[]) => SystemBlock[]} buildCachedSystem
+ * @property {string} model
+ * @property {LlmCapabilities} capabilities
+ *
+ * @typedef {Object} LlmCapabilities
+ * @property {boolean} promptCache       // Anthropic ephemeral, OpenAI prompt_cache_key, etc.
+ * @property {boolean} toolUse           // every modern provider — sanity check
+ * @property {boolean} vision            // gates the screenshot+visualize feature
+ * @property {boolean} thinking          // Anthropic extended thinking, o1/o3 reasoning effort
+ * @property {number}  maxContextTokens
+ */
+```
+
+**One concrete provider per backend:**
+- `src/bot/brain/llm/anthropicProvider.js` — rename of today's `anthropicClient.js`
+- `src/bot/brain/llm/openaiProvider.js` — OpenAI Responses API or Chat Completions w/ tools
+- `src/bot/brain/llm/geminiProvider.js` — Gemini function calling
+- `src/bot/brain/llm/grokProvider.js` — xAI (OpenAI-compatible, can extend openaiProvider)
+- `src/bot/brain/llm/openrouterProvider.js` — OpenRouter (OpenAI-compatible)
+- `src/bot/brain/llm/localOpenAIProvider.js` — Ollama / vLLM / LM Studio (OpenAI-compatible base_url)
+
+Each adapter is responsible for translating Sei's canonical content-block
+shape (`{type:'text'|'tool_use'|'tool_result',...}` from `loop.js`) into and
+out of the provider's native message shape — this is the only piece that
+genuinely differs. The brain's `messages[]` stays Anthropic-shaped because
+it's already battle-tested and Anthropic's shape is the most expressive.
+
+**Caching per provider:**
+- Anthropic — keep the existing `cache_control: {type:'ephemeral'}` stamping
+  on the last tool block (`stampLastToolCacheControl`).
+- OpenAI — set `prompt_cache_key` to a stable hash of the system+tools
+  prefix.
+- Gemini — `cachedContent` (separate API call to create the cache, then
+  reference by name).
+- OpenRouter / Grok — provider-specific; pass-through whatever the
+  underlying model supports.
+- Local — no-op (`promptCache: false`).
+
+The capability flag drives which strategy `buildCachedSystem` uses; the
+orchestrator never branches on provider.
+
+**Closed action registry preservation:** every provider's tool-call result
+gets normalized to `{ id, name, input }` (the shape `anthropicClient.js`
+already returns). The orchestrator then routes through
+`registry.execute(name, args, bot, config)` exactly as today. **No provider
+ever sees the registry directly.** If a provider returns a tool call by an
+unknown name, `registry.execute` already throws — invariant preserved.
+
+**Provider selection:** `UserConfig.provider` already exists as
+`z.enum(['anthropic'])` — extend it to the full list. Onboarding model
+picker (list, not grid) lives in `src/renderer/src/screens/OnboardingScreen.tsx`.
+
+**New files:**
+- `src/bot/brain/llm/provider.js` — interface + factory
+- `src/bot/brain/llm/{anthropic,openai,gemini,grok,openrouter,localOpenAI}Provider.js`
+- `src/bot/brain/llm/normalize.js` — content-block ↔ provider-shape translation
+
+**Modified files:**
+- `src/bot/brain/orchestrator.js:266` — `createAnthropicClient(config)` →
+  `createLlmProvider(config)`. The `_anthropicOverride` seam already
+  generalizes to `_providerOverride` for the harness.
+- `src/bot/brain/anthropicClient.js` — moves under `llm/anthropicProvider.js`;
+  function exports preserved.
+- `src/shared/characterSchema.ts:UserConfigSchema.provider` — widen enum.
+
+---
+
+### 2.5 Player-POV Screenshots
+
+**The fundamental problem:** the headless mineflayer bot has no rendered
+view. Screenshots must come from the **human player's running Minecraft
+client**. The bot is in utilityProcess; the player's MC client is a
+separate process (often on the same machine; sometimes not, if playing on a
+LAN host).
+
+**The three options the question raises, evaluated:**
+
+| Option | Pros | Cons | Verdict |
+|---|---|---|---|
+| A. Companion Fabric mod → localhost socket → utilityProcess | Same-machine: native, low latency, no relay infra. Reuses existing Fabric wizard (`src/main/fabricInstaller.ts`). Mod can also expose 16-block + LOS gating server-side. | Doesn't work if player runs MC on a different machine than Sei (rare but real for LAN play). | **Primary path.** |
+| B. Companion mod → relay server → bot polls | Works across machines. | Adds backend infra, latency, privacy concern (player's frames hit a server). | Defer — overkill for v1. |
+| C. Out-of-band screen capture from Electron | No mod required. | macOS screen-recording permission UX is brutal; can't tell which window is MC; multi-monitor failures; only same-machine. Already flagged as "v2, brittle" in `.planning/PROJECT.md`. | Reject for v1. |
+
+**Recommended architecture (option A):**
+
+```
+┌─────────────────────────┐         ┌─────────────────────────┐
+│ Host MC client          │         │ Sei (utilityProcess)    │
+│  + Sei Companion Mod    │  PNG    │                         │
+│    (Fabric)             │ ─────►  │  screenshotIngest.js    │
+│  • observes camera pos  │  WS     │  • buffers frames       │
+│  • does 16-block LOS    │         │  • exposes getLatest()  │
+│  • POSTs png+meta to    │         │                         │
+│    ws://127.0.0.1:PORT  │         │ Brain calls visualize → │
+└─────────────────────────┘         │ getLatest() → vision-   │
+                                    │ capable provider        │
+                                    └─────────────────────────┘
+```
+
+**Where it lives:**
+
+- **Sei Companion Mod** — a new Fabric mod (deliverable beyond TypeScript).
+  Lives in a sibling repo OR `mods/sei-companion/` in this repo. The
+  existing `src/main/customSkinLoader.ts` proves we already ship mod
+  artifacts via the wizard; reuse that distribution pipeline.
+- **Server endpoint** — the utilityProcess hosts a tiny WebSocket on
+  `127.0.0.1` (bound to ephemeral port at fork time). Mineflayer is fine
+  with us having an extra server; this is just an inbound socket. The port
+  is **passed to the mod** via the existing wizard config file (the same
+  one `customSkinLoader.ts` writes), so the mod knows where to send frames.
+- **Gating** — the mod owns the 16-block-radius + line-of-sight check
+  because it has the player's exact camera pose. The bot trusts the mod's
+  pre-filter but re-validates against its own world state (bot can
+  cross-check via `bot.entity.position` and existing observers) before
+  feeding the frame to a VLM call.
+- **Cross-machine fallback** — if the wizard detects the MC install is on
+  a different host than Sei (rare; explicitly flagged), the screenshot
+  feature simply degrades gracefully (renderer shows "vision not available
+  — host MC client must be on this machine"). Defer remote-relay to v2.
+
+**New files:**
+- `src/bot/brain/vision/screenshotIngest.js` — WS server, frame buffer with
+  TTL (≤10s old frames discarded).
+- `src/bot/adapter/minecraft/behaviors/visualize.js` — Zod action handler
+  that calls `screenshotIngest.getLatest()`, feeds the PNG into the
+  current provider's vision channel via `provider.call({...image_block})`,
+  and returns the textual description as the tool_result.
+- `src/main/companionModInstaller.ts` — mirrors `customSkinLoader.ts` for
+  the Sei companion mod jar. Reuses `wizard.ts`.
+- `mods/sei-companion/` (or sibling repo) — Fabric mod source.
+
+**Modified files:**
+- `src/bot/adapter/minecraft/registry.js` — register `visualize` as a new
+  Zod action behind a `capabilities.vision` capability check (no-op
+  registration when active provider lacks vision).
+- `src/bot/brain/orchestrator.js` — add an idle-tick hook that auto-pulls a
+  frame for VLM-capable providers (P3 idle priority; gated by 10s debounce
+  to avoid spamming the mod).
+- `src/main/wizard.ts` — extend install pipeline to drop the companion mod
+  jar alongside CustomSkinLoader; extend wizard-state schema with
+  `companionModInstalled` per install.
+
+**Why a new Zod action and not a side-channel:** preserves the closed
+action registry invariant. `visualize` is explicit — the LLM asks for a
+view, the registry validates input, the handler returns a `tool_result`.
+Auto-idle is a separate orchestrator-internal feature that injects a
+synthetic "you just saw this" event-text into the next snapshot, not a
+tool call — also preserves the invariant.
+
+---
+
+### 2.6 Mod Adapter Ingestion Pipeline → Hot-Loaded Zod Actions
+
+**This is the only feature that genuinely tensions the "closed action
+registry" invariant. Resolve it explicitly.**
+
+**The invariant clarified:**
+- "Closed" means **the LLM cannot register or invent actions**. The LLM may
+  only call actions in the registry at the time of the call.
+- It does **not** mean "static at build time." Today's
+  `createDefaultRegistry()` is a runtime construction. The registry is a
+  Map populated at bot-start.
+- Therefore: **registering more actions before the bot starts (or between
+  bot sessions) does NOT violate the invariant.** What WOULD violate it is
+  letting the in-flight LLM loop mutate the registry, or letting LLM output
+  determine what gets registered without human-in-the-loop validation.
+
+**Pipeline design:**
+
+```
+1. Mod scan         (main, src/main/modAdapterScan.ts)
+     └─ inspect <mcDir>/mods/ → enumerate jars, version, modid
+2. Diff vs baseline (main, src/main/modAdapterDiff.ts)
+     └─ baseline = vanilla 1.21.1 item/keybind manifest (bundled JSON)
+     └─ output: new items, removed items, changed keybinds, modded blocks
+3. LLM generation   (main, src/main/modAdapterGenerator.ts)
+     └─ feed diff into Haiku; ask for:
+          (a) a knowledge.md text summary appended to system prompt
+          (b) ZERO OR MORE action proposals as JSON: {name, description,
+              zodSchemaSrc, handlerSrc}
+4. Validation gate  (main, src/main/modAdapterValidator.ts)
+     └─ static analysis on handlerSrc:
+        • parse with acorn; reject if AST contains require/import,
+          process.*, fs.*, child_process, eval, Function, network APIs
+        • whitelist only: bot.<method>, args.<x>, return string|object
+        • zodSchemaSrc must parse and yield a z.ZodObject
+5. Human review     (renderer, ModAdapterReviewScreen.tsx)
+     └─ user sees each proposed action, can accept / reject / edit
+6. Persist          (main, <userData>/mod-adapters/<modId>.json)
+7. Load on summon   (bot, src/bot/adapter/minecraft/registry.js)
+     └─ after createDefaultRegistry(), iterate accepted adapters and call
+        registry.register(...) for each
+```
+
+**Hot-loading vs restart:** **require a bot restart** to pick up new
+actions. The registry is read at fork time; a re-fork is cheap (the
+supervisor already does it for character switching). Avoid in-flight
+registry mutation entirely — it's not worth the testing burden and the
+user's mental model is "I added a mod, I restart the bot."
+
+**Safety architecture for generated handlers:**
+- Generated handlers run in the utilityProcess (already isolated from
+  renderer). They have access to `bot`, `args`, `config` — no fs or
+  network. The static-analysis gate enforces this. Anything that fails
+  the AST whitelist is rejected before the user even sees it.
+- Each adapter ships as a small JSON manifest, NOT a `.js` file. The
+  validator compiles `zodSchemaSrc` + `handlerSrc` via `new Function(...)`
+  inside a closure that only exposes the whitelist. This is the same
+  pattern Cloudflare Workers / Vercel use for untrusted JS, scaled down.
+- Each adapter is **versioned and signed** with a hash so a user who shares
+  a config can opt-in trust the same adapter set.
+
+**New files:**
+- `src/main/modAdapterScan.ts`, `modAdapterDiff.ts`, `modAdapterGenerator.ts`,
+  `modAdapterValidator.ts`, `modAdapterStore.ts`
+- `src/shared/modAdapterSchema.ts` — Zod for the manifest format
+- `src/bot/adapter/minecraft/loadModAdapters.js` — read `<userData>/mod-adapters/`
+  on bot start, hand to registry
+- `src/renderer/src/screens/ModAdapterReviewScreen.tsx`
+- `resources/mc-baseline/1.21.1-items.json` — bundled vanilla manifest
+
+**Modified files:**
+- `src/bot/adapter/minecraft/registry.js:createDefaultRegistry()` — accept
+  optional `extraAdapters` arg; iterate and `register(...)` after the
+  built-in 19 actions.
+- `src/bot/index.js` — load mod adapters from disk after init payload,
+  pass to `createDefaultRegistry({ extraAdapters })`.
+- `src/main/botSupervisor.ts:374` — extend init payload with the path to
+  the accepted-adapters directory (so the bot reads its own manifest list
+  without main needing to ship handler source over the port).
+
+---
+
+## 3. Process Boundary Audit
+
+| Concern | Process | File path |
+|---|---|---|
+| Mineflayer instance | **utilityProcess only** | `src/bot/adapter/minecraft/connect.js` |
+| Anthropic SDK / LLM providers | utilityProcess (bot loop) **and** main (persona expansion) | `src/bot/brain/anthropicClient.js`, `src/main/personaExpansion.ts` |
+| safeStorage (apiKey, authToken) | **main only** | `src/main/apiKeyStore.ts`, new `authStore.ts` |
+| Cloud API (character library, billing) | **main only** | new `cloudApi.ts`, `billingService.ts` |
+| Stripe checkout, OAuth loopback | **main only** | new `billingService.ts`, `authService.ts` |
+| Screenshot WS server | **utilityProcess** | new `src/bot/brain/vision/screenshotIngest.js` |
+| Skin server (existing) | main | `src/main/skinServer.ts` |
+| Mod adapter generation (LLM call + validator) | **main only** | new `modAdapterGenerator.ts` |
+| Mod adapter execution (sandboxed handler) | utilityProcess | new `loadModAdapters.js` |
+| All renderer code | renderer (contextIsolation) | `src/renderer/` |
+
+**Invariant: anything that calls `mineflayer.createBot()` or imports from
+`mineflayer-pathfinder` stays in utilityProcess.** New features (auth, cloud,
+billing, mod-gen LLM, OAuth) never touch the bot process — they go through
+main and feed the bot via init payload extensions.
+
+---
+
+## 4. Data Flow Diagrams
+
+### 4.1 Sign-in → Cloud Character → Summon
+
+```
+Renderer (Browse)         Main                            Cloud API
+       │                    │                                │
+       │  cloudChars:browse │                                │
+       ├───────────────────►│                                │
+       │                    │  GET /characters?q=...         │
+       │                    ├───────────────────────────────►│
+       │  list              │  list                          │
+       │◄───────────────────┤◄───────────────────────────────┤
+       │                                                     │
+       │  cloudChars:pullToLocal(id)                         │
+       ├───────────────────►│                                │
+       │                    │  GET /characters/:id           │
+       │                    ├───────────────────────────────►│
+       │                    │◄───── definition + skin PNG ───┤
+       │                    │                                │
+       │                    │ writes characters/<id>.json   │
+       │                    │ writes skins/<id>.png         │
+       │  ok                │                                │
+       │◄───────────────────┤
+       │
+       │  bot:summon(id)                  (existing flow, untouched)
+       ├───────────────────►supervisor──fork──►utilityProcess
+```
+
+### 4.2 Bot Turn → Proxy Provider → Usage Bar
+
+```
+utilityProcess                    main                        renderer
+     │                              │                            │
+     │ provider.call(req)           │                            │
+     ├───► proxy.sei.gg/anthropic   │                            │
+     │◄───response + usage_pct      │                            │
+     │                              │                            │
+     │ port.postMessage(            │                            │
+     │   {type:'usage_update',      │                            │
+     │    remaining_pct, plan})     │                            │
+     ├─────────────────────────────►│                            │
+     │                              │ webContents.send(          │
+     │                              │   'usage:state', payload)  │
+     │                              ├───────────────────────────►│
+     │                              │                            │ Zustand
+     │                              │                            │ → % bar
+```
+
+### 4.3 Player-POV Screenshot
+
+```
+Host MC client            utilityProcess                Brain loop
+  + Sei mod
+       │                       │                            │
+       │ player presses key /  │                            │
+       │ idle auto-trigger     │                            │
+       │ runs LOS gate         │                            │
+       │ POST ws://...         │                            │
+       ├──────────────────────►│ screenshotIngest           │
+       │                       │   .pushFrame(png, meta)    │
+       │                       │                            │
+       │                       │ visualize action requested │
+       │                       │◄───────────────────────────┤
+       │                       │ ingest.getLatest() →       │
+       │                       │ provider.call({image_block})│
+       │                       │ → tool_result text         │
+       │                       ├───────────────────────────►│
+```
+
+---
+
+## 5. Build Order (Dependency-Driven)
+
+```
+Phase A — Auth foundation
+   authStore.ts → authService.ts → ipc/preload/renderer auth surface
+   (No other feature depends on a specific provider for sign-in
+    semantics; can ship before cloud library by gating cloud UI on
+    "signed in".)
+
+Phase B — Cloud character library
+   cloudApi.ts → cloudCharacterSync.ts → BrowseScreen
+   Requires: Auth (Bearer token)
+   Independent of: proxy, providers, vision, mod-gen
+
+Phase C — Multi-provider abstraction
+   provider.js interface + anthropicProvider refactor (no functional change)
+   → add openai/gemini/grok/openrouter/local providers one by one
+   Requires: nothing (pure refactor in-process)
+   Unblocks: vision, proxy mode (proxy is just another Anthropic baseURL)
+
+Phase D — AI proxy + usage indicator
+   billingService.ts → proxyConfig wiring → usage:state channel → % bar
+   Requires: Auth (Bearer token), provider abstraction (proxy is an
+             anthropic-provider variant — but trivially shippable before
+             the full multi-provider work lands; just adds baseURL +
+             defaultHeaders to the existing anthropicClient).
+   Independent of: cloud library, vision
+
+Phase E — Player-POV vision
+   companionModInstaller.ts + mod jar + screenshotIngest.js +
+   visualize action
+   Requires: provider abstraction with capabilities.vision flag
+             (so visualize registers only when active provider supports it)
+   Independent of: cloud library, auth
+
+Phase F — Mod adapter ingestion
+   modAdapterScan/Diff/Generator/Validator + ModAdapterReviewScreen
+   Requires: nothing strictly, but benefits from the multi-provider
+             abstraction (so the generator LLM call uses whichever
+             provider the user prefers) and from vision (a VLM can read
+             screenshots of mod GUIs to better infer keybinds).
+   Last in queue — touches the registry invariant; safest to ship after
+   the abstraction layer is stable.
+```
+
+**Critical path:** **Auth → Proxy → Provider abstraction → Vision** is the
+revenue-relevant path. **Cloud library** and **mod ingestion** are
+parallelizable with the critical path once Auth lands.
+
+**Cheap early win:** Phase D (proxy) can ship as a *baseURL override* in
+the existing `anthropicClient.js` BEFORE the full Phase C refactor; the
+refactor then absorbs proxy mode as a special case. This decouples revenue
+from the larger abstraction work.
+
+---
+
+## 6. Anti-Patterns to Avoid
+
+### A.1 Letting the renderer hold the access token
+**Wrong:** convenient for direct fetch() from React.
+**Why:** renderer has contextIsolation and no Node — but token still leaks
+via DevTools / extensions / future XSS. Today every secret lives in main.
+**Do:** main owns tokens; renderer gets a derived `AuthSession` push only.
+
+### A.2 Cloud-syncing runtime memory
+**Wrong:** "let users keep their character's memory across machines."
+**Why:** memory contains personal chat content + persona drift; it's per-
+device per-user runtime state, not part of the shareable definition. Worse,
+two devices syncing the same character race on compaction.
+**Do:** sync the **definition** only. Document it. Offer "export memory"
+later if asked.
+
+### A.3 Bot process making HTTPS calls for non-LLM purposes
+**Wrong:** "bot can hit the proxy for usage stats since it's already
+talking to the proxy for LLM calls."
+**Why:** breaks the rule that bot has one job (run the loop). Auth refresh,
+billing webhooks, cloud library — all of those should live in main.
+**Do:** usage piggybacks on the LLM response that the bot is making anyway.
+Everything else stays in main.
+
+### A.4 Hot-loading mod adapters inside an in-flight loop
+**Wrong:** "the user added a mod, register the new action mid-session."
+**Why:** breaks the locked-tool-prefix that anthropic prompt-cache assumes;
+risks an in-flight loop calling an action whose handler was just replaced.
+**Do:** require a bot restart after accepting a new adapter.
+
+### A.5 Generic "LLM provider" that takes raw prompts as strings
+**Wrong:** flatten messages to a single string per provider call.
+**Why:** loses the structured `content[]` (tool_use, tool_result, image
+blocks); makes prompt caching impossible; conflates personality LLM with
+provider LLM.
+**Do:** keep `messages[]` Anthropic-shaped (already battle-tested in
+`loop.js`); each provider adapter translates that shape into and out of
+its native format.
+
+---
+
+## 7. Integration Summary — New vs Modified
+
+### New files (by feature)
+
+| Feature | New file(s) |
+|---|---|
+| Auth | `src/main/authStore.ts`, `authService.ts`; `src/shared/authSchema.ts` |
+| Cloud library | `src/main/cloudApi.ts`, `cloudCharacterSync.ts`; `src/shared/cloudCharacterSchema.ts`; renderer `BrowseScreen.tsx` |
+| Proxy | `src/main/billingService.ts` (the proxy itself is server-side, out of repo) |
+| Providers | `src/bot/brain/llm/provider.js`, `normalize.js`, `{anthropic,openai,gemini,grok,openrouter,localOpenAI}Provider.js` |
+| Vision | `src/bot/brain/vision/screenshotIngest.js`; `src/bot/adapter/minecraft/behaviors/visualize.js`; `src/main/companionModInstaller.ts`; `mods/sei-companion/` |
+| Mod ingest | `src/main/modAdapterScan.ts`, `modAdapterDiff.ts`, `modAdapterGenerator.ts`, `modAdapterValidator.ts`, `modAdapterStore.ts`; `src/bot/adapter/minecraft/loadModAdapters.js`; renderer `ModAdapterReviewScreen.tsx`; `resources/mc-baseline/1.21.1-items.json` |
+
+### Modified files (every feature passes through these)
+
+| File | Modification |
+|---|---|
+| `src/shared/ipc.ts` | Add `IpcChannel.auth`, `cloudChars`, `usage`, `modAdapter`; widen `UserConfigSchema.provider`; new push channels for `auth:state`, `usage:state` |
+| `src/preload/index.ts` | Expose new `auth.*`, `cloudChars.*`, `modAdapter.*` namespaces under `window.sei` |
+| `src/main/ipc.ts` | Register new handlers; gate cloud handlers on `authStore.isSignedIn()` |
+| `src/main/botSupervisor.ts:374` | Extend init payload: `{ authToken, proxyConfig, modAdaptersDir, vlmCapable }` |
+| `src/bot/index.js` | Read extended init payload; load mod adapters from disk; pass `proxyConfig` to provider factory |
+| `src/bot/brain/anthropicClient.js` | Renamed under `llm/`; add `base_url` + `auth_header` config; forward `usage` event to parentPort |
+| `src/bot/brain/orchestrator.js:266` | `createAnthropicClient(config)` → `createLlmProvider(config)`; the `_anthropicOverride` test seam generalizes to `_providerOverride` |
+| `src/bot/adapter/minecraft/registry.js` | `createDefaultRegistry({ extraAdapters })`; register `visualize` when `provider.capabilities.vision` |
+| `src/shared/characterSchema.ts` | Widen `UserConfigSchema.provider` enum; add `use_proxy` boolean |
+| `src/renderer/src/screens/OnboardingScreen.tsx` | Model picker grid → list; add proxy-vs-personal-key branch |
+| `src/renderer/src/screens/SettingsScreen.tsx` | Sign-in section; manage subscription; provider picker; usage bar anchor |
+
+---
+
+## 8. Open Questions for Roadmapper
+
+1. **Mod jar distribution:** ship the Sei companion mod inside the .dmg/.exe
+   (like CustomSkinLoader today) or fetch on demand from sei.gg? The
+   existing wizard pattern points to the former.
+2. **Proxy backend:** out of scope for this research; assumed to exist as a
+   simple Cloudflare Worker / Node server that forwards to Anthropic and
+   tallies usage. Architecturally only the response-header contract
+   matters to the client.
+3. **Local OpenAI-compatible discovery:** does the onboarding picker
+   probe `127.0.0.1:11434` (Ollama) and `127.0.0.1:1234` (LM Studio)
+   automatically, or require the user to enter a base URL? Probing is
+   friendlier but slows onboarding.
+4. **Mod adapter sharing:** v1 = per-user only. Sharing accepted adapters
+   between users is a v2 question — would extend the cloud library DTO.
+
+---
+
+*Architecture integration plan for: Sei v1.0 commercializable MVP*
+*Researched: 2026-05-19 — source-read from the v0.1.1 release codebase*
