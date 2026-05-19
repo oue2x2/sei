@@ -42,9 +42,9 @@ const INDEX_PATH = resolve(PROJECT_ROOT, 'src', 'bot', 'index.js')
 
 const DEFAULT_CONFIG = {
   player_username: 'YourMinecraftName',
-  // Adapter-specific fields nest under adapter.<kind>.* (Plan 03.1-02).
-  // The loader's migrateLegacyAdapterFields hoists older flat configs
-  // automatically, so this CLI writes the new shape directly.
+  // Adapter-specific fields nest under adapter.<kind>.*. The loader's
+  // migrateLegacyAdapterFields hoists older flat configs automatically, so
+  // this CLI writes the new shape directly.
   adapter: {
     kind: 'minecraft',
     minecraft: {
@@ -193,9 +193,9 @@ async function onboard({ rl, existing, mode = 'first-run' }) {
   })
 
   // Compose merged config — preserve any keys we didn't ask about.
-  // Plan 03.1-02: `username` (the character / mineflayer login name) lives
-  // under adapter.minecraft.username; older configs may still have it at
-  // the top level — rewrite to the new shape.
+  // `username` (the character / mineflayer login name) lives under
+  // adapter.minecraft.username; older configs may still have it at the top
+  // level — rewrite to the new shape.
   const existingMc = existing.adapter?.minecraft ?? {}
   const cfg = {
     ...DEFAULT_CONFIG,

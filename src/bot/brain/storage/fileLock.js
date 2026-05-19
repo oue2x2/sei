@@ -1,5 +1,5 @@
 /**
- * Per-file in-process async mutex (Plan 03.1-08, WR-06).
+ * Per-file in-process async mutex.
  *
  * Serializes read-modify-write sequences across ANY caller in the same Node
  * process so concurrent appendNote / setPreferredName / savePlayer /

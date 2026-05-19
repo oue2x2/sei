@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 /**
- * scripts/build-default-skins.mjs
- *
- * Phase 9 (09-01 Task 2) — Generate three deterministic 64×64 PNG skins for
- * the three bundled default personas (Sui, Mochineko, Clawd). Writes them to
- * `resources/skins/<id>.png`.
+ * Generate three deterministic 64×64 PNG skins for the three bundled default
+ * personas (Sui, Mochineko, Clawd). Writes them to `resources/skins/<id>.png`.
  *
  * Why hand-rolled: shipping a runtime image-encoding dependency (sharp,
  * pngjs, jimp) just to emit three placeholder squares would bloat the

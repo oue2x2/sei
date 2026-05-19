@@ -79,8 +79,8 @@ export function createMinecraftAdapter({ bot, config }) {
       _attachDispose = wireBotEvents(bot, handlers, { config })
     },
 
-    // Plan 03.1-09 (WR-07): tear down listeners idempotently before the bot
-    // reference is discarded on reconnect. Without this, the OLD bot's
+    // Tear down listeners idempotently before the bot reference is discarded
+    // on reconnect. Without this, the OLD bot's
     // listeners only become GC-eligible when the closure releases, leaving
     // a window where the adapter still has dangling listeners on a dead
     // mineflayer instance. Idempotent so the boot composer can call it

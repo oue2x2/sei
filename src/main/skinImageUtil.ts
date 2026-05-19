@@ -1,12 +1,12 @@
 /**
  * PNG IHDR parser + legacy 64×32 → 64×64 Minecraft-skin normalizer.
  *
- * Phase 9 Plan 03 Task 1A. Pure-Node implementation (no `sharp`, no `pngjs`
- * runtime dep). The only consumer is mojangSkinLookup.ts: Mojang serves
- * legacy 64×32 skins for ancient accounts (Notch's skin was 64×32 until the
- * 2014 model migration; many older accounts never re-uploaded). applyPng
- * (Plan 02) gates strictly on 64×64, so we normalize HERE — before applyPng
- * ever sees the bytes — to keep the legacy-account fallback working.
+ * Pure-Node implementation (no `sharp`, no `pngjs` runtime dep). The only
+ * consumer is mojangSkinLookup.ts: Mojang serves legacy 64×32 skins for
+ * ancient accounts (Notch's skin was 64×32 until the 2014 model migration;
+ * many older accounts never re-uploaded). applyPng gates strictly on 64×64,
+ * so we normalize HERE — before applyPng ever sees the bytes — to keep the
+ * legacy-account fallback working.
  *
  * Modern 64×64 layout vs legacy 64×32:
  *   - Modern has explicit left-leg + left-arm rectangles in the bottom half
@@ -20,7 +20,7 @@
  *     at dest (32..47, 48..63), horizontally mirrored.
  *   - All other bottom-half pixels are transparent (0,0,0,0).
  *
- * Phase 9 v1 only handles bit-depth 8 + color-type 6 (RGBA) — Mojang's
+ * v1 only handles bit-depth 8 + color-type 6 (RGBA) — Mojang's
  * canonical skin format. Any other PNG combination throws a clear error
  * that mojangSkinLookup's error classifier converts to a MOJANG_LOOKUP_FAILED
  * prefix for the renderer.
@@ -251,9 +251,8 @@ function encodePng64x64(pixels: Buffer): Buffer {
  * Only handles bit depth 8 + color type 6 (RGBA) — Mojang's canonical format.
  * Throws on any other format combo so the renderer can surface a clean error.
  *
- * WARNING 8 (09-03-PLAN): mojangSkinLookup calls this BEFORE returning bytes
- * to the renderer, ensuring applyPng's strict 64×64 gate never rejects an
- * ancient-account skin.
+ * mojangSkinLookup calls this BEFORE returning bytes to the renderer,
+ * ensuring applyPng's strict 64×64 gate never rejects an ancient-account skin.
  */
 export function normalize64x64(buffer: Buffer): Buffer {
   const header = parsePngIhdr(buffer);

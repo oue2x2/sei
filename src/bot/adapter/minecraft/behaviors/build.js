@@ -1,4 +1,4 @@
-// src/bot/adapter/minecraft/behaviors/build.js — Phase 7 R-01, R-03, R-04.
+// src/bot/adapter/minecraft/behaviors/build.js
 //
 // Cuboid build with hand-rolled jump+place scaffolding (D-04).
 // Mirrors mineVein.js loop structure. Iterates Y↑→X→Z (D-07).

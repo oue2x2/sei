@@ -27,7 +27,7 @@ import type {
 import type { Character } from '../shared/characterSchema';
 import { getCharacter, saveCharacter } from './characterStore';
 import { loadApiKey } from './apiKeyStore';
-import { loadConfig as loadUserConfig } from './configStore'; // BLOCKER-4: UserConfig (mc_username, preferred_name) for bot init
+import { loadConfig as loadUserConfig } from './configStore'; // UserConfig (mc_username, preferred_name) for bot init
 import { paths } from './paths';
 import { createLogRouter, type LogRouter } from './logRouter';
 
@@ -95,10 +95,10 @@ export interface BotSupervisorOptions {
   /** Forward to renderer via webContents.send('bot:log:batch', batch). Batched. */
   sendLog: (batch: LogBatch) => void;
   /**
-   * Phase 9 (09-02): returns the loopback skin server's baseUrl (e.g.
+   * Returns the loopback skin server's baseUrl (e.g.
    * 'http://127.0.0.1:54321') or null if the server failed to bind on boot.
-   * Closure-via-getter so a later restart of the skin server (Plan 05 port-
-   * drift recovery) is observable by subsequent summons. The bot supervisor
+   * Closure-via-getter so a later restart of the skin server (port-drift
+   * recovery) is observable by subsequent summons. The bot supervisor
    * ships this into the bot init payload; the bot logs it for verification
    * (CustomSkinLoader on the host's MC client is the real consumer).
    */

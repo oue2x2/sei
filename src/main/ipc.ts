@@ -19,14 +19,14 @@ import type { BotSupervisor } from './botSupervisor';
 export interface IpcHandlerDeps {
   supervisor: BotSupervisor;
   /**
-   * Phase 9 (09-02): returns the loopback skin server's baseUrl, or null if
+   * Returns the loopback skin server's baseUrl, or null if
    * the server failed to bind on boot. Used by the skin:get-server-url IPC
-   * handler (Task 3) to surface the URL to the renderer + wizard. Closure-via-
+   * handler to surface the URL to the renderer + wizard. Closure-via-
    * getter so a future restart of the skin server is observable.
    */
   getSkinServerBaseUrl: () => string | null;
   /**
-   * Phase 9 (09-05): per-step progress sink for the wizard install flow.
+   * Per-step progress sink for the wizard install flow.
    * The orchestrator's `onProgress` callback funnels through here so the IPC
    * handler can push the event onto the `wizard:progress` channel via
    * `webContents.send`. Injected from main/index.ts where `mainWindow` lives.
@@ -36,11 +36,11 @@ export interface IpcHandlerDeps {
 
 /**
  * Canonical persona-id validator. Used by every IPC handler that accepts a
- * characterId — chars.* (Phase 4) AND skin.* (Phase 9 Plan 02).
+ * characterId — chars.* AND skin.*.
  *
- * BLOCKER 1 (09-02-PLAN): previously `z.string().min(1)`. Tightened to a
- * kebab-case slug regex now that Phase 9's skin:apply makes the persona id a
- * filesystem path component (`<userData>/skins/<id>.png`). The regex forbids
+ * Previously `z.string().min(1)`. Tightened to a kebab-case slug regex now
+ * that skin:apply makes the persona id a filesystem path component
+ * (`<userData>/skins/<id>.png`). The regex forbids
  * any character that could escape path.join — `.`, `/`, `\\`, null bytes,
  * whitespace — so a renderer that synthesizes a malformed id (e.g. via a
  * compromised contextBridge surface) is rejected at the IPC boundary BEFORE
@@ -57,14 +57,14 @@ const IdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, {
 const PlaintextSchema = z.string().min(1);
 
 /**
- * Phase 9 (09-02): skin:apply request shape.
+ * skin:apply request shape.
  *
- * `characterId` MUST go through IdSchema (BLOCKER 1) — the persona id becomes
- * a filesystem path component inside skinStore.applyPng. The renderer's
+ * `characterId` MUST go through IdSchema — the persona id becomes a
+ * filesystem path component inside skinStore.applyPng. The renderer's
  * preload bindings never validate; main is the trust boundary.
  *
- * `username` is the per-persona MC in-game name (WARNING 5 / D-09 atomic
- * skin+username write). Validation is delegated to CharacterSchema.parse()
+ * `username` is the per-persona MC in-game name (atomic skin+username
+ * write). Validation is delegated to CharacterSchema.parse()
  * inside saveCharacter — that's where the `^[A-Za-z0-9_]+$` length 1-16
  * regex lives. Empty string after trim = clear (null). Undefined/null = no change.
  */
@@ -132,10 +132,9 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     await resetMemoryForCharacter(id);
   });
 
-  // Phase 9 (09-02): skin pipeline. Plan 02 ships apply + remove +
-  // get-server-url; Plan 03 adds upload + mojang. Lazy-import the skinStore
-  // module inside the handler bodies so a future cyclic import (skinStore
-  // → characterStore → ipc → skinStore) cannot deadlock at module-init time.
+  // Skin pipeline. Lazy-import the skinStore module inside the handler
+  // bodies so a future cyclic import (skinStore → characterStore → ipc →
+  // skinStore) cannot deadlock at module-init time.
   ipcMain.handle(IpcChannel.skin.apply, async (_event, argsRaw: unknown) => {
     const args = ApplySkinArgsSchema.parse(argsRaw);
     const pngBytes = Buffer.from(args.pngBase64, 'base64');
@@ -158,7 +157,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   });
 
   ipcMain.handle(IpcChannel.skin.remove, async (_event, idArg: unknown) => {
-    const id = IdSchema.parse(idArg); // BLOCKER 1 — same strict slug validator as skin:apply
+    const id = IdSchema.parse(idArg); // Same strict slug validator as skin:apply
     if (deps.supervisor.getActiveId() === id) {
       throw new Error('Stop the bot before changing skin. Skin applies on next summon.');
     }
@@ -178,8 +177,8 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     return { baseUrl };
   });
 
-  // Phase 9 (09-03): native file picker for user-supplied skins + Mojang
-  // username search. Both lazy-import the underlying module so a future
+  // Native file picker for user-supplied skins + Mojang username search.
+  // Both lazy-import the underlying module so a future
   // cyclic-import path can't deadlock at module-init time, and so test
   // harnesses that pull in IPC types don't drag electron.dialog / node:crypto
   // into module-eval (same rationale as the skinStore lazy import above).
@@ -204,13 +203,13 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     };
   });
 
-  // Phase 9 (09-05): wizard install pipeline. Same lazy-import discipline as
-  // the skin handlers — keeps the orchestrator + Plan 04 modules out of
-  // module-init time so a cyclic import (wizard → ... → ipc) can't deadlock.
+  // Wizard install pipeline. Same lazy-import discipline as the skin
+  // handlers — keeps the orchestrator + install modules out of module-init
+  // time so a cyclic import (wizard → ... → ipc) can't deadlock.
   //
   // wizard:detect-installs is read-only (scan) so no zod gate needed.
   // wizard:install / wizard:cancel are zod-gated; wizard:cancel's sessionId
-  // is the BLOCKER 2 IPC-crossing routing key that maps to the main-side
+  // is the IPC-crossing routing key that maps to the main-side
   // AbortController in src/main/wizard.ts.
   ipcMain.handle(IpcChannel.wizard.detectInstalls, async () => {
     const { scanMcInstalls } = await import('./mcInstallScan');
@@ -219,7 +218,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   });
 
   ipcMain.handle(IpcChannel.wizard.install, async (_event, argsRaw: unknown) => {
-    // sessionId is REQUIRED (BLOCKER 2) — without it, wizard:cancel has no
+    // sessionId is REQUIRED — without it, wizard:cancel has no
     // routing key. installIds must be non-empty; the renderer should also
     // gate this but defense-in-depth at the IPC boundary. skinServerBaseUrl
     // is the loopback URL captured from skin:get-server-url — must be a
@@ -238,10 +237,10 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   });
 
   ipcMain.handle(IpcChannel.wizard.cancel, async (_event, sessionIdArg: unknown) => {
-    // BLOCKER 2 — the IPC-crossing abort. Resolves immediately after firing
+    // The IPC-crossing abort. Resolves immediately after firing
     // .abort() on the matching controller; the in-flight runWizardInstall
     // promise then rejects (or emits a `cancelled` stage event) through
-    // Plan 04's signal-aware modules. Fire-and-forget — we don't surface the
+    // signal-aware install modules. Fire-and-forget — we don't surface the
     // boolean return of abortWizardSession to the renderer because the user
     // doesn't care whether the cancel raced against a completed install;
     // either way the UI flips to "cancelled" via the progress channel.

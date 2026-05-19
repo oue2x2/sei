@@ -1,4 +1,4 @@
-// Brain ↔ adapter seam (D-5/D-6, Plan 03.1-02). The orchestrator receives
+// Brain ↔ adapter seam (D-5/D-6). The orchestrator receives
 // an `adapter` at construction (see createOrchestrator below) and consumes
 // every game-shaped capability through it:
 //   - adapter.createSnapshotComposer()  (was: ../observers/snapshot)
@@ -42,8 +42,6 @@ export function postProcessSay(s) {
 
 /**
  * Suppress duplicate-consecutive say() within sei:loop_end loops.
- * Closes D-NEW-DM-1/2/3 (and partially WR-03 — the loop_end re-emit chain).
- *
  * Predicate is byte-equality after normalize: lowercase + strip non-alphanumeric +
  * collapse whitespace. Window: 2000ms. Only fires for triggerEvent === 'sei:loop_end'
  * to keep chat-triggered duplication audible (different intent, same words is fine
@@ -81,7 +79,7 @@ export function shouldSuppressLoopEndSay({ triggerEvent, candidateLine, lastSelf
 // Tool names that are personality-only (do not require a follow-up
 // iteration). Anything outside this set is a movement-registry action and
 // keeps the loop running so the model can react to its result.
-// Plan 03.1-04: noteToSelf is personality-only — its result is always
+// noteToSelf is personality-only — its result is always
 // "noted" / "error: …" and never warrants a follow-up iteration on its own.
 // follow/unfollow only mutate the follow target; the actual trailing happens on
 // a 1s background tick (behaviors/follow.js). Treating them as movement keeps
@@ -151,7 +149,7 @@ export function classifyChatEvent(event, data) {
 }
 
 /**
- * Plan 03.1-05 Task 4 (D-E-9, D-H-11): silent-iteration cadence helper.
+ * Silent-iteration cadence helper.
  * Pure mutator — increments loop.iterationsSinceLastSay (or resets to 0 when
  * hadSay is true) and returns whether the next iteration should receive a
  * one-shot soft nudge in its user content.
@@ -243,7 +241,7 @@ export async function composeSeedBlocks({
  *                                     capability flows through this object.
  * @param {object} deps.config
  * @param {{warn:Function,info:Function,error:Function,debug?:Function}} [deps.logger]
- * @param {object} [deps.sessionState] — Phase 3 Plan 3-02 (optional during transition)
+ * @param {object} [deps.sessionState] — optional during transition
  * @param {object} [deps.playerStore]   — { loadPlayer, savePlayer, formatPlayerSeedBlock }
  * @param {(event:string, data:any, priority?:number) => void} [deps.reenqueue]
  *   Brain-side dispatcher. Used by the orchestrator to re-fire events
@@ -295,11 +293,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // "do it" need player context; loopHistory keeps the bot from re-asking
   // questions or rediscovering tasks across cold-composed loops).
   const convoMemory = createConvoMemory()
-// Phase 3 D-59: chains is a no-op shim (kept to preserve any stragglers
-  // referencing it from prior phases).
+  // chains is a no-op shim (kept to preserve any stragglers referencing it).
   const chains = createChainTracker({ maxHops: config.llm.max_hops })
 
-  // ─── Phase 3 single-flight Loop state (D-39 / Pitfall 6) ─────────────
+  // ─── Single-flight Loop state (Pitfall 6) ────────────────────────────
   // At most one Loop is active at any time. Idle dispatches are gated on
   // currentLoop === null (D-39 / SPEC A2). Player-chat dispatches that arrive
   // while a Loop is active enter the interrupt path (D-40). Anything else
@@ -519,7 +516,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
 
 /**
- * Plan 03.1-05 Task 3 (D-H-8): dedup helper for PLAYER INTERRUPT preservation.
+ * Dedup helper for PLAYER INTERRUPT preservation.
  * Stores the last-preserved signature on the loop and refuses to re-preserve
  * the same signature. Returns true iff the caller should proceed with
  * preservation. Pure-ish (mutates loop._lastPreservedSig) so the runtime
@@ -650,7 +647,7 @@ function maybeWarnByteCap(loop, warned) {
     if (currentLoop !== null) {
       if (isPlayerChat) {
         const chatText = (data && (data.text ?? data.message)) ?? JSON.stringify(data ?? {})
-        // Plan 03.1-05 Task 3 (D-H-8): PLAYER INTERRUPT dedup. RESEARCH
+        // PLAYER INTERRUPT dedup. RESEARCH
         // theorized a race between the in-flight haiku call and the
         // interrupt-injection (both the chat-receive event and an internal
         // re-fire path could trigger the preservation path). We dedupe on
@@ -698,7 +695,7 @@ function maybeWarnByteCap(loop, warned) {
         // action_complete that arrives normally — but by then, the P0
         // attack semantics are lost.
         //
-        // Plan 03.1-10 (WR-04): if a pending player-chat interrupt was set
+        // If a pending player-chat interrupt was set
         // before this attack arrived, FORWARD the chat text into the next
         // loop. The priority queue runs P0 before P1, so the attack opens a
         // fresh loop first; the chat then arrives as a normal P1 dispatch.
@@ -750,18 +747,17 @@ function maybeWarnByteCap(loop, warned) {
     // it back to 'sei:chat_received'; a natural action_complete sets it to
     // 'sei:action_complete'). Used by runIterations to decide R1-R4 gating.
     loop._currentIterationTrigger = event
-    // Plan 03.1-09 (D-W-7): track goTo cant_reach destinations seen this loop.
+    // Track goTo cant_reach destinations seen this loop.
     // Key: `${x}|${y}|${z}|${range}`. Value: count. On count >= 2 we inject a
     // one-shot nudge referencing the SYSTEM_INSTRUCTIONS Pathfinder rule
     // rather than letting the LLM keep retrying. Per-loop scope so a fresh
     // dispatch starts clean.
     loop._cantReachMap = new Map()
     loop._cantReachNudgedKeys = new Set()
-    // Plan 03.1-05 Task 4: silent-iteration cadence counter for the
-    // progress-narration soft nudge.
+    // Silent-iteration cadence counter for the progress-narration soft nudge.
     loop.iterationsSinceLastSay = 0
     loop._progressNudgeFired = false
-    // Plan 03.1-10 (WR-02): capture the FSM-supplied signal so subsequent
+    // Capture the FSM-supplied signal so subsequent
     // replaceAbortController calls can re-bridge it onto the new internal
     // controller. Without this, only the FIRST external abort routes
     // through; any second-turn external interrupt is silently dropped.
@@ -770,7 +766,7 @@ function maybeWarnByteCap(loop, warned) {
     logger.info?.(`[sei/orch] loop start (id=${loop.id}, event=${event})`)
     const byteWarn = { flag: false }
 
-    // Compose the first user turn (D-45 / Plan 3-02). When the memory layer
+    // Compose the first user turn (D-45). When the memory layer
     // is wired (sessionState + playerStore + diary), inject seed_player +
     // seed_diary blocks and mark the turn `seed: true` so Loop preserves
     // them across iterations. Otherwise fall back to event/snapshot only.
@@ -819,7 +815,7 @@ function maybeWarnByteCap(loop, warned) {
     // Bridge: external signal (FSM) -> loop.abortController so handlers
     // respect both. The fresh Loop's controller is what actions hook into.
     //
-    // Plan 03.1-10 (WR-02): bridgeExternalAbort installs the listener and
+    // bridgeExternalAbort installs the listener and
     // is called both at loop creation AND from replaceAbortController on
     // every internal-controller swap. The previous { once: true } listener
     // would be consumed by the first external abort, leaving second-turn
@@ -918,9 +914,9 @@ function maybeWarnByteCap(loop, warned) {
             message: pa.preservedInterrupt.chatText,
             playerSpoke: true,
           }, 1 /* Priority.P1_CHAT */)
-          logger.info?.(`[sei/orch] WR-04 preserved interrupt re-enqueued: ${pa.preservedInterrupt.chatText.slice(0, 64)}`)
+          logger.info?.(`[sei/orch] preserved interrupt re-enqueued: ${pa.preservedInterrupt.chatText.slice(0, 64)}`)
         } catch (err) {
-          logger.warn?.(`[sei/orch] WR-04 preserved interrupt re-enqueue failed: ${err.message}`)
+          logger.warn?.(`[sei/orch] preserved interrupt re-enqueue failed: ${err.message}`)
         }
       }
     }
@@ -1592,10 +1588,10 @@ function maybeWarnByteCap(loop, warned) {
       // Append assistant turn raw (preserves tool_use blocks 1:1)
       loop.appendAssistant(buildAssistantContent(resp))
 
-      // Plan 03.1-05 Task 1 (D-1, D-H-1): track responses-received so the
-      // first-turn-say predicate doesn't have to deal with the seed-vs-non-seed
-      // iterationCount divergence (seed user turn doesn't increment, fallback
-      // first user turn does — see loop.js D-44).
+      // Track responses-received so the first-turn-say predicate doesn't have
+      // to deal with the seed-vs-non-seed iterationCount divergence (seed
+      // user turn doesn't increment, fallback first user turn does — see
+      // loop.js).
       loop._responsesReceived = (loop._responsesReceived ?? 0) + 1
 
       const toolUses = resp.toolUses ?? []
@@ -1735,7 +1731,7 @@ function maybeWarnByteCap(loop, warned) {
       // same combined response — no separate movement layer.
       const movementCalls = toolUses.filter(u => !PERSONALITY_NAMES.has(u.name))
 
-      // Plan 03.1-05 Task 2 (D-W-2, D-W-3, D-H-5): cap parallel dig calls at
+      // Cap parallel dig calls at
       // 1 per turn. The first dig executes; subsequent digs synthesize an
       // abort result. Decided cap=1 over chopping-2-block-tree regression
       // (RESEARCH A2): the 5-identical-dig and 7-way-dig storms outweigh the
@@ -1748,7 +1744,7 @@ function maybeWarnByteCap(loop, warned) {
         else _digSeen = true
       }
 
-      // Plan 03.1-05 Task 2 (D-H-6): same-turn follow + attackEntity collapse.
+      // Same-turn follow + attackEntity collapse.
       // combat.js startAttacking already auto-pursues moving mobs, so an
       // explicit follow paired with attackEntity in the SAME tool batch is
       // redundant — and historically produced "target gone" because follow
@@ -1906,7 +1902,7 @@ function maybeWarnByteCap(loop, warned) {
       // tools fired (no movement) the LLM is done — terminal.
       const continueLoop = movementCalls.length > 0
 
-      // Plan 03.1-09 (D-W-7): per-loop cant_reach dedup. If the same goTo
+      // Per-loop cant_reach dedup. If the same goTo
       // destination returned cant_reach twice in this loop and we have NOT
       // already nudged for that key, append a one-shot reminder to the next
       // user turn so the LLM follows the SYSTEM_INSTRUCTIONS Pathfinder rule
@@ -1933,7 +1929,7 @@ function maybeWarnByteCap(loop, warned) {
         }
       }
 
-      // Plan 03.1-05 Task 4 (D-E-9, D-H-11): silent-iteration cadence. If the
+      // Silent-iteration cadence. If the
       // model has gone N iterations without say(), inject a one-shot soft
       // nudge into the next user turn asking it to narrate progress briefly.
       // Reset on every say(). Bracketed format mirrors how PLAYER INTERRUPT
@@ -1941,7 +1937,7 @@ function maybeWarnByteCap(loop, warned) {
       const hadTextThisTurn = respText.length > 0
       const shouldNudge = _advanceIterationCadence({ loop, hadSay: hadTextThisTurn })
       const silenceNudgeText = shouldNudge ? NUDGES.silence : null
-      // Plan 03.1-09 (D-W-7): cant_reach nudge wins over silence nudge — both
+      // cant_reach nudge wins over silence nudge — both
       // happen at "things are not progressing" but cant_reach is the proximate
       // cause and the LLM needs the specific instruction.
       const finalNudgeText = cantReachNudge ?? silenceNudgeText
@@ -1962,8 +1958,8 @@ function maybeWarnByteCap(loop, warned) {
     }
   }
 
-  // Plan 03.1-10 (WR-02): bridge external signal -> loop's CURRENT
-  // abortController. Called once at loop creation AND again from
+  // Bridge external signal -> loop's CURRENT abortController. Called once
+  // at loop creation AND again from
   // replaceAbortController whenever the internal controller is swapped.
   // The closure captures `loop` so the listener always reads the latest
   // loop.abortController via the getter.
@@ -1986,7 +1982,7 @@ function maybeWarnByteCap(loop, warned) {
   // Replace loop.abortController with a fresh one. Required after an abort
   // so subsequent iterations don't immediately see signal.aborted.
   //
-  // Plan 03.1-10 (WR-02): use loop._setAbortController instead of
+  // Use loop._setAbortController instead of
   // Object.defineProperty so the loop's abortController getter cleanly
   // returns the new instance. Then re-bridge the external signal so a
   // SECOND external abort that arrives later in the loop's lifetime is
@@ -2158,10 +2154,10 @@ function maybeWarnByteCap(loop, warned) {
       chains, inflight,
       get currentLoop() { return currentLoop },
       get convoMemory() { return convoMemory },
-      // Plan 3-02 harness seam: expose the cached system blocks so the
-      // verifier can prove PLAYER/MEMORY content does not leak into them.
+      // Harness seam: expose the cached system blocks so the verifier can
+      // prove PLAYER/MEMORY content does not leak into them.
       getCachedSystemBlocks: () => cachedSystemBlocks,
-      // Plan 3-03: brain.start() reads these to construct the compactor
+      // brain.start() reads these to construct the compactor
       // with the SAME anthropic client + cachedSystemBlocks reference
       // (Pitfall 4 cache hit guarantee — cache_control marker stays valid).
       get anthropic() { return anthropic },

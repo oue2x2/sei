@@ -5,8 +5,6 @@
  * instances doesn't overflow the 520px-min-height modal. Each row is a
  * McInstallRow; the list strips the bottom-border on the last row via
  * a :last-child selector in CSS.
- *
- * Source: 09-07-PLAN.md Task 2B; 09-UI-SPEC.md §"Component Inventory".
  */
 
 import React from 'react';

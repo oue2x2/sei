@@ -8,11 +8,11 @@
  *  3. Provider tiles.
  *  4. API key.
  *
- * Submit ordering (WARNING-7 fix — see <changes_made> in PLAN):
- *    saveConfig BEFORE saveApiKey. If saveConfig fails, zero state changes
- *    (clean retry). If saveApiKey fails after saveConfig succeeded, the
- *    inline error surfaces and the user retries; saved UserConfig alone is
- *    harmless because App.tsx gates the home route on `sei.hasApiKey()`.
+ * Submit ordering: saveConfig BEFORE saveApiKey. If saveConfig fails, zero
+ *    state changes (clean retry). If saveApiKey fails after saveConfig
+ *    succeeded, the inline error surfaces and the user retries; saved
+ *    UserConfig alone is harmless because App.tsx gates the home route on
+ *    `sei.hasApiKey()`.
  *
  * isReonboard:
  *  - true → step 0 Back navigates to settings; existing UserConfig fields
@@ -20,7 +20,7 @@
  *    UI-SPEC re-onboarding rule).
  *  - false → step 0 Back is disabled (it's the first run).
  *
- * Source: 04-07 Task 2; UI-SPEC §Onboarding.
+ * Source: UI-SPEC §Onboarding.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -82,7 +82,7 @@ export function OnboardingScreen({ isReonboard }: OnboardingScreenProps): React.
       setStep((s) => s + 1);
       return;
     }
-    // Final submit (step 4). saveConfig BEFORE saveApiKey (WARNING-7 fix).
+    // Final submit (step 4). saveConfig BEFORE saveApiKey.
     setError(null);
     setSubmitting(true);
     try {

@@ -10,7 +10,7 @@
  *   - Every `append(line)` call parses + classifies the line, writes a copy
  *     to a per-character rolling file, and queues a structured LogEntry for
  *     the next batched IPC flush.
- *   - Multi-line state machine (Phase 5 / Plan 05-03): physical lines between a
+ *   - Multi-line state machine: physical lines between a
  *     matching `[ts] [tag] begin` and `[ts] [tag] end` sentinel pair are coalesced
  *     into ONE LogEntry whose `message` carries the full multi-line body joined
  *     by `\n`. Dropped-end recovery (new begin while an event is open, or close()
@@ -38,7 +38,7 @@ const HARD_BUFFER_CAP = 1000;
 const TAG_RE = /^\[\d{2}:\d{2}:\d{2}\.\d{3}\]\s+(\[[^\]]+\])/;
 
 // Matches `[HH:MM:SS.mmm] [tag] begin` and `... end` (the only legal sentinel
-// suffixes emitted by src/bot/brain/log.js post-Phase-5).
+// suffixes emitted by src/bot/brain/log.js).
 const SENTINEL_RE = /^\[\d{2}:\d{2}:\d{2}\.\d{3}\]\s+(\[[^\]]+\])\s+(begin|end)\s*$/;
 
 function classify(line: string): { tag: string | null; level: 'info' | 'warn' | 'error' } {
@@ -71,7 +71,7 @@ export async function createLogRouter(opts: LogRouterOptions): Promise<LogRouter
   let dropped = 0;
   let closed = false;
 
-  // Multi-line event state (Plan 05-03). When openTag !== null, we are inside
+  // Multi-line event state. When openTag !== null, we are inside
   // a `[ts] [tag] begin` ... `[ts] [tag] end` block and continuation lines
   // accumulate in openLines until a matching end sentinel finalizes the event.
   let openTag: string | null = null;

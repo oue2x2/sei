@@ -76,7 +76,7 @@ export type BotLifecycle =
   | { type: 'exit'; code: number | null };
 
 /* -------------------------------------------------------------------------- */
-/*  Phase 9 — skin pipeline + setup-wizard domain types                        */
+/*  Skin pipeline + setup-wizard domain types                                  */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -170,7 +170,7 @@ export interface RendererApi {
   // App-level one-shot queries
   getStartupWarnings(): Promise<StartupWarnings>;
 
-  // --- Phase 9: Skin pipeline (Plan 02/03) ---
+  // --- Skin pipeline ---
   /**
    * Apply an already-validated PNG (from upload or Mojang search) as the persona's skin, AND
    * update the persona's per-persona MC username, atomically (single saveCharacter call).
@@ -188,7 +188,7 @@ export interface RendererApi {
   /** Returns the loopback URL prefix that CustomSkinLoader is configured against (e.g. 'http://127.0.0.1:54321'). */
   getSkinServerUrl(): Promise<{ baseUrl: string }>;
 
-  // --- Phase 9: Setup wizard (Plan 04 modules + Plan 05 orchestrator) ---
+  // --- Setup wizard ---
   /** Scan known Minecraft launcher + CurseForge paths on the current platform. */
   detectMcInstalls(): Promise<{ installs: McInstall[] }>;
   /**
@@ -254,7 +254,7 @@ export const IpcChannel = {
     warnings: 'app:warnings',
     updateAvailable: 'app:update-available',
   },
-  // Phase 9 (09-01) — skin pipeline. Handlers register in Plan 02/03.
+  // Skin pipeline.
   skin: {
     apply: 'skin:apply',
     remove: 'skin:remove',
@@ -262,10 +262,9 @@ export const IpcChannel = {
     searchMojang: 'skin:search-mojang',
     getServerUrl: 'skin:get-server-url',
   },
-  // Phase 9 (09-01) — setup wizard. Handlers register in Plan 04/05.
-  // `cancel` crosses the IPC boundary to abort an in-flight install — a
-  // renderer-local AbortController cannot reach the main-process child
-  // running `java -jar fabric-installer` (BLOCKER 2 of 09-01-PLAN).
+  // Setup wizard. `cancel` crosses the IPC boundary to abort an in-flight
+  // install — a renderer-local AbortController cannot reach the main-process
+  // child running `java -jar fabric-installer`.
   // `progress` is a push channel (main → renderer) for per-install progress events.
   wizard: {
     detectInstalls: 'wizard:detect-installs',

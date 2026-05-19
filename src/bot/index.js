@@ -1,4 +1,4 @@
-// src/bot/index.js — bot entry, dual-mode for Phase 4.
+// src/bot/index.js — bot entry, dual-mode.
 //
 // Two startup paths:
 //   1. Forked by Electron main (process.parentPort exists)
@@ -104,8 +104,8 @@ export async function start(config, hooks = {}) {
       },
       onEnd: (humanizedReason) => {
         if (_stopped) return
-        // Plan 03.1-09 (WR-07): tear down adapter listeners before discarding
-        // the bot reference. Otherwise the OLD bot's listeners only become
+        // Tear down adapter listeners before discarding the bot reference.
+        // Otherwise the OLD bot's listeners only become
         // GC-eligible when the closure releases, leaving a window where the
         // adapter still has dangling listeners on a dead mineflayer instance.
         try { _adapter?.detach?.() } catch {}
@@ -176,7 +176,7 @@ export async function start(config, hooks = {}) {
     // fast-path body-cancel was previously a synchronous side-effect of
     // chat.js when given an orchestrator; with the brain↔adapter seam,
     // that fast path runs through the normal queue (one extra Haiku
-    // round-trip on "stop"). Plan 03.1-03 polishes this.
+    // round-trip on "stop").
     try { _bot._sei_startChat?.(null) } catch (err) {
       logger.warn(`startChat hookup failed: ${err && err.message}`)
     }
@@ -191,8 +191,8 @@ export async function start(config, hooks = {}) {
       if (_brain) {
         try { await _brain.stop() } catch {}
       }
-      // Plan 03.1-09 (WR-07): same teardown as onEnd to guarantee clean
-      // listener disposal on graceful shutdown, not just on reconnect.
+      // Same teardown as onEnd to guarantee clean listener disposal on
+      // graceful shutdown, not just on reconnect.
       try { _adapter?.detach?.() } catch {}
       _adapter = null
       if (_bot) {
@@ -204,7 +204,7 @@ export async function start(config, hooks = {}) {
   }
 }
 
-// ─── Electron utilityProcess path (Phase 4) ───────────────────────────────
+// ─── Electron utilityProcess path ─────────────────────────────────────────
 // When forked by main, wait for the init message on the transferred
 // MessagePort, build a ConfigSchema-conformant config, and bootstrap.
 // Lifecycle events go to BOTH parentPort (structured for status row) AND
@@ -231,11 +231,11 @@ async function bootstrapWithInit(initData) {
     apiKey,
     lanPort,
     userDataDir,
-    mc_username,         // BLOCKER-4: Minecraft username collected in onboarding
+    mc_username,         // Minecraft username collected in onboarding
     preferred_name,      // seeds player_username for player-recognition
-    skinServerBaseUrl,   // Phase 9 (09-02): logged for verification; the real consumer is
+    skinServerBaseUrl,   // Logged for verification; the real consumer is
                          // CustomSkinLoader on the host's MC client. The bot itself never
-                         // hits this URL — the wizard (Plan 04/05) stamps it into
+                         // hits this URL — the setup wizard stamps it into
                          // customskinloader.json on the user's MC install.
   } = initData
 
@@ -275,11 +275,10 @@ async function bootstrapWithInit(initData) {
     const cleaned = String(s || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 16)
     return cleaned || 'Sei'
   }
-  // Phase 9 (09-02): prefer per-persona character.username over the legacy
-  // sanitized name fallback. The username field (added in Plan 01) has regex
-  // /^[A-Za-z0-9_]+$/ + length cap 16 baked into CharacterSchema, so it's
-  // already MC-valid by the time it reaches this code. Null/empty falls back
-  // to the sanitized persona name — the same behavior as before Phase 9.
+  // Prefer per-persona character.username over the legacy sanitized name
+  // fallback. The username field has regex /^[A-Za-z0-9_]+$/ + length cap 16
+  // baked into CharacterSchema, so it's already MC-valid by the time it
+  // reaches this code. Null/empty falls back to the sanitized persona name.
   const bot_mc_username = (typeof character.username === 'string' && character.username.trim())
     ? character.username.trim()
     : sanitizeMcName(character.name)
@@ -371,8 +370,8 @@ async function bootstrapWithInit(initData) {
     `(mc_username=${config.adapter.minecraft.username}, ` +
     `player=${config.player_username}, version=${config.adapter.minecraft.version})`,
   )
-  // Phase 9 (09-02): log the skin-server URL so a developer running
-  // `npm run dev` can confirm the supervisor → bot init handover. The bot
+  // Log the skin-server URL so a developer running `npm run dev` can
+  // confirm the supervisor → bot init handover. The bot
   // never fetches from this URL (CustomSkinLoader on the host's MC client is
   // the actual consumer); this line exists purely for verification.
   if (skinServerBaseUrl) {

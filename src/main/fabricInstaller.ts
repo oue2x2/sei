@@ -1,9 +1,9 @@
 /**
- * Fabric Loader headless installer (Phase 9 Plan 04 Task 2B).
+ * Fabric Loader headless installer.
  *
  * Three-step flow:
  *   1. Locate a runnable Java executable. Probes Minecraft's bundled JRE
- *      FIRST (BLOCKER 3 — under `<mcDir>/runtime/java-runtime-gamma/...`)
+ *      FIRST (under `<mcDir>/runtime/java-runtime-gamma/...`)
  *      then falls back to system PATH. If neither exists, throws
  *      FABRIC_INSTALL_FAILED with a corrected error message pointing the
  *      user at the launcher's bundled-Java install path — NOT asking the
@@ -20,7 +20,7 @@
  * Cross-cutting:
  *   - Every external call has a wall-clock timeout per CLAUDE.md.
  *   - AbortSignal threads from opts.signal through every fetch + execFile
- *     so Plan 05's IPC cancel (BLOCKER 2) aborts in-flight work.
+ *     so the IPC cancel aborts in-flight work.
  *   - `execFile` not `exec` — arguments are an array, no shell
  *     interpolation possible.
  *   - The installer writes the Fabric entry to `launcher_profiles.json`
@@ -28,11 +28,10 @@
  *     dropdown on next launch.
  *
  * Sources:
- *   - 09-04-PLAN Task 2B
  *   - Fabric meta API: https://meta.fabricmc.net/v2/versions/installer
  *   - Fabric loader API: https://meta.fabricmc.net/v2/versions/loader/<mc-version>
  *   - Fabric installer Maven: https://maven.fabricmc.net/net/fabricmc/fabric-installer/<v>/fabric-installer-<v>.jar
- *   - src/main/mcInstallScan.ts (findBundledJava — BLOCKER 3 probe)
+ *   - src/main/mcInstallScan.ts (findBundledJava — bundled-JRE probe)
  *   - src/main/personaExpansion.ts (30s timeout pattern)
  */
 import { execFile as execFileCb } from 'node:child_process';
@@ -66,7 +65,7 @@ const ZIP_MAGIC = [0x50, 0x4B, 0x03, 0x04] as const;
 
 /**
  * Compose two AbortSignals: the wall-clock timeout AND the user-supplied
- * signal (Plan 05's wizard cancel). If either fires, the underlying fetch
+ * signal (the wizard cancel). If either fires, the underlying fetch
  * is aborted. Returns the composed signal + a cleanup that clears the timer.
  */
 function composedAbort(
@@ -134,12 +133,12 @@ async function fetchBytesWithTimeout(
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Public: findJavaExecutable (BLOCKER 3 — bundled-first probe)               */
+/*  Public: findJavaExecutable (bundled-first probe)                            */
 /* -------------------------------------------------------------------------- */
 
 /**
  * Return an absolute path to a runnable Java executable. Probes the bundled
- * JRE inside the user's MC install FIRST (BLOCKER 3); falls back to system
+ * JRE inside the user's MC install FIRST; falls back to system
  * PATH only if the bundle is absent. Returns null when neither is available.
  *
  * The bundled-first probe is what makes the wizard work without the user
@@ -242,7 +241,7 @@ export interface InstallFabricLoaderOpts {
   loaderVersion?: string;
   /** Progress callback — currently called at three milestones (0/30/90). */
   onProgress?: (pct: number) => void;
-  /** Plan 05 threads this through from main's Map<sessionId, AbortController>. */
+  /** Threaded through from main's Map<sessionId, AbortController>. */
   signal?: AbortSignal;
 }
 
@@ -265,7 +264,7 @@ export async function installFabricLoader(
     throw new Error('FABRIC_INSTALL_FAILED: cancelled');
   }
 
-  // ── Java probe (BLOCKER 3) ────────────────────────────────────────────
+  // ── Java probe ────────────────────────────────────────────────────────
   const javaPath = await findJavaExecutable(mcInstall);
   if (!javaPath) {
     throw new Error(

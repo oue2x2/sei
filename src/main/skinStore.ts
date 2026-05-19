@@ -1,19 +1,19 @@
 /**
- * Per-persona skin PNG storage (Phase 9, Plan 02).
+ * Per-persona skin PNG storage.
  *
  * Responsibilities:
  *   - applyPng: validate PNG magic + IHDR (64×64 RGBA), write atomically under
  *     <userData>/skins/<personaId>.png, then persist skin descriptor + optional
- *     per-persona MC username via a SINGLE saveCharacter call (atomic two-field
- *     update per WARNING 5 of 09-02-PLAN — never half-applied).
+ *     per-persona MC username via a SINGLE saveCharacter call (atomic
+ *     two-field update — never half-applied).
  *   - removePng: unlink user-applied PNG (best-effort) and reset skin descriptor
  *     to 'bundled' for default personas / 'none' for user-created personas.
  *   - resolveSkinPng: source-of-truth lookup the HTTP server uses to translate
  *     a request URL into bytes (honors `skin.source`).
  *   - readSkinPng: pure helper from username → character lookup → resolveSkinPng.
  *
- * Bundled PNGs ship under `resources/skins/<id>.png` (sui/lyra/clawd from
- * Plan 01 Task 2). The asarUnpack entry in electron-builder.yml exposes them at
+ * Bundled PNGs ship under `resources/skins/<id>.png` (sui/lyra/clawd). The
+ * asarUnpack entry in electron-builder.yml exposes them at
  * `<process.resourcesPath>/app.asar.unpacked/resources/skins/` in packaged builds.
  *
  * Path-traversal safety: every caller MUST validate personaId via main/ipc.ts's
@@ -23,7 +23,6 @@
  * its input.
  *
  * Sources:
- *   - 09-02-PLAN Task 1
  *   - CONTEXT.md §decisions "Skin serving: local HTTP, loopback only by default"
  *   - characterStore.ts (atomic-write + index-update pattern mirrored here)
  */
@@ -45,8 +44,8 @@ import type { Character, Skin, SkinSource } from '../shared/characterSchema';
  *
  * Packaged build: bundled PNGs live under
  *   <resourcesPath>/app.asar.unpacked/resources/skins/<id>.png
- * (asarUnpack entry was added in Plan 01 Task 2 so the binary PNGs survive
- * packaging — they would otherwise be trapped inside the read-only app.asar).
+ * The asarUnpack entry exposes the binary PNGs at runtime — they would
+ * otherwise be trapped inside the read-only app.asar.
  *
  * Dev: the compiled main module lives at <repo>/dist/main/skinStore.js (or via
  * electron-vite's dev pipeline), so two `..` levels reach the repo root and
@@ -90,7 +89,7 @@ export async function resolveSkinPng(character: Character): Promise<Buffer | nul
 /**
  * Apply a PNG: validate magic+IHDR, write atomically, sha256-verify, patch the
  * character's skin descriptor, optionally update per-persona MC username,
- * persist via a SINGLE saveCharacter call (atomic two-field update per WARNING 5).
+ * persist via a SINGLE saveCharacter call (atomic two-field update).
  *
  * `username` argument semantics:
  *   - undefined → leave the persisted username untouched (skin-only update)
@@ -100,7 +99,7 @@ export async function resolveSkinPng(character: Character): Promise<Buffer | nul
  *     inside saveCharacter validates the regex `^[A-Za-z0-9_]+$` + length 1-16)
  *
  * Defense-in-depth: we re-validate PNG bytes here even though the renderer's
- * upload dialog (Plan 03) and the IPC schema both reject non-PNG input. Main
+ * upload dialog and the IPC schema both reject non-PNG input. Main
  * is the trust boundary — never assume the renderer already validated.
  */
 export async function applyPng(args: {
@@ -123,7 +122,7 @@ export async function applyPng(args: {
       pngBytes[2] !== 0x4E || pngBytes[3] !== 0x47) {
     throw new Error('applyPng: not a PNG (magic-byte mismatch)');
   }
-  // Plan 03's mojangSkinLookup normalizes legacy 64×32 skins to 64×64 BEFORE
+  // mojangSkinLookup normalizes legacy 64×32 skins to 64×64 BEFORE
   // handing the buffer here; applyPng can safely reject anything that isn't
   // 64×64 as a defense-in-depth check against a renderer that bypasses the
   // upload validator.
@@ -162,7 +161,7 @@ export async function applyPng(args: {
   }
   // null / undefined → leave character.username unchanged
 
-  // SINGLE atomic write — this is the WARNING 5 fix. Skin descriptor + username
+  // SINGLE atomic write. Skin descriptor + username
   // land together so the persisted character is never half-applied.
   await saveCharacter({ ...character, skin: newSkin, username: nextUsername });
   return { skin: newSkin, username: nextUsername };
@@ -171,7 +170,7 @@ export async function applyPng(args: {
 /**
  * Reset a persona's skin. Defaults revert to 'bundled', user-created revert to
  * 'none'. The username is NOT touched — the user can clear it independently
- * via the skin editor's username field (Plan 06).
+ * via the skin editor's username field.
  *
  * The on-disk PNG under <userData>/skins/<id>.png is unlinked best-effort; if
  * the user never applied one (source was 'bundled' or 'none' all along), the
@@ -201,7 +200,7 @@ export async function removePng(personaId: string): Promise<Skin> {
  * matching character, calls resolveSkinPng.
  *
  * Username match strategy (loose, on purpose):
- *   1. Exact match on `character.username` (the per-persona field added in Plan 01)
+ *   1. Exact match on `character.username` (the per-persona field)
  *   2. Sanitized-name fallback (`sanitizeMcName(character.name)`) so a renderer
  *      that hasn't wired character.username yet still gets correct bundled-skin
  *      behavior on first launch — mirrors src/bot/index.js's sanitizeMcName.

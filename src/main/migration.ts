@@ -100,7 +100,7 @@ export async function runFirstLaunchMigration(
     last_launched: null,
     playtime_ms: 0,
     portrait_image: null,
-    // Phase 9 (09-01): new schema fields. Migrated legacy sui has no skin yet —
+    // New schema fields. Migrated legacy sui has no skin yet —
     // first-launch seedDefaultCharacters won't run for an already-existing id,
     // so the migrated sui stays on the 'none' skin until the user picks one.
     skin: { source: 'none', mojang_username: null, png_sha256: null, applied_at: null },
@@ -116,7 +116,7 @@ export async function runFirstLaunchMigration(
   }
 
   // Strip persona from legacy file (idempotent — running twice is harmless).
-  // WARNING-8 fix: only attempt to mutate the cwd legacy file when running
+  // Only attempt to mutate the cwd legacy file when running
   // unpackaged (dev clone). In packaged builds the cwd is typically the
   // installer dir / signed Sei.app bundle, which is read-only — writeFile
   // would throw EROFS and noisily mark the otherwise-clean migration as

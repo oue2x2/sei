@@ -1,6 +1,6 @@
 // src/bot/brain/log.js — transparent live logging for debugging.
 //
-// Phase 5 (D-1, D-3, D-9): event-per-line multi-line emission.
+// Event-per-line multi-line emission.
 //   - Each event opens with `[ts] [tag] begin` and closes with `[ts] [tag] end`,
 //     sharing ONE timestamp captured at the start of the call.
 //   - Continuation lines are indented exactly 2 spaces; multi-line section
@@ -168,7 +168,7 @@ export function logHaikuQuery({ messages, tools, systemBlocks, namedUserBlocks }
     }
   }
 
-  // 5e. Fallback — no namedUserBlocks yet (Plan 05-02 wires the orchestrator).
+  // 5e. Fallback — no namedUserBlocks yet.
   if (userBodyLines.length === 0) {
     userBodyLines.push(`raw: ${safeStringify(messages?.[messages.length - 1]?.content)}`)
   }

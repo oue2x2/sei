@@ -1,16 +1,16 @@
 /**
  * Loopback-only HTTP server that CustomSkinLoader (running inside the host's
- * Minecraft client) fetches persona skins from (Phase 9, Plan 02).
+ * Minecraft client) fetches persona skins from.
  *
  * Bind: 127.0.0.1 ONLY. NEVER bind 0.0.0.0 — that would expose persona skins
  * to the LAN AND trigger macOS / Windows firewall prompts the user doesn't
- * need to see. The literal '127.0.0.1' in `server.listen` is asserted by the
- * Plan 02 acceptance criterion (regex-anchored grep) so a future edit can't
- * accidentally widen the bind.
+ * need to see. The literal '127.0.0.1' in `server.listen` is asserted by an
+ * acceptance regex-anchored grep so a future edit can't accidentally widen
+ * the bind.
  *
  * Port: 0 (OS-chosen ephemeral). The bound port is exposed via `.port` /
- * `.baseUrl` so the wizard's CustomSkinLoader-config writer (Plan 04) can
- * stamp it into `customskinloader.json` at install time.
+ * `.baseUrl` so the wizard's CustomSkinLoader-config writer can stamp it
+ * into `customskinloader.json` at install time.
  *
  * URL contract: GET `/skins/<username>.png` ONLY. The regex
  *   `^/skins/([A-Za-z0-9_]{1,16})\.png(\?.*)?$`
@@ -25,9 +25,8 @@
  * retry loop.
  *
  * Sources:
- *   - 09-02-PLAN Task 2
  *   - CONTEXT.md §decisions "Skin serving: local HTTP, loopback only by default"
- *   - threat_model T-09-I1 (path traversal via /skins/...) — mitigated by regex
+ *   - threat model: path traversal via /skins/... — mitigated by regex
  */
 import http from 'node:http';
 import { readSkinPng } from './skinStore';
@@ -117,9 +116,8 @@ export async function createSkinServer(args: { port?: number } = {}): Promise<Sk
     };
     server.once('error', onError);
     server.once('listening', onListening);
-    // 127.0.0.1 ONLY. The literal string is asserted by Plan 02 acceptance
-    // criterion — never widen to 0.0.0.0 without a corresponding plan + threat
-    // model update (would expose persona skins to LAN + trigger firewall prompts).
+    // 127.0.0.1 ONLY. Never widen to 0.0.0.0 — that would expose persona
+    // skins to the LAN AND trigger firewall prompts the user doesn't need.
     server.listen(args.port ?? 0, '127.0.0.1');
   });
 

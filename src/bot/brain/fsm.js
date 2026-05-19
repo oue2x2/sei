@@ -145,7 +145,7 @@ export function createPriorityQueue({ onDispatch, idleFallbackMs = 60_000, logge
 
     // Skip lower-priority events while a higher-priority action runs
     if (currentAction && item.priority > currentAction.priority) {
-      // Plan 03.1-10 (WR-01): re-queue and KEEP processing=true so the
+      // Re-queue and KEEP processing=true so the
       // in-flight action's trailing drain (`if (queue.length > 0)
       // setImmediate(processNext)` below) re-schedules processNext after
       // the holder completes. Previously this set `processing = false`

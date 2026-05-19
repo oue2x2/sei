@@ -45,8 +45,8 @@ const TargetShape = z.object({
 
 const Vec3Shape = z.object({ x: z.number(), y: z.number(), z: z.number() })
 
-// Phase 7 (D-01, D-11): cuboid dig schema. Extends TargetShape with optional
-// `to` for cuboid mode + matching 256-cell cap. Single-cell dispatch unchanged.
+// Cuboid dig schema. Extends TargetShape with optional `to` for cuboid mode
+// + matching 256-cell cap. Single-cell dispatch unchanged.
 const DigSchema = z.object({
   block: z.string().optional(),
   target: z.string().optional(),
@@ -71,8 +71,8 @@ const DigSchema = z.object({
   { message: 'cuboid dig too large (>256 cells) or missing explicit from coords (need x,y,z when using to)' }
 )
 
-// Phase 7 (D-01, D-02, D-11): cuboid build schema. Schema-layer cell cap
-// prevents any expensive side effect from running with an out-of-bounds cuboid.
+// Cuboid build schema. Schema-layer cell cap prevents any expensive side
+// effect from running with an out-of-bounds cuboid.
 const BuildSchema = z.object({
   from: Vec3Shape,
   to: Vec3Shape,
@@ -89,12 +89,12 @@ const BuildSchema = z.object({
 )
 
 /**
- * Plan 03.1-05 Task 3 (D-H-9): coords-at-known-player detector. When goTo is
- * called with (x, y, z) that match a known player's current position to
- * within ~1.5 blocks, treat it as "go to the player" and bump the default
- * range to 2 so the bot stops at conversation distance instead of trying to
- * stand on top of them. The LLM emitted goTo with range=0 when sent to a
- * player and then sat in pathfind retries; default range:2 closes that loop.
+ * Coords-at-known-player detector. When goTo is called with (x, y, z) that
+ * match a known player's current position to within ~1.5 blocks, treat it as
+ * "go to the player" and bump the default range to 2 so the bot stops at
+ * conversation distance instead of trying to stand on top of them. The LLM
+ * emitted goTo with range=0 when sent to a player and then sat in pathfind
+ * retries; default range:2 closes that loop.
  */
 function isCoordsAtKnownPlayer(bot, x, y, z) {
   if (!bot?.players) return false
@@ -125,8 +125,8 @@ export function createDefaultRegistry() {
     }),
     async (args, bot, config) => {
       const timeoutMs = config?.pathfinder_timeout_ms ?? 12000
-      // Plan 03.1-05 Task 3 (D-H-9): default range:2 when target matches a
-      // known player's position. Only kicks in when the LLM omitted range
+      // Default range:2 when target matches a known player's position.
+      // Only kicks in when the LLM omitted range
       // (Zod default fired range=1) and the coords align with a player.
       let range = args.range
       if (range <= 1 && isCoordsAtKnownPlayer(bot, args.x, args.y, args.z)) {
@@ -141,8 +141,8 @@ export function createDefaultRegistry() {
 
   registry.register('dig', DigSchema, digAction)
 
-  // Phase 6 (D-NEW-SCAV-2): `find` resolves a loose term or exact MC ID to the
-  // nearest loaded-chunk hit. Does NOT move the bot — returns
+  // `find` resolves a loose term or exact MC ID to the nearest loaded-chunk
+  // hit. Does NOT move the bot — returns
   // `{found,id,pos,distance}` or `{found:false,reason}`. NaN-safe origin via
   // getHealedPos.
   registry.register('find',
@@ -310,8 +310,8 @@ export function createDefaultRegistry() {
     z.object({}),
     async () => {
       setFollowTarget(null)
-      // Plan 03.1-09 (D-H-16): assert post-condition — the snapshot's
-      // follow_target line reads `(none)` immediately after this returns.
+      // Assert post-condition — the snapshot's follow_target line reads
+      // `(none)` immediately after this returns.
       // Returning the readback in the result string surfaces the clear to
       // the LLM (replaces the old generic 'unfollowed' string).
       const label = getFollowTargetLabel()

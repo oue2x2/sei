@@ -1,13 +1,10 @@
 /**
  * UsernameSearchField — TextField + "Look up" button + inline result state.
  *
- * Wraps `sei.searchMojangSkin(name)` (Plan 03 handler) with the verbatim UI-SPEC
- * error/success copy. Every failure path from main throws an Error whose message
- * begins with `MOJANG_LOOKUP_FAILED: <stage>: <human-readable>`; we route on the
- * human-readable suffix to surface the exact error copy from UI-SPEC §"Skin
- * editor — copy".
- *
- * Source: 09-UI-SPEC.md §"Skin editor (persona page section) — copy"
+ * Wraps `sei.searchMojangSkin(name)` with the error/success copy. Every failure
+ * path from main throws an Error whose message begins with
+ * `MOJANG_LOOKUP_FAILED: <stage>: <human-readable>`; we route on the
+ * human-readable suffix to surface the right copy variant:
  *   - success:        "Found {Name}'s current skin."
  *   - no-such-user:   "No Minecraft account named {input}. Check the spelling."
  *   - rate-limited:   "Mojang is rate-limiting lookups. Wait a minute and try again."
@@ -42,10 +39,9 @@ type FieldState =
   | { kind: 'error'; copy: string; isNetwork: boolean };
 
 /**
- * Map the main-side error message to one of the four UI-SPEC copy variants.
- * Plan 03's mojangSkinLookup.ts prefixes every throw with `MOJANG_LOOKUP_FAILED:`
- * followed by stage + human-readable detail; we route on substring matches
- * that the planner specified verbatim.
+ * Map the main-side error message to one of the four copy variants.
+ * `mojangSkinLookup.ts` prefixes every throw with `MOJANG_LOOKUP_FAILED:`
+ * followed by stage + human-readable detail; we route on substring matches.
  */
 function mapMojangError(
   rawMessage: string,

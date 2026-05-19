@@ -3,16 +3,12 @@
  *
  * Behaviors:
  *   - Click / Enter / Space → invoke the Electron native file picker via
- *     `sei.uploadSkinPng()` (Plan 03 handler). On success, hand the bytes
- *     to `onUpload`. On cancel, no-op. On error, surface the classifier's
- *     copy via `onError`.
+ *     `sei.uploadSkinPng()`. On success, hand the bytes to `onUpload`. On
+ *     cancel, no-op. On error, surface the classifier's copy via `onError`.
  *   - Drag a File from the OS shell → validate PNG type, magic, and 64×64
  *     dimensions client-side (defense-in-depth against the main-side gate
  *     already in skinUpload.ts), compute sha256 via Web Crypto, hand bytes
  *     to `onUpload`. On any failure: `onError(ERROR_COPY.SKIN_FILE_INVALID)`.
- *
- * Source: 09-UI-SPEC.md §"Skin editor — copy" (verbatim copy below) +
- * §"Interaction States" (resting / hover / focus / drag-over).
  *
  * a11y:
  *   - root is `role="button" tabIndex=0`; Enter/Space activates the picker

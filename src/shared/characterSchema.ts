@@ -24,11 +24,11 @@ export const PersonaSchema = z.object({
 export type Persona = z.infer<typeof PersonaSchema>;
 
 /**
- * Per-persona skin descriptor (Phase 9).
+ * Per-persona skin descriptor.
  *
  * Captures where the active skin came from so the renderer can show the right
  * empty/loaded states in the SkinEditor AND so the local skin HTTP server
- * (Plan 03) can resolve `/skins/<username>.png` deterministically:
+ * can resolve `/skins/<username>.png` deterministically:
  *
  *   - 'bundled'  → ships under `resources/skins/<id>.png` (the 3 default personas)
  *   - 'upload'   → user-supplied PNG saved at `<userData>/skins/<id>.png`
@@ -39,7 +39,7 @@ export type Persona = z.infer<typeof PersonaSchema>;
  *                  to default Steve/Alex from CustomSkinLoader)
  *
  * Source: CONTEXT.md §decisions "Skin source: bundled PNG + username search" +
- *         09-UI-SPEC.md §Skin editor copy ("empty state", "Default skin badge").
+ *         UI spec for skin editor copy ("empty state", "Default skin badge").
  */
 export const SkinSourceSchema = z.enum(['bundled', 'upload', 'username', 'none']);
 export type SkinSource = z.infer<typeof SkinSourceSchema>;
@@ -62,11 +62,11 @@ export type Skin = z.infer<typeof SkinSchema>;
  * 260516-0yw: `description` + `persona_prompt` replaced by `persona`
  * object — see PersonaSchema docblock above.
  *
- * Phase 9 (09-01): `skin` (SkinSchema) + `username` (per-persona MC in-game
- * name) added. `username` is null by default so existing bot connect logic
- * (`sanitizeMcName(character.name)` in src/bot/index.js:270-280) keeps working
- * until the user sets one in the SkinEditor. Regex `^[A-Za-z0-9_]+$` + 16-char
- * cap match Minecraft's username constraints.
+ * `skin` (SkinSchema) + `username` (per-persona MC in-game name): `username`
+ * is null by default so existing bot connect logic
+ * (`sanitizeMcName(character.name)` in src/bot/index.js) keeps working until
+ * the user sets one in the SkinEditor. Regex `^[A-Za-z0-9_]+$` + 16-char cap
+ * match Minecraft's username constraints.
  */
 export const CharacterSchema = z.object({
   id: z.string().min(1),                              // slug, kebab-case
@@ -77,7 +77,7 @@ export const CharacterSchema = z.object({
   last_launched: z.string().nullable().default(null), // ISO or null (D-11)
   playtime_ms: z.number().int().min(0).default(0),    // accumulated (D-11)
   portrait_image: z.string().nullable().default(null),// optional override file (D-14)
-  // Phase 9 — bot skin + per-persona in-game username
+  // Bot skin + per-persona in-game username
   skin: SkinSchema.default({ source: 'none', mojang_username: null, png_sha256: null, applied_at: null }),
   username: z.string().min(1).max(16).regex(/^[A-Za-z0-9_]+$/).nullable().default(null),
 });

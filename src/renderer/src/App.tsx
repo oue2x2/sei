@@ -15,10 +15,7 @@
  *  6. Render modal layer (LanModal) and toast layer (SummonToast on summon
  *     transitions) above the main view.
  *
- * Plan 08 fills the final two screen placeholders (CharacterPage + Settings),
- * adds the modal/toast layers, and removes the placeholder defs from this file.
- *
- * Source: 04-CONTEXT.md D-15/D-17/D-33/D-35, 04-UI-SPEC.md §Animation Tokens
+ * Source: CONTEXT.md D-15/D-17/D-33/D-35, UI-SPEC.md §Animation Tokens
  *         (LoadingScreen 1.6s floor) + §Interaction Contracts → Theme toggle +
  *         §Summon flow (toast on summon).
  */
@@ -149,7 +146,7 @@ export function App(): React.ReactElement {
     };
   }, [bootStartedAt, navigate, setThemeMode]);
 
-  // ── First-launch skin-setup wizard trigger (Phase 9 plan 07) ──────────
+  // ── First-launch skin-setup wizard trigger ─────────────────────────────
   // Auto-open SetupWizardModal when:
   //   1. The user has finished onboarding (hasApiKey === true) — don't pop
   //      the wizard during API-key entry,

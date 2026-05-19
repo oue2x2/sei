@@ -30,8 +30,7 @@ export const ERROR_COPY: Record<ErrorClass, string> = {
   KEYCHAIN_LOCKED: "Couldn't read your saved API key from the system keychain. Re-run onboarding to re-save it.",
   KEYCHAIN_FALLBACK_PLAINTEXT: "Your system has no secret store. Sei will save your API key but it won't be hardware-protected.",
   NATIVE_MODULE_MISMATCH: "A bundled module didn't load. Reinstall Sei from the .dmg / .exe.",
-  // Phase 9 (09-01) — skin pipeline + setup-wizard errors. Verbatim from
-  // 09-UI-SPEC.md §"New ERROR_COPY entries". Do NOT rephrase — the UI checker
+  // Skin pipeline + setup-wizard errors. Do NOT rephrase — the UI checker
   // matches these strings byte-for-byte against the spec.
   MOD_DOWNLOAD_FAILED: "Couldn't download CustomSkinLoader. Check your connection and try the setup again.",
   FABRIC_INSTALL_FAILED: "Couldn't install Fabric Loader. Make sure Minecraft is closed, then try the setup again.",

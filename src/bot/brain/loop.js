@@ -1,6 +1,6 @@
 /**
  * Loop — owns the canonical `messages` array for one Sei active task cycle
- * (Phase 3 D-38 / D-42 / D-43 / D-44 / D-45). Public API is locked at D-44:
+ * Public API is locked:
  *
  *   appendUserTurn(blocks, { seed })
  *   appendAssistant(content)
@@ -46,7 +46,7 @@ export function createLoop({ iterationCap, logger = console } = {}) {
   const messages = []
   let iterationCount = 0
   const startedAt = Date.now()
-  // Plan 03.1-10 (WR-02): mutable so the orchestrator's
+  // Mutable so the orchestrator's
   // replaceAbortController can swap in a fresh instance via
   // _setAbortController without resorting to Object.defineProperty
   // on the returned getter. The loop's abortController getter still
@@ -153,8 +153,8 @@ export function createLoop({ iterationCap, logger = console } = {}) {
     get iterationCount() { return iterationCount },
     get startedAt() { return startedAt },
     get abortController() { return abortController },
-    // Plan 03.1-10 (WR-02): expose a setter so the orchestrator's
-    // replaceAbortController can swap controllers cleanly. Validates the
+    // Expose a setter so the orchestrator's replaceAbortController can swap
+    // controllers cleanly. Validates the
     // argument shape — must look like an AbortController.
     _setAbortController(c) {
       if (!c || typeof c.abort !== 'function' || !c.signal) {

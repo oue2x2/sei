@@ -1,12 +1,12 @@
 /**
  * Native OS file-picker pipeline for user-supplied Minecraft skin PNGs.
  *
- * Phase 9 Plan 03 Task 2A. Lifts the renderer out of needing a file-input
- * element + drag-and-drop handler — main owns the dialog so we can validate
- * the PNG (magic + 64×64 IHDR) BEFORE handing bytes back to the renderer for
- * the 3D preview. The renderer then calls `skin:apply` (Plan 02) with the
- * base64 payload; main is the trust boundary for the byte-validity check
- * (applyPng re-validates as defense-in-depth).
+ * Lifts the renderer out of needing a file-input element + drag-and-drop
+ * handler — main owns the dialog so we can validate the PNG (magic + 64×64
+ * IHDR) BEFORE handing bytes back to the renderer for the 3D preview. The
+ * renderer then calls `skin:apply` with the base64 payload; main is the trust
+ * boundary for the byte-validity check (applyPng re-validates as
+ * defense-in-depth).
  *
  * Differs from mojangSkinLookup.normalize64x64 path: user uploads must
  * ALREADY be 64×64. Legacy 64×32 upscaling is reserved for Mojang downloads
@@ -18,9 +18,8 @@
  * routes the message to `ERROR_COPY[SKIN_FILE_INVALID]` with no new rules.
  *
  * Sources:
- *   - 09-03-PLAN Task 2A
- *   - src/main/skinStore.ts (Plan 02 — same magic + IHDR parse, mirrored for defense-in-depth)
- *   - src/shared/errorClasses.ts (SKIN_FILE_INVALID, added in Plan 01)
+ *   - src/main/skinStore.ts (same magic + IHDR parse, mirrored for defense-in-depth)
+ *   - src/shared/errorClasses.ts (SKIN_FILE_INVALID)
  *   - Electron docs: dialog.showOpenDialog → { canceled, filePaths }
  */
 import { BrowserWindow, dialog } from 'electron';

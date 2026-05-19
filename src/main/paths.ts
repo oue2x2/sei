@@ -29,16 +29,15 @@ export const paths = {
   apiKeyPath: () => path.join(userDataRoot(), 'api_key.bin'),
   logsDir: () => path.join(userDataRoot(), 'logs'),
   memoryDir: (characterId: string) => path.join(userDataRoot(), 'memory', characterId),
-  // Phase 9 (09-02): per-persona skin PNG storage. Files live under
+  // Per-persona skin PNG storage. Files live under
   // <userData>/skins/<personaId>.png. The persona id has already been
   // validated by main/ipc.ts's IdSchema (kebab-case slug regex, no '.', '/',
   // or '\\') before any of these path-builders is invoked, so path.join's
   // normalization never has to deal with an escape-attempting component.
   skinsDir: () => path.join(userDataRoot(), 'skins'),
   skinPngPath: (personaId: string) => path.join(userDataRoot(), 'skins', `${personaId}.png`),
-  // Phase 9 (09-04): wizard state JSON. Persists which MC installs the user
-  // ticked, `hasRunOnce` (gates the first-launch modal vs the settings-reopen
-  // flow), and the last skin-server port (helps Plan 05 detect port drift —
-  // see WARNING 7).
+  // Wizard state JSON. Persists which MC installs the user ticked,
+  // `hasRunOnce` (gates the first-launch modal vs the settings-reopen flow),
+  // and the last skin-server port (used for port-drift detection on bootstrap).
   wizardStatePath: () => path.join(userDataRoot(), 'skin-setup-state.json'),
 };

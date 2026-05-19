@@ -9,7 +9,7 @@ import { nearbyEntities, droppedItemName } from './entities.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 import { getFollowTargetLabel } from '../behaviors/follow.js'
 // 260513-wkd: centralised in_flight line rendering. Helper preserves the
-// Phase 7 D-10 em-dash + y=<currentY> channels byte-stable; only the elapsed
+// em-dash + y=<currentY> channels byte-stable; only the elapsed
 // trailer changes from `(Xs)` to `started=Xs ago` (locked in CONTEXT.md).
 import { getInFlightLineForSnapshot } from '../../../brain/inflight.js'
 
@@ -60,7 +60,7 @@ export function composeSnapshot(bot, opts = {}) {
   // In-flight action — surfaced early so the LLM sees it before reasoning
   // about new actions. 260513-wkd: rendered via getInFlightLineForSnapshot so
   // brain + adapter share a single source-of-truth formatter. The helper
-  // preserves the Phase 7 D-10 em-dash + y=<currentY> channels byte-stable;
+  // preserves the em-dash + y=<currentY> channels byte-stable;
   // only the elapsed trailer changes from `(Xs)` to `started=Xs ago`.
   const inFlightLine = getInFlightLineForSnapshot(inFlight)
   if (inFlightLine) lines.push(inFlightLine)

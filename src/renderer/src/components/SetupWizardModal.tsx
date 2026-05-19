@@ -15,15 +15,12 @@
  *   - one-failed → 3b branch — at least one install result.ok === false
  *   - done     → "All set"
  *
- * BLOCKER 2 (09-01-PLAN): the wizard NEVER holds a renderer-side AbortController.
- * The Cancel button on the installing step calls `cancelInstall` — an async store
- * action that fires `sei.wizardCancel(sessionId)` across the IPC boundary. Main
- * then aborts the in-flight `java -jar fabric-installer` child process. ESC
- * dismissal during install also routes through the same IPC abort (via
- * closeWizard → wizardCancel if sessionId !== null).
- *
- * Source: 09-07-PLAN.md Task 1C; 09-UI-SPEC.md §"Setup wizard modal" + §"Accessibility
- *         Contracts" (focus trap, ESC, live region) + §"Animation & Motion" (200ms crossfade).
+ * The wizard NEVER holds a renderer-side AbortController. The Cancel button on
+ * the installing step calls `cancelInstall` — an async store action that fires
+ * `sei.wizardCancel(sessionId)` across the IPC boundary. Main then aborts the
+ * in-flight `java -jar fabric-installer` child process. ESC dismissal during
+ * install also routes through the same IPC abort (via closeWizard →
+ * wizardCancel if sessionId !== null).
  */
 
 import React, { useEffect, useRef } from 'react';

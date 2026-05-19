@@ -1,16 +1,13 @@
 /**
  * useWizardStore — Zustand store managing the first-launch / re-runnable setup wizard.
  *
- * BLOCKER 2 (09-01-PLAN): the renderer NEVER holds an AbortController for the wizard.
- * Cancellation crosses the IPC boundary via `sei.wizardCancel(sessionId)` — main's
+ * The renderer NEVER holds an AbortController for the wizard. Cancellation
+ * crosses the IPC boundary via `sei.wizardCancel(sessionId)` — main's
  * `abortWizardSession` then fires `.abort()` on its Map<sessionId, AbortController>,
- * which propagates through Plan 04's signal-aware modules to SIGTERM the in-flight
+ * which propagates through signal-aware install modules to SIGTERM the in-flight
  * `java -jar fabric-installer` child process. The single source of truth for
  * cancellation lives in main; this store only owns the sessionId (renderer-generated
  * via `crypto.randomUUID()` per install run) so `cancelInstall` targets the right run.
- *
- * Source: 09-07-PLAN.md Task 1A; 09-05-SUMMARY.md (wizard.ts IPC contract);
- *         09-UI-SPEC.md §"Setup wizard modal" + §"First-launch wizard step-by-step copy".
  */
 
 import { create } from 'zustand';
@@ -39,7 +36,7 @@ export interface WizardStoreState {
   installs: McInstall[];
   selectedIds: Set<string>;
   /**
-   * BLOCKER 2 — non-null while runWizardInstall is in flight. Lets cancelInstall
+   * Non-null while runWizardInstall is in flight. Lets cancelInstall
    * pass the correct id to sei.wizardCancel(sessionId). Generated per run via
    * `crypto.randomUUID()` so the matching cancel targets THIS run, not a stale one.
    */
@@ -56,7 +53,7 @@ export interface WizardStoreState {
   runDetection: () => Promise<void>;
   toggleSelected: (id: string) => void;
   runInstall: () => Promise<void>;
-  /** BLOCKER 2 — async because it fires an IPC call across the process boundary. */
+  /** Async because it fires an IPC call across the process boundary. */
   cancelInstall: () => Promise<void>;
 }
 
@@ -95,7 +92,7 @@ export const useWizardStore = create<WizardStoreState>((set, get) => {
         progressUnsub();
         progressUnsub = null;
       }
-      // BLOCKER 2 — if a wizard run is in flight, abort it via IPC (not via a
+      // If a wizard run is in flight, abort it via IPC (not via a
       // renderer-local AbortController). Fire-and-forget: main's handler resolves
       // immediately and the in-flight runWizardInstall promise then rejects via
       // its AbortSignal chain.
@@ -140,7 +137,7 @@ export const useWizardStore = create<WizardStoreState>((set, get) => {
     },
 
     runInstall: async () => {
-      // BLOCKER 2 — generate a fresh sessionId for this install run. The renderer
+      // Generate a fresh sessionId for this install run. The renderer
       // stores it in state so cancelInstall can pass it back through sei.wizardCancel.
       const sessionId = crypto.randomUUID();
       set({
@@ -176,14 +173,14 @@ export const useWizardStore = create<WizardStoreState>((set, get) => {
           progressUnsub();
           progressUnsub = null;
         }
-        // BLOCKER 2 — session is over; clear the id so a stray late cancel is a no-op.
+        // Session is over; clear the id so a stray late cancel is a no-op.
         set({ sessionId: null });
       }
     },
 
     cancelInstall: async () => {
-      // BLOCKER 2 — fire the IPC cancel. Main's handler aborts the matching
-      // AbortController, which propagates through Plan 04's signal-aware modules
+      // Fire the IPC cancel. Main's handler aborts the matching AbortController,
+      // which propagates through signal-aware install modules
       // (installFabricLoader / downloadCustomSkinLoader) to SIGTERM the
       // `java -jar fabric-installer` child process. The runWizardInstall promise
       // then rejects (or resolves with partial results); the finally block in

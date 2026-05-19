@@ -1,11 +1,11 @@
 /**
  * Plain-English error narration surface (GUI-05).
  *
- * Each variant maps to a copy entry in src/renderer/src/lib/errors.ts (plan 09).
+ * Each variant maps to a copy entry in src/renderer/src/lib/errors.ts.
  * Sources:
  *   - UI-SPEC §"Plain-English error copy" — 9 seeded classes
  *   - RESEARCH §"Pitfall 3" — KEYCHAIN_FALLBACK_PLAINTEXT (Linux fallback warning)
- *   - Phase 9 09-UI-SPEC.md §"New ERROR_COPY entries" — 7 skin/wizard classes
+ *   - UI spec for skin/wizard ERROR_COPY entries — 7 skin/wizard classes
  *
  * Adding a new ErrorClass: also add a row to ERROR_COPY in lib/errors.ts.
  */
@@ -21,7 +21,7 @@ export type ErrorClass =
   | 'KEYCHAIN_LOCKED'
   | 'KEYCHAIN_FALLBACK_PLAINTEXT'
   | 'NATIVE_MODULE_MISMATCH'
-  // Phase 9 (09-01) — skin + setup-wizard surfaces
+  // Skin + setup-wizard surfaces
   | 'MOD_DOWNLOAD_FAILED'
   | 'FABRIC_INSTALL_FAILED'
   | 'MC_INSTALL_NOT_FOUND'
@@ -41,7 +41,7 @@ export const ALL_ERROR_CLASSES: readonly ErrorClass[] = Object.freeze([
   'KEYCHAIN_LOCKED',
   'KEYCHAIN_FALLBACK_PLAINTEXT',
   'NATIVE_MODULE_MISMATCH',
-  // Phase 9
+  // Skin + setup-wizard surfaces
   'MOD_DOWNLOAD_FAILED',
   'FABRIC_INSTALL_FAILED',
   'MC_INSTALL_NOT_FOUND',

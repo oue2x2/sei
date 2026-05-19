@@ -7,12 +7,12 @@
 // The brain depends on this interface and nothing else game-shaped. A
 // future adapter (Stardew, Roblox, ...) implements this same shape.
 //
-// This file is the source of truth for D-5 (brain/adapter split). Plan 02
-// (03.1-02) wires the minecraft adapter's index.js to satisfy it; the brain
+// This file is the source of truth for D-5 (brain/adapter split). The
+// minecraft adapter's index.js satisfies this interface; the brain
 // orchestrator stops importing observers/* and behaviors/* directly and
 // instead consumes an injected `adapter` that conforms to this contract.
 //
-// No runtime types yet — JSDoc only. Plan 02 wires this into the orchestrator.
+// No runtime types — JSDoc only.
 
 /**
  * @typedef {Object} Player
@@ -77,9 +77,9 @@
  * Session lifecycle:
  * @property {(handlers: AdapterHandlers) => void}                         attach
  * @property {() => void}                                                  [detach]
- *   Plan 03.1-09 / WR-07: tear down listeners on reconnect; idempotent.
- *   Optional — not in REQUIRED_ADAPTER_MEMBERS so adapters that don't need
- *   teardown don't fail boot. Boot composer guards with `_adapter?.detach?.()`.
+ *   Tear down listeners on reconnect; idempotent. Optional — not in
+ *   REQUIRED_ADAPTER_MEMBERS so adapters that don't need teardown don't fail
+ *   boot. Boot composer guards with `_adapter?.detach?.()`.
  *
  * Effects the brain commands but cannot synthesize:
  * @property {(text: string) => void}                                      chat

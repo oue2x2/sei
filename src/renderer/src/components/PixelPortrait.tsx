@@ -12,8 +12,8 @@
  * The pure function `generatePixelGrid(seed, palette)` returns a 12×12 array of
  * `#RRGGBB` strings; the React component paints it to <canvas> at the requested
  * `size` with `image-rendering: pixelated` for crisp scaling. Extracting the
- * pure function (WARNING-5 fix) makes the determinism contract testable without
- * a jsdom canvas mock.
+ * pure function makes the determinism contract testable without a jsdom
+ * canvas mock.
  *
  * Image override: if `portraitImage` is non-null and the <img> loads, we render
  * that instead of the canvas. Missing file → silent fallback to procedural (D-14).
@@ -56,7 +56,7 @@ function _unused_lighten(_hex: string, _a: number): string {
 /**
  * Pure deterministic generator. Returns a 12×12 array of `#RRGGBB` strings.
  *
- * Layout contract (must satisfy the WARNING-5 acceptance pixels):
+ * Layout contract (must satisfy the acceptance pixel checks below):
  *   - rows 0..6 (head): 82% non-background, palette index 1 + floor(rng × (palLen-2))
  *   - rows 7..10 (body): 75% non-background, palette index 2 + floor(rng × (palLen-3))
  *   - row 11 (last row): palette[1] (forced bg)
@@ -142,7 +142,7 @@ export function generatePixelGrid(
     grid.push(row);
   }
 
-  // Eye pixels — WARNING-5 fix: row=3, col=4 (left) and col=7 (mirror of col=4).
+  // Eye pixels: row=3, col=4 (left) and col=7 (mirror of col=4).
   if (grid[3]) {
     grid[3]![4] = EYE_COLOR;
     grid[3]![W - 1 - 4] = EYE_COLOR; // = col 7

@@ -48,8 +48,8 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
   bot.pathfinder.setMovements(movements)
   const goal = new goals.GoalNear(x, y, z, range)
 
-  // Plan 03.1-05 Task 3 (D-E-1, D-W-7): closest-distance hint on cant_reach.
-  // The LLM was getting bare 'cant_reach' and either retrying identically or
+  // Closest-distance hint on cant_reach. The LLM was getting bare
+  // 'cant_reach' and either retrying identically or
   // giving up; a one-number hint ("closest=8.4m to target X,Y,Z") tells it
   // whether the destination is plausibly reachable from a different angle or
   // genuinely walled off.

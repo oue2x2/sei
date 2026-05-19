@@ -10,10 +10,8 @@
  * Summon flow:
  *  - LAN connected → fire-and-forget sei.summon(id) and navigate to character.
  *  - Otherwise → setPendingSummon(id) + openModal({kind:'lan', mode:'searching'}).
- *    Plan 08's LanModal in 'searching' mode reads pendingSummonId and watches
+ *    LanModal in 'searching' mode reads pendingSummonId and watches
  *    useDataStore.lan to auto-resume on connected.
- *
- * Source: 04-07 Task 3.
  */
 
 import React from 'react';

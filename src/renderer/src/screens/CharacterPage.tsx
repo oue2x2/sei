@@ -245,10 +245,10 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
               </div>
             </>
           ) : (
-            /* Phase 9 (09-06): per-persona Skin & Username editor. Renders for
-               ALL personas — UI-SPEC §"Sui-gating" allows default personas to
-               edit skin + username (the persona-source/name editing gate
-               remains in EditCharacterModal). */
+            /* Per-persona Skin & Username editor. Renders for ALL personas —
+               UI-SPEC §"Sui-gating" allows default personas to edit skin +
+               username (the persona-source/name editing gate remains in
+               EditCharacterModal). */
             <SkinEditor
               character={character}
               onChanged={() => void refreshCharacter(id)}

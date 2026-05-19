@@ -1,5 +1,5 @@
 /**
- * CustomSkinLoader mod downloader + config writer (Phase 9 Plan 04 Task 2C).
+ * CustomSkinLoader mod downloader + config writer.
  *
  * Two responsibilities:
  *
@@ -14,17 +14,17 @@
  *      placed at `<install>/config/CustomSkinLoader/CustomSkinLoader.json`
  *      atomically via `atomicWrite`.
  *
- *      LOADER TYPE = `Legacy` (WARNING 6 — Rule 1 deviation from PLAN):
+ *      LOADER TYPE = `Legacy`:
  *
- *      The plan pinned `CustomSkinAPI`. Verification against the upstream
- *      CSL Java source (15-develop branch) shows that prediction was wrong:
+ *      Verification against the upstream CSL Java source (15-develop branch)
+ *      shows why `CustomSkinAPI` does NOT fit:
  *
  *        - `CustomSkinAPI` is a JsonAPILoader subtype. CSL's
  *          `CustomSkinAPI.toJsonUrl(root, username)` returns
  *          `{root}{username}.json` — CSL expects a JSON document containing
  *          texture hash IDs, then makes a SECOND `GET {root}/textures/<id>`
- *          for the actual PNG. Our skin server (Plan 03) serves direct PNG
- *          bytes at `/skins/<username>.png` — no JSON intermediate.
+ *          for the actual PNG. Our skin server serves direct PNG bytes at
+ *          `/skins/<username>.png` — no JSON intermediate.
  *
  *        - `Legacy` (the `LegacyLoader` class) takes a `skin` URL template
  *          containing `{USERNAME}`, substitutes the in-game username via
@@ -32,12 +32,8 @@
  *          raw PNG bytes. This matches our skin server's `/skins/{USERNAME}.png`
  *          contract EXACTLY.
  *
- *      Shipping `CustomSkinAPI` would make the entire phase non-functional
- *      (CSL would GET `/skins/Sui.json`, get 404, never render the skin).
- *      The plan's WARNING 6 research-step machinery (`verify-csl-config-schema.mjs`)
- *      caught this mismatch — that's exactly what the research step was
- *      designed to do. See 09-04-SUMMARY.md §"Deviations from Plan" for the
- *      full reasoning trail.
+ *      Shipping `CustomSkinAPI` would make the feature non-functional (CSL
+ *      would GET `/skins/Sui.json`, get 404, never render the skin).
  *
  *      Verified against:
  *        - Common/src/main/java/customskinloader/loader/LegacyLoader.java
@@ -46,7 +42,6 @@
  *        - Common/src/main/java/customskinloader/config/Config.java
  *
  * Sources:
- *   - 09-04-PLAN Task 2C
  *   - Modrinth API: https://api.modrinth.com/v2/project/customskinloader/version
  *   - GitHub Releases fallback: https://api.github.com/repos/xfl03/MCCustomSkinLoader/releases/latest
  *   - src/bot/brain/storage/atomicWrite.js (atomic config writes)
@@ -211,7 +206,7 @@ export interface DownloadCustomSkinLoaderOpts {
   loaderKind: 'fabric' | 'forge';
   mcVersion: string;
   modsDir: string;
-  /** Plan 05 threads abort signal here from main's Map<sessionId, AbortController>. */
+  /** Abort signal threaded here from main's Map<sessionId, AbortController>. */
   signal?: AbortSignal;
   /** Progress callback — currently called at 0/30/70/100 milestones. */
   onProgress?: (pct: number) => void;

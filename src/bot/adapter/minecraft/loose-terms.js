@@ -2,21 +2,21 @@
 //
 // Hand-curated natural-language → MC block ID resolver for the closed Zod
 // action registry. Pure data + pure function — zero mineflayer / minecraft-data
-// / vec3 dependencies — so Phase 7 (pillar-up) can import resolveTerm()
+// / vec3 dependencies — so callers like pillar-up can import resolveTerm()
 // directly without dragging in the world-observer stack.
 //
-// Why server-side resolution (per 06-CONTEXT.md L50):
+// Why server-side resolution:
 //   - Haiku's training-data knowledge of MC IDs is fuzzy across versions
 //     (mangrove/cherry/deepslate variants drift). A hand-curated table is
 //     ground-truth for the running server.
 //   - One call returning N variant IDs beats N find() calls under the
 //     20-iteration loop cap.
 //
-// Phase 7 reuse (per 06-CONTEXT.md L61):
+// Reuse contract:
 //   pillar-up wants NL→ID lookup ("place dirt") without a locator call.
-//   Phase 7 imports { resolveTerm } directly; no observer/registry plumbing.
+//   Import { resolveTerm } directly; no observer/registry plumbing.
 //
-// Pitfall — loose-term collision (06-RESEARCH.md L461-463):
+// Pitfall — loose-term collision:
 //   Loose-term keys ALWAYS expand. `resolveTerm('stone')` returns 7 stone
 //   variants — `find('stone')` may return granite when the caller wanted
 //   literal `stone`. To get a strict literal match, pass the exact MC ID

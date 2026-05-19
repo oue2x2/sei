@@ -1,13 +1,12 @@
 // src/adapter/minecraft/behaviors/drop.js — toss N of an item from inventory
-// across all matching slots (D-22, NEW-W-A).
+// across all matching slots.
 //
-// Plan 03.1-09 (NEW-W-A): the original implementation called
-// `bot.inventory.items().find(...)` which returned the FIRST matching slot
-// only; `Math.min(count, invItem.count)` then capped the toss to that single
-// slot's stack size. With 1+9 oak_log split across two slots, drop(10) tossed
-// 1 instead of 10. Fix: aggregate `totalAvailable` across ALL matching slots
-// and issue sequential `bot.toss` calls until the request is satisfied or
-// inventory is exhausted, returning "only N available" if undercount.
+// A naive `bot.inventory.items().find(...)` returns the FIRST matching slot
+// only; `Math.min(count, invItem.count)` then caps the toss to that single
+// slot's stack size. With 1+9 oak_log split across two slots, drop(10) would
+// toss 1 instead of 10. We aggregate `totalAvailable` across ALL matching
+// slots and issue sequential `bot.toss` calls until the request is satisfied
+// or inventory is exhausted, returning "only N available" if undercount.
 
 import { reason } from '../../../brain/errStrings.js'
 
@@ -63,9 +62,9 @@ export async function dropItemAction(args, bot, config) {
   }
 
   if (dropped < requested) {
-    // Plan 03.1-09 (NEW-W-A): user asked for N, only had M — surface
-    // explicitly so the LLM can react ("only M available") rather than
-    // silently leave the residual unaccounted.
+    // User asked for N, only had M — surface explicitly so the LLM can react
+    // ("only M available") rather than silently leave the residual
+    // unaccounted.
     return `dropped ${dropped} ${item} (only ${dropped} available)`
   }
   return `dropped ${dropped} ${item}`

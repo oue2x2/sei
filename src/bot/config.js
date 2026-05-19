@@ -4,12 +4,12 @@ import { readFileSync } from 'fs'
 // Brain-side config — game-agnostic. The persona, anthropic, llm, and memory
 // branches live here; game-specific fields nest under `adapter.<kind>.*`.
 //
-// BREAKING (Plan 03.1-02): the old top-level fields `host`, `port`, `auth`,
-// `username`, `minecraft_version`, `pathfinder_timeout_ms`, `follow_range`
-// have moved under `adapter.minecraft.*`. No backwards-compat shim is
-// provided per CLAUDE.md — existing config.json files MUST be updated
-// (the CLI's `sei config` flow will rewrite them when re-run, or the
-// loader auto-migrates legacy top-level keys at parse time below).
+// The top-level fields `host`, `port`, `auth`, `username`,
+// `minecraft_version`, `pathfinder_timeout_ms`, `follow_range` are under
+// `adapter.minecraft.*` (not top-level). No backwards-compat shim is provided
+// per CLAUDE.md — existing config.json files MUST be updated (the CLI's `sei
+// config` flow will rewrite them when re-run, or the loader auto-migrates
+// legacy top-level keys at parse time below).
 
 // Adapter sub-tree: minecraft fields. Keep names aligned with the
 // pre-refactor top-level shape so call sites only need to update the

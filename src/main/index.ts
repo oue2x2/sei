@@ -48,7 +48,7 @@ let mainWindow: BrowserWindow | null = null;
 let latestLanState: LanState = { kind: 'not_connected' };
 let lanWatcherHandle: { stop: () => void } | null = null;
 let supervisor: ReturnType<typeof createBotSupervisor> | null = null;
-// Phase 9 (09-02): loopback HTTP server serving persona skin PNGs to
+// Loopback HTTP server serving persona skin PNGs to
 // CustomSkinLoader on the host's MC client. Bound on boot (port 0 → OS-chosen
 // ephemeral) so the supervisor + IPC layer can hand the baseUrl out via the
 // injected closures below.
@@ -88,7 +88,7 @@ function broadcastLog(batch: LogBatch): void {
   }
 }
 
-// Phase 9 (09-05): wizard install progress push channel. The IPC handler
+// Wizard install progress push channel. The IPC handler
 // for `wizard:install` forwards each `WizardProgressEvent` through here so
 // the renderer's `window.sei.onWizardProgress(...)` subscription fires.
 function broadcastWizardProgress(ev: WizardProgressEvent): void {
@@ -113,7 +113,7 @@ async function bootstrap(): Promise<void> {
   try { await seedDefaultCharacters(); }
   catch (err) { logger.warn(`seedDefaultCharacters failed: ${(err as Error).message}`); }
 
-  // 1c. Phase 9 (09-02): start the loopback skin HTTP server BEFORE any bot is
+  // 1c. Start the loopback skin HTTP server BEFORE any bot is
   // summoned — the bot supervisor passes the baseUrl into the bot init payload
   // (where the bot logs it for verification; CustomSkinLoader on the host's MC
   // client is the real consumer). Bind failure is non-fatal: the bot still
@@ -127,7 +127,7 @@ async function bootstrap(): Promise<void> {
     skinServer = null;
   }
 
-  // 1d. Phase 9 (09-05) WARNING 7: port-drift detection.
+  // 1d. Port-drift detection.
   // The skin server binds port 0 (OS-chosen ephemeral) so its port can
   // differ between launches. If the wizard has been run before AND the
   // current port differs from the one persisted in wizardState, the CSL
@@ -217,9 +217,9 @@ async function bootstrap(): Promise<void> {
     getLanPort,
     sendStatus: broadcastStatus,
     sendLog: broadcastLog,
-    // Phase 9 (09-02): hand the skin server's baseUrl into each bot init
-    // payload. Closure-via-getter so a later restart of the skin server (Plan 05
-    // port-drift recovery) is observable by subsequent summons.
+    // Hand the skin server's baseUrl into each bot init payload.
+    // Closure-via-getter so a later restart of the skin server (port-drift
+    // recovery) is observable by subsequent summons.
     getSkinServerBaseUrl: () => skinServer?.baseUrl ?? null,
   });
 
@@ -227,9 +227,8 @@ async function bootstrap(): Promise<void> {
   registerIpcHandlers({
     supervisor,
     getSkinServerBaseUrl: () => skinServer?.baseUrl ?? null,
-    // Phase 9 (09-05): wizard:install handler forwards per-step progress
-    // events here; this closure pipes them to the renderer via the
-    // wizard:progress push channel.
+    // wizard:install handler forwards per-step progress events here; this
+    // closure pipes them to the renderer via the wizard:progress push channel.
     sendWizardProgress: broadcastWizardProgress,
   });
 
@@ -288,7 +287,7 @@ if (!gotLock) {
     e.preventDefault();
     try { if (supervisor) await supervisor.shutdown(); } catch (err) { logger.warn(`supervisor shutdown failed: ${(err as Error).message}`); }
     try { if (lanWatcherHandle) lanWatcherHandle.stop(); } catch { /* best-effort */ }
-    // Phase 9 (09-02): close the skin server's TCP listener so the port is
+    // Close the skin server's TCP listener so the port is
     // freed promptly. server.close drains in-flight requests before resolving.
     try { if (skinServer) await skinServer.stop(); } catch { /* best-effort */ }
     supervisor = null;

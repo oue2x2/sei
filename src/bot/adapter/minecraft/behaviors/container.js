@@ -1,7 +1,6 @@
-// src/behaviors/container.js — chest/container session: open + deposit + withdraw
-// (D-22, Pitfalls 1/6, RESEARCH Pattern 6).
+// Chest/container session: open + deposit + withdraw.
 //
-// SESSION is module-scoped so the orchestrator (Plan 03) can call closeContainerSession()
+// SESSION is module-scoped so the orchestrator can call closeContainerSession()
 // on chain end / abort to enforce the "never overlap" invariant globally.
 import mcDataLib from 'minecraft-data'
 import { resolveBlock, isStaleHandle } from '../observers/targeting.js'

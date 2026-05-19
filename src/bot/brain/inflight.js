@@ -30,7 +30,7 @@ export function createInflightTracker() {
     return entry
   }
 
-  // Phase 7 D-10 (Option A): cuboid actions push progress ticks via this
+  // Cuboid actions push progress ticks via this
   // setter so the next snapshot's `in_flight:` line includes a `placed/total`
   // (or `dug/total`) suffix. Stale handles (different id) are ignored to
   // avoid late ticks from a previous action overwriting fresh state.
@@ -67,7 +67,7 @@ export function describeArgs(name, args) {
  *
  * Format: `in_flight: <name>(<argblurb>) started=<X.X>s ago[ — <completed>/<total>[, y=<currentY>]]`
  *
- * Preserves the Phase 7 D-10 em-dash separator AND the `y=<currentY>` channel
+ * Preserves the em-dash separator AND the `y=<currentY>` channel
  * exactly as snapshot.js rendered them; the ONLY visible delta vs the prior
  * `(Xs)` trailer is the new `started=Xs ago` form (locked in CONTEXT.md
  * "Snapshot mid-flight enrichment").

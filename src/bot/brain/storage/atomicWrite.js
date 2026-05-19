@@ -20,8 +20,8 @@ import { dirname, basename, join } from 'node:path'
  * @param {string} path  Target file path (will be atomically replaced).
  * @param {string | Uint8Array} contents  Contents to write. Strings go out as
  *   UTF-8 (legacy default for OWNER.md/DIARY.md callers); Uint8Array / Buffer
- *   inputs (added Phase 9 Plan 02 for binary PNGs under <userData>/skins/)
- *   are written as raw bytes with no encoding transform.
+ *   inputs (for binary PNGs under <userData>/skins/) are written as raw
+ *   bytes with no encoding transform.
  */
 export async function atomicWrite(path, contents) {
   // Tmp filename includes pid + Date.now() to avoid collisions between
@@ -29,7 +29,7 @@ export async function atomicWrite(path, contents) {
   // mid-write doesn't expose it.
   const tmp = join(dirname(path), `.${basename(path)}.tmp.${process.pid}.${Date.now()}`)
   try {
-    // 260517 (Phase 9 Plan 02): if `contents` is a Buffer / Uint8Array, omit
+    // 260517: if `contents` is a Buffer / Uint8Array, omit
     // the encoding arg so Node writes raw bytes. The previous hardcoded
     // 'utf8' silently corrupted PNGs (non-UTF-8 byte sequences got replaced
     // by U+FFFD). String inputs preserve the legacy UTF-8 behavior.

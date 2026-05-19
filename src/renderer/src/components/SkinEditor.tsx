@@ -8,14 +8,14 @@
  *   - SkinUploadZone or UsernameSearchField (based on switch)
  *   - "Apply skin" (accent) CTA + "Remove skin" (inline two-click destructive)
  *
- * Atomicity contract (WARNING 5):
+ * Atomicity contract:
  *   onApply makes ONE IPC call — applySkin({ characterId, pngBase64, source,
  *   mojangUsername, username }). The renderer does NOT make a separate
- *   character-save IPC call. Plan 02's main-side applyPng persists skin
- *   descriptor + username in a single store-layer write, so there's no
- *   half-applied state on partial failure.
+ *   character-save IPC call. The main-side applyPng persists skin descriptor +
+ *   username in a single store-layer write, so there's no half-applied state
+ *   on partial failure.
  *
- * Preview URL refresh contract (INFO 10):
+ * Preview URL refresh contract:
  *   The previewUrl-deriving useEffect EXPLICITLY lists
  *   [character.username, character.skin, baseUrl, usernameDraft, stagedPng]
  *   as its dependencies, so the 3D preview refreshes the moment the user types
@@ -70,7 +70,7 @@ const REMOVE_CONFIRM_WINDOW_MS = 4000;
 
 /**
  * Mirror of src/bot/index.js sanitizeMcName for the renderer's preview-URL path.
- * The skin server (Plan 03) routes /skins/<name>.png by the sanitized name when
+ * The skin server routes /skins/<name>.png by the sanitized name when
  * the persona has no character.username set — we use the same algorithm here so
  * the preview URL matches what CustomSkinLoader will actually ask for.
  *
@@ -84,7 +84,7 @@ function sanitizeMcName(name: string): string {
   return cleaned || 'Sei';
 }
 
-/** MC username regex — matches CharacterSchema.username constraint (Plan 01). */
+/** MC username regex — matches CharacterSchema.username constraint. */
 const MC_NAME_RE = /^[A-Za-z0-9_]{0,16}$/;
 
 export function SkinEditor({
@@ -189,17 +189,17 @@ export function SkinEditor({
     }
   };
 
-  // ── Apply skin — WARNING 5 single-call atomic apply ──────────────────────
+  // ── Apply skin — single-call atomic apply ───────────────────────────────
   const onApply = async (): Promise<void> => {
     if (!stagedPng) return;
     if (usernameError) return;
     setMode('applying');
     setError(null);
     try {
-      // WARNING 5 fix — ONE IPC call that atomically updates skin descriptor
-      // + per-persona MC username in a single store-layer write (main-side).
-      // The renderer must not issue a separate character-save IPC before this —
-      // that would be two round-trips and risk a half-applied state.
+      // ONE IPC call that atomically updates skin descriptor + per-persona MC
+      // username in a single store-layer write (main-side). The renderer must
+      // not issue a separate character-save IPC before this — that would be
+      // two round-trips and risk a half-applied state.
       await sei.applySkin({
         characterId: character.id,
         pngBase64: stagedPng.pngBase64,

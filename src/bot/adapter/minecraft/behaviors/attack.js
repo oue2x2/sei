@@ -19,7 +19,7 @@ export async function attackEntityAction(args, bot, config) {
   // Refuse Players — REQUIREMENTS Out-of-Scope: Auto-PvP.
   if (entity.type === 'player' || entity.username) return 'cannot attack player'
 
-  // Plan 03.1-09 (D-H-15): refuse item-class entities. Dropped items, xp
+  // Refuse item-class entities. Dropped items, xp
   // orbs, and global entities (lightning) cannot die — the dispatch wastes
   // iterations chasing them and the model never learns they are non-targets
   // unless we surface a clear refusal here. The `entity.name === 'item'`

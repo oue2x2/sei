@@ -1,12 +1,12 @@
 /**
  * StatusPill — 8px-square dot + uppercase label primitive with optional mono secondary caption.
  *
- * Extracted from the inline patterns in LanModal.headerEyebrow + CharacterPage.modelRow
- * to a shared primitive Plan 06 consumes today (SkinEditor empty-states, "Default skin"
- * badge adjacency, future status indicators) and Plan 07's setup wizard will reuse for
- * MC-install rows and the wizard "Setup complete" panel.
+ * Extracted from the inline patterns in LanModal.headerEyebrow +
+ * CharacterPage.modelRow to a shared primitive consumed by SkinEditor empty-
+ * states, "Default skin" badge adjacency, MC-install rows, and the wizard
+ * "Setup complete" panel.
  *
- * Source: 09-UI-SPEC.md §"Status dot system (D-22 family, extended)" — the 5-state
+ * Source: UI-SPEC §"Status dot system (D-22 family, extended)" — the 5-state
  * dot/label matrix (green / red / warn / muted / pulse-in-flight).
  *
  * Visual contract:

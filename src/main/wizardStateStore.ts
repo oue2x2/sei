@@ -1,5 +1,5 @@
 /**
- * Wizard state persistence (Phase 9 Plan 04 Task 1B).
+ * Wizard state persistence.
  *
  * Persisted JSON at `<userData>/skin-setup-state.json`. Records:
  *   - hasRunOnce — true after the first successful wizard run; gates the
@@ -9,9 +9,9 @@
  *     each detected install so the UI re-renders the correct rows-selected
  *     state on re-detect
  *   - lastRunAt — ISO timestamp, surfaced in the settings UI ("last run …")
- *   - lastSkinServerPort — Plan 05's port-drift detector compares this to
- *     the current skinServer.port; mismatch means an installed CSL config
- *     points at a stale loopback port and needs rewriting (WARNING 7)
+ *   - lastSkinServerPort — the port-drift detector compares this to the
+ *     current skinServer.port; mismatch means an installed CSL config
+ *     points at a stale loopback port and needs rewriting
  *
  * Atomic writes via `atomicWrite` + `withFileLock` — same discipline as
  * characterStore.ts. Defensive parsing: any structural defect (missing
@@ -20,7 +20,6 @@
  * because the parser only reads documented keys.
  *
  * Sources:
- *   - 09-04-PLAN Task 1B
  *   - src/main/characterStore.ts (atomic-write + lock pattern this mirrors)
  *   - src/shared/ipc.ts (WizardState type)
  */

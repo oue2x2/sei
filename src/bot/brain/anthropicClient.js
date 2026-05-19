@@ -27,7 +27,7 @@ export function createAnthropicClient(config) {
    * @param {object} req
    * @param {{type:'text',text:string,cache_control?:{type:'ephemeral'}}[]} req.systemBlocks  // last block carries cache_control (D-17/D-18)
    * @param {{name:string,description:string,input_schema:object}[]} req.tools
-   * @param {{role:'user'|'assistant',content:string|Array<any>}[]} req.messages — content may be a `ContentBlockParam[]` per Phase 3 D-42 (text blocks, tool_use, tool_result). The SDK union accepts both `string` and block-array shapes; Loop.buildAnthropicPayload() emits the block-array form.
+   * @param {{role:'user'|'assistant',content:string|Array<any>}[]} req.messages — content may be a `ContentBlockParam[]` (text blocks, tool_use, tool_result). The SDK union accepts both `string` and block-array shapes; Loop.buildAnthropicPayload() emits the block-array form.
    * @param {AbortSignal} [req.signal]
    * @param {number} [req.timeoutMs]
    * @param {number} [req.maxTokens]

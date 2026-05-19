@@ -236,7 +236,7 @@ export function SettingsScreen(): React.ReactElement {
 }
 
 /**
- * SkinSetupRow — Phase 9 plan 07 settings row.
+ * SkinSetupRow — Minecraft skin setup wizard status row.
  *
  * Shows the current state of the Minecraft skin setup wizard:
  *   - green pill + count when 1+ installs are enabled

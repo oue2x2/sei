@@ -1,5 +1,5 @@
 /**
- * Mojang username → UUID → texture PNG resolver (Phase 9 Plan 03 Task 1B).
+ * Mojang username → UUID → texture PNG resolver.
  *
  * Three sequential HTTPS requests, each wrapped in its own AbortController with
  * a 15s wall-clock timeout (per CONTEXT.md "Every external call has a timeout"
@@ -19,9 +19,9 @@
  *
  * Step 4 (LOCAL): pipe bytes through skinImageUtil.normalize64x64 so ancient
  * legacy 64×32 skins (e.g. Notch's pre-2014 upload) are upscaled to 64×64
- * BEFORE returning. applyPng (Plan 02) gates strictly on 64×64; without this
+ * BEFORE returning. applyPng gates strictly on 64×64; without this
  * normalization, every legacy account would surface as "SKIN_FILE_INVALID" in
- * the renderer (WARNING 8 of 09-03-PLAN).
+ * the renderer.
  *
  * Every error path throws an Error whose message starts with
  * `MOJANG_LOOKUP_FAILED:` so the renderer's `classifyRendererError` heuristic
@@ -30,15 +30,13 @@
  * suffixes ("no Minecraft account named X", "rate-limited", "invalid characters")
  * let the UI distinguish for copy-tweaking without parsing the URL stack.
  *
- * NOT cached — Plan 02's `applyPng` writes the PNG once the user clicks "Apply",
- * and from then on the local file is the source of truth (no persistent
+ * NOT cached — `applyPng` writes the PNG once the user clicks "Apply", and
+ * from then on the local file is the source of truth (no persistent
  * dependency on Mojang per CONTEXT §decisions).
  *
  * Sources:
- *   - 09-03-PLAN Task 1B
- *   - .planning/phases/09-.../RESEARCH.md §4 (endpoint shapes, 204 trap, rate limits)
  *   - CLAUDE.md "Every external call has a timeout"
- *   - src/shared/errorClasses.ts (MOJANG_LOOKUP_FAILED added in Plan 01)
+ *   - src/shared/errorClasses.ts (MOJANG_LOOKUP_FAILED)
  */
 import crypto from 'node:crypto';
 import { normalize64x64 } from './skinImageUtil';
@@ -214,8 +212,8 @@ export async function lookupMojangSkin(username: string): Promise<MojangSkinResu
     throw classify(err, 'texture-download');
   }
 
-  // ── Step 4: legacy 64×32 → 64×64 normalization (WARNING 8) ─────────────
-  // applyPng (Plan 02) gates on 64×64 strictly. Mojang still serves legacy
+  // ── Step 4: legacy 64×32 → 64×64 normalization ─────────────────────────
+  // applyPng gates on 64×64 strictly. Mojang still serves legacy
   // 64×32 skins for ancient accounts; we upscale here so the renderer never
   // sees a sub-spec PNG.
   let pngBytes: Buffer;

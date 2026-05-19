@@ -1,10 +1,9 @@
 /**
- * Wizard install orchestrator (Phase 9 Plan 05 Task 1).
+ * Wizard install orchestrator.
  *
- * Composes the four Plan 04 modules — mcInstallScan, fabricInstaller,
- * customSkinLoader, wizardStateStore — into a single
- * `runWizardInstall(args)` flow that the renderer drives via the
- * `wizard:install` IPC handler.
+ * Composes four modules — mcInstallScan, fabricInstaller, customSkinLoader,
+ * wizardStateStore — into a single `runWizardInstall(args)` flow that the
+ * renderer drives via the `wizard:install` IPC handler.
  *
  * Three exports:
  *   - `runWizardInstall(args)` — the orchestrator. For each selected install
@@ -17,10 +16,10 @@
  *     and stores it in a module-private `Map<sessionId, AbortController>`.
  *     `runWizardInstall` calls this on entry; explicit export lets tests
  *     introspect.
- *   - `abortWizardSession(sessionId)` — the BLOCKER 2 mechanism. Looks up
- *     the session's AbortController and fires `.abort()` so the in-flight
- *     fetch / execFile / writeFile in the Plan 04 modules unwinds through
- *     the AbortSignal chain. Returns true if a session was aborted.
+ *   - `abortWizardSession(sessionId)` — looks up the session's
+ *     AbortController and fires `.abort()` so the in-flight fetch /
+ *     execFile / writeFile in the install modules unwinds through the
+ *     AbortSignal chain. Returns true if a session was aborted.
  *
  * Cross-cutting:
  *   - SERIES not parallel. Multiple concurrent `java -jar fabric-installer`
@@ -37,13 +36,12 @@
  *     the vast majority of CF modpacks ship Forge.
  *
  * Sources:
- *   - 09-05-PLAN Task 1
  *   - src/main/mcInstallScan.ts (scanMcInstalls)
  *   - src/main/fabricInstaller.ts (installFabricLoader)
  *   - src/main/customSkinLoader.ts (downloadCustomSkinLoader + writeCustomSkinLoaderConfig)
  *   - src/main/wizardStateStore.ts (loadWizardState + saveWizardState)
  *   - CONTEXT.md §"First-launch wizard scope" (5 steps the orchestrator implements)
- *   - 09-01-PLAN BLOCKER 2 (IPC-crossing abort via Map<sessionId, AbortController>)
+ *   - IPC-crossing abort via Map<sessionId, AbortController>
  */
 import path from 'node:path';
 import { scanMcInstalls } from './mcInstallScan';
@@ -61,12 +59,12 @@ const logger = {
  * Module-private session registry. One entry per in-flight runWizardInstall.
  * Keyed by the renderer-generated `sessionId` (typically `crypto.randomUUID()`).
  * The AbortController is what `wizard:cancel` fires `.abort()` on; the signal
- * threads through every Plan 04 external call (fetch / execFile / writeFile).
+ * threads through every external call (fetch / execFile / writeFile).
  *
- * Single source of truth for cancellation (BLOCKER 2 fix). A renderer-side
- * AbortController cannot reach the main-process child `java -jar fabric-installer`
- * subprocess; this map lets the renderer's `wizard:cancel(sessionId)` IPC call
- * cross the process boundary and SIGTERM the running installer.
+ * Single source of truth for cancellation. A renderer-side AbortController
+ * cannot reach the main-process child `java -jar fabric-installer` subprocess;
+ * this map lets the renderer's `wizard:cancel(sessionId)` IPC call cross the
+ * process boundary and SIGTERM the running installer.
  */
 const sessions = new Map<string, AbortController>();
 
@@ -104,8 +102,8 @@ export function registerWizardSession(sessionId: string): AbortController {
 /**
  * Abort the AbortController for the given session, if one exists. Returns
  * true if a session was found and aborted; false if no such session
- * (already cleaned up / never existed). This is the BLOCKER 2 IPC-crossing
- * abort entry point — `wizard:cancel` IPC handler calls into here.
+ * (already cleaned up / never existed). This is the IPC-crossing abort
+ * entry point — `wizard:cancel` IPC handler calls into here.
  *
  * We do NOT delete the map entry here. `runWizardInstall`'s finally block
  * is the single owner of cleanup; deleting here too could race with
@@ -152,7 +150,7 @@ function decideLoaderKind(install: McInstall): 'fabric' | 'forge' {
 
 /**
  * Heuristic test: is this rejection a cancellation (vs. a real failure)?
- * Plan 04's modules throw Errors with messages like `FABRIC_INSTALL_FAILED:
+ * The install modules throw Errors with messages like `FABRIC_INSTALL_FAILED:
  * cancelled` / `MOD_DOWNLOAD_FAILED: cancelled` when the abort signal fires
  * mid-operation. We classify by literal-substring match because that's
  * what the modules emit; the alternative (checking the controller signal
@@ -193,7 +191,7 @@ export async function runWizardInstall(
 
   try {
     // ── Re-scan: trust only paths the scanner currently reports ─────────
-    // Even though Plan 07's UI calls detectInstalls then install with the
+    // Even though the wizard UI calls detectInstalls then install with the
     // returned ids, racing the user editing their filesystem between the
     // two calls means we MUST re-scan to confirm. Also gives us the
     // freshest McInstall record (mc_version, loader, etc.) for each id.

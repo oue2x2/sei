@@ -1,5 +1,5 @@
 /**
- * Minecraft install scanner + bundled-Java locator (Phase 9 Plan 04 Task 1C).
+ * Minecraft install scanner + bundled-Java locator.
  *
  * Two responsibilities:
  *
@@ -16,7 +16,7 @@
  *        - sei_enabled (cross-referenced against persisted WizardState)
  *
  *   2. `findBundledJava(mcInstall)` — locate Minecraft's bundled JRE under
- *      `<mcDir>/runtime/java-runtime-gamma/<platform-tag>/...` (BLOCKER 3).
+ *      `<mcDir>/runtime/java-runtime-gamma/<platform-tag>/...`.
  *      The Mojang launcher installs its own JRE there when the user first
  *      launches a vanilla profile; the wizard probes this BEFORE falling
  *      back to system PATH so we don't ask the user to install Java
@@ -24,18 +24,17 @@
  *
  * Cross-platform path safety:
  *   - Every filesystem path is built via `path.join` — never string concat.
- *     Phase 8 row 1 (paths.ts audit) established this as the cross-platform
- *     invariant; the regression-guard in the acceptance criteria counts
- *     `path.join` occurrences in this file.
+ *     The paths.ts audit established this as the cross-platform invariant;
+ *     the regression-guard in the acceptance criteria counts `path.join`
+ *     occurrences in this file.
  *   - `os.homedir()` resolves to `%USERPROFILE%` on Windows, no special-case
  *     needed (the cli/index.js electronUserDataDir pattern is mirrored here).
  *
  * Sources:
- *   - 09-04-PLAN Task 1
  *   - CONTEXT §"Cross-platform paths"
- *   - 08-HOTSPOTS.md row 1 (all paths via path.join)
+ *   - Hotspot audit: all paths via path.join
  *   - Mojang launcher docs §"Java runtime directory layout" (the
- *     `runtime/java-runtime-gamma/<platform-tag>/...` structure BLOCKER 3 probes)
+ *     `runtime/java-runtime-gamma/<platform-tag>/...` structure probed)
  *   - src/bot/cli/index.js L309-321 (platform-branched home-dir pattern)
  */
 import crypto from 'node:crypto';
@@ -424,7 +423,7 @@ export async function scanMcInstalls(opts?: ScanOpts): Promise<McInstall[]> {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Public: findBundledJava (BLOCKER 3)                                        */
+/*  Public: findBundledJava                                                    */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -460,20 +459,16 @@ const BUNDLED_JRE_COMPONENTS = [
  * Returns the absolute path to a runnable `java` / `javaw` executable, or
  * null if not present.
  *
- * Probed BEFORE system PATH per BLOCKER 3 — Minecraft installs its own JRE
+ * Probed BEFORE system PATH — Minecraft installs its own JRE
  * under `<mcDir>/runtime/<component>/<platform-tag>/...`, and we should
  * use that to honor the "zero manual config" goal. If the user has
  * launched the vanilla profile even once, the bundled Java exists and the
  * wizard works WITHOUT requiring `java` on system PATH.
  *
- * Rule 1 deviation from PLAN: the plan hardcoded `java-runtime-gamma` as
- * the only component name. Real-world MC installs use `delta` (1.20.5+)
- * and `epsilon` (1.21+) — gamma is older and isn't present on modern
- * installs. We now probe all known components newest-first (see
- * BUNDLED_JRE_COMPONENTS) and return the first executable we find. The
- * `gamma`-only probe was empirically verified to MISS the developer's
- * local install (which has `delta` + `epsilon` but not `gamma`). See
- * 09-04-SUMMARY.md §"Deviations from Plan" for the smoke-test evidence.
+ * Probe all known JRE components newest-first (see BUNDLED_JRE_COMPONENTS)
+ * and return the first executable we find. A `gamma`-only probe was
+ * empirically verified to MISS modern installs (which have `delta` +
+ * `epsilon` but not `gamma`).
  *
  * Platform/arch mapping (verified against Mojang's launcher payloads):
  *   - darwin x64:   `<mcDir>/runtime/<component>/mac-os/<component>/jre.bundle/Contents/Home/bin/java`

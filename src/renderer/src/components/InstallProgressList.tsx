@@ -9,12 +9,8 @@
  * Progress events are keyed by installId in the Map<installId, WizardProgressEvent>
  * passed in via props. If no event has arrived yet, the row reads "Queued".
  *
- * BLOCKER 2 (09-01-PLAN): the `cancelled` event variant is rendered as a muted
- * StatusPill — distinct from `failed` because cancellation is a user action,
- * not an error condition.
- *
- * Source: 09-07-PLAN.md Task 2C; 09-UI-SPEC.md §"Component Inventory" InstallProgressList
- *         + §"Animation & Motion" (check-mark scaleIn on done).
+ * The `cancelled` event variant is rendered as a muted StatusPill — distinct
+ * from `failed` because cancellation is a user action, not an error condition.
  */
 
 import React from 'react';
@@ -39,7 +35,6 @@ interface StageRender {
 
 /**
  * Map a WizardProgressEvent (or absence) to its visual descriptor.
- * Stage labels are verbatim from 09-UI-SPEC.md / 09-07-PLAN.md Task 2C.
  */
 function describeStage(ev: WizardProgressEvent | undefined): StageRender {
   if (!ev) return { label: 'Queued', pct: null, terminal: null };

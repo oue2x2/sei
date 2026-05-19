@@ -4,14 +4,11 @@
  * Renders (left to right):
  *   - Native checkbox (controlled by `selected`)
  *   - Two-line label: persona-style name + mono path
- *   - StatusPill aligned to the right (UI-SPEC §"Status indicators — copy" matrix)
+ *   - StatusPill aligned to the right
  *
  * The whole row is clickable AND keyboard-focusable; the checkbox itself is the
- * accessible affordance, but clicks on the row also toggle (matches Plan 04's
- * existing "the whole row toggles" pattern in lan + persona pickers).
- *
- * Source: 09-UI-SPEC.md §"Component Inventory" McInstallRow + §"Interaction States"
- *         McInstallRow selectable/selected/hover/focus + §"Status indicators — copy".
+ * accessible affordance, but clicks on the row also toggle (matches the
+ * "whole-row toggles" pattern in the lan + persona pickers).
  */
 
 import React from 'react';
