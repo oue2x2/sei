@@ -162,13 +162,25 @@ async function bootstrap(): Promise<void> {
             logger.warn(`port drift rewrite: install ${installId} no longer detected; skipping`);
             continue;
           }
+          // Lunar installs were never written to (T3 short-circuits in
+          // processOneInstall); nothing to rewrite at boot either.
+          if (inst.kind === 'lunar') continue;
+
           // Same loader-kind decision as wizard.ts: vanilla → fabric;
           // CurseForge → detected loader (fabric or forge), default forge.
           const loaderKind: 'fabric' | 'forge' =
             inst.kind === 'vanilla' ? 'fabric' : (inst.loader === 'fabric' ? 'fabric' : 'forge');
+          // 260518-o1k T5: targetDir matches the wizard's placement rule —
+          // vanilla writes config into the isolated <.minecraft>/sei/ dir;
+          // CurseForge writes into the instance dir (unchanged). Without
+          // this, port-drift rewrites would target the OLD vanilla-shared
+          // config location and the launched Sei profile would still load
+          // a stale port from the new gameDir-located config.
+          const targetDir =
+            inst.kind === 'vanilla' ? path.join(inst.path, 'sei') : inst.path;
           try {
             await writeCustomSkinLoaderConfig({
-              mcInstallDir: inst.path,
+              targetDir,
               loaderKind,
               skinServerBaseUrl: skinServer.baseUrl,
             });

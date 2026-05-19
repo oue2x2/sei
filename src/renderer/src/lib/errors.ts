@@ -42,6 +42,26 @@ export const ERROR_COPY: Record<ErrorClass, string> = {
 };
 
 /**
+ * Non-fatal warning copy (260518-o1k T8).
+ *
+ * Distinct from ERROR_COPY because these are not ErrorClass-keyed — they
+ * surface as inline informational text on the wizard's pick step or as
+ * tooltips on the done-step exclusion list. The user can proceed past
+ * any of these; there is no "Continue blocked" semantic.
+ *
+ * Caller does the {version} interpolation inline:
+ *   WARN_COPY.MC_VERSION_PRE_1_14.replace('{version}', install.mc_version!)
+ */
+export const WARN_COPY = {
+  MC_VERSION_PRE_1_14:
+    'Detected MC {version}. Sei requires MC 1.14 or newer for the current Fabric Loader. ' +
+    'Pick a newer profile or switch to 1.21.x before continuing.',
+  MOD_SCAN_PARSE_FAIL:
+    "Couldn't read mod metadata — this mod will be skipped. " +
+    "If it's actually compatible, copy it into <install>/sei/mods/ manually.",
+} as const;
+
+/**
  * Best-effort classification of an arbitrary error into an ErrorClass + copy.
  *
  * Uses keyword heuristics on the error message — falls back to BOT_CRASH-shaped

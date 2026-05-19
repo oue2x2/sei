@@ -362,7 +362,18 @@ export async function downloadCustomSkinLoader(
 /* -------------------------------------------------------------------------- */
 
 export interface WriteCustomSkinLoaderConfigOpts {
-  mcInstallDir: string;
+  /**
+   * Directory under which CSL writes BOTH
+   *   <targetDir>/CustomSkinLoader/CustomSkinLoader.json   (root location)
+   *   <targetDir>/config/CustomSkinLoader/CustomSkinLoader.json   (modern)
+   *
+   * 260518-o1k T5: renamed from `mcInstallDir`. For vanilla installs the
+   * caller now passes the Sei gameDir (<.minecraft>/sei/), so CSL config
+   * lives alongside the isolated saves/resourcepacks. For CurseForge
+   * instances the caller continues to pass `install.path` (the instance
+   * dir), so behavior there is unchanged.
+   */
+  targetDir: string;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   loaderKind: 'fabric' | 'forge';
   /** e.g. 'http://127.0.0.1:54321' — no trailing slash. */
@@ -387,7 +398,7 @@ export interface WriteCustomSkinLoaderConfigOpts {
 export async function writeCustomSkinLoaderConfig(
   opts: WriteCustomSkinLoaderConfigOpts,
 ): Promise<{ configPath: string }> {
-  const { mcInstallDir, skinServerBaseUrl } = opts;
+  const { targetDir, skinServerBaseUrl } = opts;
 
   // Trim a trailing slash off the base URL so we don't end up with double
   // slashes in the substituted URL. Skin server returns the URL with no slash
@@ -476,8 +487,8 @@ export async function writeCustomSkinLoaderConfig(
     logger.info(`customSkinLoader: wrote ${configPath}`);
   };
 
-  const rootPath = path.join(mcInstallDir, 'CustomSkinLoader', 'CustomSkinLoader.json');
-  const modernPath = path.join(mcInstallDir, 'config', 'CustomSkinLoader', 'CustomSkinLoader.json');
+  const rootPath = path.join(targetDir, 'CustomSkinLoader', 'CustomSkinLoader.json');
+  const modernPath = path.join(targetDir, 'config', 'CustomSkinLoader', 'CustomSkinLoader.json');
   await writeOne(rootPath);
   await writeOne(modernPath);
   return { configPath: rootPath };
