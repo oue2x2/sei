@@ -34,6 +34,7 @@ import { McInstallList } from './McInstallList';
 import { InstallProgressList } from './InstallProgressList';
 import { useUiStore } from '../lib/stores/useUiStore';
 import { useWizardStore, type WizardStep } from '../lib/stores/useWizardStore';
+import { WARN_COPY } from '../lib/errors';
 import styles from './SetupWizardModal.module.css';
 
 export function SetupWizardModal(): React.ReactElement | null {
@@ -423,20 +424,35 @@ function DoneStep(): React.ReactElement {
                   <details>
                     <summary>Show excluded mods</summary>
                     <ul className={styles.modLinkExclusionList}>
-                      {summary.excludedJars.map((j) => (
-                        <li key={j.name}>
-                          {j.name} &mdash;{' '}
-                          {j.reason === 'mc-version-mismatch' && j.declaredMc
-                            ? `targets MC ${j.declaredMc}`
-                            : j.reason === 'mc-version-mismatch'
-                              ? 'wrong MC version'
-                              : j.reason === 'unparseable'
-                                ? 'metadata unreadable'
-                                : j.reason === 'no-metadata'
-                                  ? 'no mod metadata'
-                                  : 'read error'}
-                        </li>
-                      ))}
+                      {summary.excludedJars.map((j) => {
+                        // 260518-o1k T8: tooltips on the unparseable /
+                        // read-error / no-metadata rows surface the
+                        // MOD_SCAN_PARSE_FAIL guidance ("copy into
+                        // <install>/sei/mods/ manually if it's actually
+                        // compatible"). mc-version-mismatch rows already
+                        // show the declared MC inline so no tooltip
+                        // needed.
+                        const tooltip =
+                          j.reason === 'unparseable' ||
+                          j.reason === 'read-error' ||
+                          j.reason === 'no-metadata'
+                            ? WARN_COPY.MOD_SCAN_PARSE_FAIL
+                            : undefined;
+                        return (
+                          <li key={j.name} title={tooltip}>
+                            {j.name} &mdash;{' '}
+                            {j.reason === 'mc-version-mismatch' && j.declaredMc
+                              ? `targets MC ${j.declaredMc}`
+                              : j.reason === 'mc-version-mismatch'
+                                ? 'wrong MC version'
+                                : j.reason === 'unparseable'
+                                  ? 'metadata unreadable'
+                                  : j.reason === 'no-metadata'
+                                    ? 'no mod metadata'
+                                    : 'read error'}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </details>
                 ) : null}

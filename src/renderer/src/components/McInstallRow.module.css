@@ -101,3 +101,13 @@
   margin-top: var(--space-xs);
   font-style: italic;
 }
+
+/* 260518-o1k T8: pre-1.14 inline MC warning. Informational only — does
+ * not disable the Continue button; user deselects the row to proceed. */
+.warning {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--warn, var(--text-2));
+  line-height: 1.45;
+  margin-top: var(--space-xs);
+}
